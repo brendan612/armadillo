@@ -1,21 +1,23 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
-import { convexConfigured, getCloudAuthStatus, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
+import { convexConfigured, getCloudAuthStatus, pullRemoteSnapshot, pullRemoteVaultByOwner, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
 import { bindPasskeyOwner, getOwnerMode } from './lib/owner'
 import { biometricEnrollmentExists, biometricSupported, enrollBiometricQuickUnlock, unlockWithBiometric } from './lib/biometric'
 import {
   clearLocalVaultFile,
   createVaultFile,
+  getLocalVaultPath,
   loadLocalVaultFile,
   parseVaultFileFromText,
   readPayloadWithSessionKey,
   rewriteVaultFile,
   saveLocalVaultFile,
+  setLocalVaultPath as setStoredLocalVaultPath,
   serializeVaultFile,
   unlockVaultFile,
 } from './lib/vaultFile'
-import type { RiskState, SecurityQuestion, VaultItem, VaultSession } from './types/vault'
+import type { ArmadilloVaultFile, RiskState, SecurityQuestion, VaultItem, VaultSession } from './types/vault'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details' | 'generator' | 'security'
@@ -117,6 +119,8 @@ function App() {
   const [authMessage, setAuthMessage] = useState('')
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
   const [cloudIdentity, setCloudIdentity] = useState('')
+  const [localVaultPath, setLocalVaultPath] = useState(() => getLocalVaultPath())
+  const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
 
   const [genLength, setGenLength] = useState(20)
   const [includeSymbols, setIncludeSymbols] = useState(true)
@@ -218,6 +222,70 @@ function App() {
 
     previousCloudAuthStateRef.current = cloudAuthState
   }, [cloudAuthState, cloudIdentity])
+
+  // When the user signs in while on the create or unlock screen, check
+  // the cloud for an existing vault so we can offer to restore it.
+  useEffect(() => {
+    if (phase === 'ready' || cloudAuthState !== 'connected') {
+      setCloudVaultSnapshot(null)
+      return
+    }
+
+    let cancelled = false
+
+    async function checkCloudVault() {
+      setAuthMessage('Checking cloud for existing vault...')
+      try {
+        const remote = await pullRemoteVaultByOwner()
+        if (cancelled) return
+
+        if (remote?.snapshot) {
+          setCloudVaultSnapshot(remote.snapshot)
+
+          // On the create screen (no local vault), auto-restore immediately
+          if (phase === 'create') {
+            saveLocalVaultFile(remote.snapshot)
+            setAuthMessage('Found your cloud vault! Enter your master password to unlock it.')
+            setPhase('unlock')
+          } else {
+            setAuthMessage('Cloud vault found! You can load it below.')
+          }
+        } else {
+          setCloudVaultSnapshot(null)
+          setAuthMessage('No cloud vault found for this account')
+        }
+      } catch (err) {
+        console.error('[armadillo] cloud vault check failed:', err)
+        const detail = err instanceof Error ? err.message : String(err)
+        if (!cancelled) {
+          setCloudVaultSnapshot(null)
+          setAuthMessage(`Cloud vault check failed: ${detail}`)
+        }
+      }
+    }
+
+    void checkCloudVault()
+    return () => {
+      cancelled = true
+    }
+  }, [phase, cloudAuthState])
+
+  useEffect(() => {
+    const shell = window.armadilloShell
+    if (!shell?.isElectron || !shell.onOAuthCallback) {
+      return
+    }
+
+    const unsubscribe = shell.onOAuthCallback((url) => {
+      void completeDesktopGoogleSignIn(url)
+    })
+
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe()
+      }
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -364,6 +432,14 @@ function App() {
     } catch {
       setVaultError('Invalid master password or corrupted vault file.')
     }
+  }
+
+  function loadVaultFromCloud() {
+    if (!cloudVaultSnapshot) return
+    saveLocalVaultFile(cloudVaultSnapshot)
+    setCloudVaultSnapshot(null)
+    setAuthMessage('Cloud vault loaded. Enter your master password to unlock it.')
+    setPhase('unlock')
   }
 
   function lockVault() {
@@ -529,10 +605,62 @@ function App() {
     }
   }
 
+  async function chooseLocalVaultLocation() {
+    const shell = window.armadilloShell
+    if (!shell?.isElectron || !shell.chooseVaultSavePath) {
+      setSyncMessage('Choose location is available in Electron desktop app')
+      return
+    }
+
+    try {
+      const selectedPath = await shell.chooseVaultSavePath(localVaultPath || undefined)
+      if (!selectedPath) {
+        return
+      }
+
+      setStoredLocalVaultPath(selectedPath)
+      setLocalVaultPath(selectedPath)
+
+      if (vaultSession) {
+        saveLocalVaultFile(vaultSession.file)
+      }
+
+      setSyncMessage(`Local vault path set: ${selectedPath}`)
+    } catch {
+      setSyncMessage('Could not choose local vault location')
+    }
+  }
+
   async function signInWithGoogle() {
+    const shell = window.armadilloShell
+
+    if (shell?.isElectron) {
+      if (!shell.getOAuthCallbackUrl) {
+        setAuthMessage('Desktop sign-in unavailable: preload missing getOAuthCallbackUrl')
+        return
+      }
+
+      try {
+        setAuthMessage('Starting desktop Google sign-in...')
+        const callbackUrl = await shell.getOAuthCallbackUrl()
+
+        // Use the library's signIn which correctly stores the verifier.
+        // Electron's will-navigate handler intercepts the redirect and
+        // opens it in the external browser instead of navigating away.
+        await signIn('google', { redirectTo: callbackUrl })
+        setAuthMessage(`Google sign-in launched in browser. Waiting for callback at ${callbackUrl}`)
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'unknown error'
+        setAuthMessage(`Desktop Google sign-in failed: ${detail}`)
+        return
+      }
+
+      return
+    }
+
     try {
       setAuthMessage('Redirecting to Google sign-in...')
-      await signIn('google')
+      await signIn('google', { redirectTo: window.location.origin })
     } catch {
       setAuthMessage('Google sign-in failed')
     }
@@ -546,6 +674,34 @@ function App() {
       setCloudIdentity('')
     } catch {
       setAuthMessage('Sign out failed')
+    }
+  }
+
+  async function completeDesktopGoogleSignIn(callbackUrl: string) {
+    try {
+      const url = new URL(callbackUrl)
+      const error = url.searchParams.get('error')
+      const errorDescription = url.searchParams.get('error_description')
+      const code = url.searchParams.get('code')
+
+      if (error) {
+        setAuthMessage(`Google callback error: ${errorDescription || error}`)
+        return
+      }
+
+      if (!code) {
+        setAuthMessage('Google callback missing code')
+        return
+      }
+
+      setAuthMessage('OAuth callback received. Finalizing desktop session...')
+      // The verifier is already in localStorage (stored by the library's
+      // signIn call that started the flow). Just pass the code to complete it.
+      await (signIn as unknown as (provider: string | undefined, params: { code: string }) => Promise<unknown>)(undefined, { code })
+      setAuthMessage('Google sign-in complete. Verifying session...')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setAuthMessage(`Desktop browser callback failed: ${detail}`)
     }
   }
 
@@ -569,6 +725,16 @@ function App() {
               </div>
             )}
           </section>
+          {authMessage && <p className="muted" style={{ margin: 0 }}>{authMessage}</p>}
+          {cloudVaultSnapshot && (
+            <button className="solid" onClick={loadVaultFromCloud}>Load Vault from Cloud</button>
+          )}
+          {window.armadilloShell?.isElectron && (
+            <>
+              <p className="muted" style={{ margin: 0 }}>Vault file path: {localVaultPath || 'Not set'}</p>
+              <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+            </>
+          )}
           <label>
             Master Password
             <input
@@ -617,6 +783,13 @@ function App() {
               </div>
             )}
           </section>
+          {authMessage && <p className="muted" style={{ margin: 0 }}>{authMessage}</p>}
+          {window.armadilloShell?.isElectron && (
+            <>
+              <p className="muted" style={{ margin: 0 }}>Vault file path: {localVaultPath || 'Not set'}</p>
+              <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+            </>
+          )}
           <form
             autoComplete="off"
             data-lpignore="true"
@@ -646,6 +819,9 @@ function App() {
           {biometricSupported() && pendingVaultExists && (
             <button className="ghost" onClick={() => void unlockVaultBiometric()}>Unlock with Biometrics</button>
           )}
+          {cloudVaultSnapshot && (
+            <button className="solid" onClick={loadVaultFromCloud}>Load Vault from Cloud</button>
+          )}
           <button className="ghost" onClick={triggerImport}>Import .armadillo Vault File</button>
           {!pendingVaultExists && <button className="ghost" onClick={() => setPhase('create')}>Create New Vault</button>}
         </main>
@@ -674,6 +850,9 @@ function App() {
         <div className="topbar-actions" style={{ gap: '.5rem', flexWrap: 'wrap' }}>
           <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
           <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
+          {window.armadilloShell?.isElectron && (
+            <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+          )}
           {biometricSupported() && (
             <button className={biometricEnabled ? 'solid' : 'ghost'} onClick={() => void enableBiometricUnlock()}>
               {biometricEnabled ? 'Biometric Enabled' : 'Enable Biometric'}
@@ -753,7 +932,7 @@ function App() {
             <div className="detail-grid">
               <h3>Empty Vault</h3>
               <p className="muted">Create your first credential to get started.</p>
-              <button className="solid" onClick={createItem}>+ Create First Credential</button>
+              <button className="solid" style={{ alignSelf: 'start' }} onClick={createItem}>+ Create First Credential</button>
             </div>
           ) : (
             <ul className="item-list">
@@ -984,6 +1163,7 @@ function App() {
       <div style={{ padding: '0 1rem 1rem', fontSize: '.82rem', color: '#8e9388' }}>
         Unlock methods: master password required. Biometric/passkey quick-unlock can be layered via platform integrations.
         {convexConfigured() ? ' Convex sync endpoint configured.' : ' Convex sync endpoint not configured.'}
+        {window.armadilloShell?.isElectron ? ` Local vault path: ${localVaultPath || 'Not set'}.` : ''}
       </div>
 
       <div style={{ padding: '0 1rem 1rem', display: 'flex', gap: '.5rem' }}>
@@ -994,7 +1174,6 @@ function App() {
 }
 
 export default App
-
 
 
 

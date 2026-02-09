@@ -10,12 +10,31 @@ import {
 import type { ArmadilloVaultFile, VaultPayload, VaultSession } from '../types/vault'
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
+const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
 
 export function defaultVaultPayload(): VaultPayload {
   return { items: [] }
 }
 
 export function loadLocalVaultFile(): ArmadilloVaultFile | null {
+  const shell = window.armadilloShell
+  if (shell?.isElectron && shell.readVaultFile) {
+    const knownPath = localStorage.getItem(LOCAL_VAULT_PATH_KEY) || shell.getDefaultVaultPath?.()
+    if (knownPath) {
+      const rawFromFile = shell.readVaultFile(knownPath)
+      if (rawFromFile) {
+        try {
+          const parsed = JSON.parse(rawFromFile) as ArmadilloVaultFile
+          localStorage.setItem(LOCAL_VAULT_FILE_KEY, rawFromFile)
+          localStorage.setItem(LOCAL_VAULT_PATH_KEY, knownPath)
+          return parsed
+        } catch {
+          // Fall back to localStorage copy.
+        }
+      }
+    }
+  }
+
   const raw = localStorage.getItem(LOCAL_VAULT_FILE_KEY)
   if (!raw) {
     return null
@@ -28,12 +47,37 @@ export function loadLocalVaultFile(): ArmadilloVaultFile | null {
   }
 }
 
+export function getLocalVaultPath() {
+  const shell = window.armadilloShell
+  return localStorage.getItem(LOCAL_VAULT_PATH_KEY) || shell?.getDefaultVaultPath?.() || ''
+}
+
+export function setLocalVaultPath(path: string) {
+  if (!path) return
+  localStorage.setItem(LOCAL_VAULT_PATH_KEY, path)
+}
+
 export function saveLocalVaultFile(file: ArmadilloVaultFile) {
-  localStorage.setItem(LOCAL_VAULT_FILE_KEY, JSON.stringify(file))
+  const raw = JSON.stringify(file)
+  localStorage.setItem(LOCAL_VAULT_FILE_KEY, raw)
+
+  const shell = window.armadilloShell
+  if (shell?.isElectron && shell.writeVaultFile) {
+    const knownPath = getLocalVaultPath()
+    if (knownPath && shell.writeVaultFile(raw, knownPath)) {
+      localStorage.setItem(LOCAL_VAULT_PATH_KEY, knownPath)
+    }
+  }
 }
 
 export function clearLocalVaultFile() {
   localStorage.removeItem(LOCAL_VAULT_FILE_KEY)
+  const shell = window.armadilloShell
+  const knownPath = localStorage.getItem(LOCAL_VAULT_PATH_KEY) || shell?.getDefaultVaultPath?.()
+  if (shell?.isElectron && shell.deleteVaultFile && knownPath) {
+    shell.deleteVaultFile(knownPath)
+  }
+  localStorage.removeItem(LOCAL_VAULT_PATH_KEY)
 }
 
 export function parseVaultFileFromText(text: string) {

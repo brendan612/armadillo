@@ -1,4 +1,4 @@
-﻿import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
+import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
 import { getOwnerHint } from './owner'
 
 function normalizeBaseUrl(url: string) {
@@ -75,6 +75,14 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export function convexConfigured() {
   return hasConvexConfig()
+}
+
+export async function pullRemoteVaultByOwner(): Promise<PullResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+
+  return postJson<PullResponse>('/api/sync/pull-by-owner', {})
 }
 
 export async function pullRemoteSnapshot(vaultId: string): Promise<PullResponse | null> {

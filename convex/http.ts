@@ -1,4 +1,4 @@
-﻿import { httpRouter } from 'convex/server'
+import { httpRouter } from 'convex/server'
 import { api } from './_generated/api'
 import { httpAction } from './_generated/server'
 import { auth } from './auth'
@@ -89,11 +89,29 @@ http.route({
       return json({ authenticated: false })
     }
 
+    // JWT claims don't include email/name -- look them up from the users table
+    let email = identity.email
+    let name = identity.name
+    const identifier = identity.tokenIdentifier || identity.subject
+    if ((!email || !name) && identifier) {
+      try {
+        const profile = await ctx.runQuery(api.sync.getUserProfile, {
+          tokenIdentifier: identifier,
+        })
+        if (profile) {
+          email = email || profile.email
+          name = name || profile.name
+        }
+      } catch {
+        // Fall through with whatever we have from the JWT
+      }
+    }
+
     return json({
       authenticated: true,
       subject: identity.subject,
-      email: identity.email,
-      name: identity.name,
+      email,
+      name,
       tokenIdentifier: identity.tokenIdentifier,
     })
   }),
@@ -109,6 +127,29 @@ http.route({
   path: '/api/sync/push',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/sync/pull-by-owner',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/sync/pull-by-owner',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+
+    const snapshot = await ctx.runQuery(api.sync.pullByOwner, {
+      ownerId: owner.ownerId,
+    })
+
+    return json({ snapshot: snapshot ? JSON.parse(snapshot.encryptedFile) : null, ownerSource: owner.ownerSource })
+  }),
 })
 
 http.route({
