@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
-import { convexConfigured, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
+import { convexConfigured, getCloudAuthStatus, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
 import { bindPasskeyOwner, getOwnerMode } from './lib/owner'
 import { biometricEnrollmentExists, biometricSupported, enrollBiometricQuickUnlock, unlockWithBiometric } from './lib/biometric'
 import {
@@ -21,6 +21,7 @@ type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details' | 'generator' | 'security'
 type MobileStep = 'nav' | 'list' | 'detail'
 type SyncState = 'local' | 'syncing' | 'live' | 'error'
+type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
 
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const riskOrder: RiskState[] = ['exposed', 'reused', 'weak', 'stale', 'safe']
@@ -114,6 +115,8 @@ function App() {
   const [ownerMode, setOwnerMode] = useState(getOwnerMode())
   const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
   const [authMessage, setAuthMessage] = useState('')
+  const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
+  const [cloudIdentity, setCloudIdentity] = useState('')
 
   const [genLength, setGenLength] = useState(20)
   const [includeSymbols, setIncludeSymbols] = useState(true)
@@ -122,15 +125,19 @@ function App() {
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const previousCloudAuthStateRef = useRef<CloudAuthState>('unknown')
   const { isAuthenticated } = useConvexAuth()
   const { signIn, signOut } = useAuthActions()
   const authToken = useAuthToken()
+  const cloudConnected = cloudAuthState === 'connected'
   const authStatus = useMemo(() => {
     if (!convexConfigured()) return 'Convex URL not configured'
-    if (isAuthenticated && authToken) return 'Google account connected'
+    if (cloudConnected) return cloudIdentity ? `Connected as ${cloudIdentity}` : 'Google account connected'
+    if (cloudAuthState === 'checking') return 'Google sign-in detected. Verifying cloud session...'
     if (isAuthenticated && !authToken) return 'Google authenticated, token pending'
+    if (cloudAuthState === 'error') return 'Cloud auth check failed. Local vault is still available.'
     return 'Google account not connected'
-  }, [isAuthenticated, authToken])
+  }, [cloudConnected, cloudIdentity, cloudAuthState, isAuthenticated, authToken])
 
   function applySession(session: VaultSession) {
     setVaultSession(session)
@@ -147,6 +154,70 @@ function App() {
   useEffect(() => {
     setConvexAuthToken(authToken ?? null)
   }, [authToken])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function refreshCloudIdentity() {
+      if (!convexConfigured()) {
+        setCloudAuthState('unknown')
+        setCloudIdentity('')
+        return
+      }
+
+      if (!isAuthenticated) {
+        setCloudAuthState('disconnected')
+        setCloudIdentity('')
+        return
+      }
+
+      if (!authToken) {
+        setCloudAuthState('checking')
+        return
+      }
+
+      setCloudAuthState('checking')
+      try {
+        const status = await getCloudAuthStatus()
+        if (cancelled) return
+
+        if (status?.authenticated) {
+          const identityLabel = status.email || status.name || status.subject || status.tokenIdentifier || 'Google account'
+          setCloudAuthState('connected')
+          setCloudIdentity(identityLabel)
+        } else {
+          setCloudAuthState('disconnected')
+          setCloudIdentity('')
+        }
+      } catch {
+        if (cancelled) return
+        setCloudAuthState('error')
+        setCloudIdentity('')
+      }
+    }
+
+    void refreshCloudIdentity()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, authToken])
+
+  useEffect(() => {
+    const previous = previousCloudAuthStateRef.current
+    if (previous === cloudAuthState) {
+      return
+    }
+
+    if (cloudAuthState === 'connected') {
+      setAuthMessage(cloudIdentity ? `Google connected as ${cloudIdentity}` : 'Google account connected')
+    } else if (cloudAuthState === 'disconnected' && (previous === 'connected' || previous === 'checking')) {
+      setAuthMessage('No active Google cloud session')
+    } else if (cloudAuthState === 'error') {
+      setAuthMessage('Could not verify Google cloud session')
+    }
+
+    previousCloudAuthStateRef.current = cloudAuthState
+  }, [cloudAuthState, cloudIdentity])
 
   useEffect(() => {
     let cancelled = false
@@ -460,8 +531,8 @@ function App() {
 
   async function signInWithGoogle() {
     try {
+      setAuthMessage('Redirecting to Google sign-in...')
       await signIn('google')
-      setAuthMessage('Google sign-in started')
     } catch {
       setAuthMessage('Google sign-in failed')
     }
@@ -471,6 +542,8 @@ function App() {
     try {
       await signOut()
       setAuthMessage('Signed out')
+      setCloudAuthState('disconnected')
+      setCloudIdentity('')
     } catch {
       setAuthMessage('Sign out failed')
     }
@@ -482,7 +555,20 @@ function App() {
         <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
           <h1>Create Local Armadillo Vault</h1>
           <p className="muted">A local encrypted `.armadillo` vault file is the canonical database on this device.</p>
-          <p className="muted">{authStatus}</p>
+          <section className="auth-status-card">
+            <p className="muted" style={{ margin: 0 }}>{authStatus}</p>
+            {convexConfigured() && (
+              <div className="auth-status-actions">
+                {!cloudConnected ? (
+                  <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
+                    {cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                  </button>
+                ) : (
+                  <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
+                )}
+              </div>
+            )}
+          </section>
           <label>
             Master Password
             <input
@@ -517,9 +603,23 @@ function App() {
         <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
           <h1>Unlock Armadillo Vault</h1>
           <p className="muted">Unlock your local encrypted `.armadillo` vault with your master password.</p>
-          <p className="muted">{authStatus}</p>
+          <section className="auth-status-card">
+            <p className="muted" style={{ margin: 0 }}>{authStatus}</p>
+            {convexConfigured() && (
+              <div className="auth-status-actions">
+                {!cloudConnected ? (
+                  <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
+                    {cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                  </button>
+                ) : (
+                  <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
+                )}
+              </div>
+            )}
+          </section>
           <form
             autoComplete="off"
+            data-lpignore="true"
             onSubmit={(event) => {
               event.preventDefault()
               void unlockVault()
@@ -530,15 +630,19 @@ function App() {
               <input
                 type="password"
                 name="armadillo_unlock_master_password"
-                autoComplete="new-password"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 data-lpignore="true"
+                data-1p-ignore="true"
                 value={unlockPassword}
                 onChange={(event) => setUnlockPassword(event.target.value)}
               />
             </label>
+            <button className="solid" type="submit">Unlock Vault</button>
           </form>
           {vaultError && <p style={{ color: '#d85f5f' }}>{vaultError}</p>}
-          <button className="solid" onClick={() => void unlockVault()}>Unlock Vault</button>
           {biometricSupported() && pendingVaultExists && (
             <button className="ghost" onClick={() => void unlockVaultBiometric()}>Unlock with Biometrics</button>
           )}
@@ -578,8 +682,10 @@ function App() {
           <button className={cloudSyncEnabled ? 'solid' : 'ghost'} onClick={() => setCloudSyncEnabled((value) => !value)}>
             {cloudSyncEnabled ? 'Cloud Sync On' : 'Cloud Sync Off'}
           </button>
-          {!isAuthenticated ? (
-            <button className="ghost" onClick={() => void signInWithGoogle()}>Sign in with Google</button>
+          {!cloudConnected ? (
+            <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
+              {cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+            </button>
           ) : (
             <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
           )}

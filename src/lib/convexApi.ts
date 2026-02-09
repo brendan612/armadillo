@@ -33,6 +33,14 @@ type PushResponse = {
   ownerSource: SyncIdentitySource
 }
 
+export type CloudAuthStatus = {
+  authenticated: boolean
+  subject?: string | null
+  email?: string | null
+  name?: string | null
+  tokenIdentifier?: string | null
+}
+
 function hasConvexConfig() {
   return Boolean(baseUrl)
 }
@@ -88,4 +96,12 @@ export async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<Push
     encryptedFile: JSON.stringify(file),
     updatedAt: file.updatedAt,
   })
+}
+
+export async function getCloudAuthStatus(): Promise<CloudAuthStatus | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+
+  return postJson<CloudAuthStatus>('/api/auth/status', {})
 }

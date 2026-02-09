@@ -24,6 +24,30 @@ function json(data: unknown, status = 200) {
   })
 }
 
+async function resolveIdentity(
+  ctx: { auth?: { getUserIdentity?: () => Promise<Record<string, unknown> | null> } },
+) {
+  try {
+    const identity = await ctx.auth?.getUserIdentity?.()
+    if (!identity) {
+      return null
+    }
+
+    const subject = typeof identity.subject === 'string' ? identity.subject : null
+    const email = typeof identity.email === 'string' ? identity.email : null
+    const name = typeof identity.name === 'string' ? identity.name : null
+    const tokenIdentifier = typeof identity.tokenIdentifier === 'string' ? identity.tokenIdentifier : null
+
+    if (!subject && !tokenIdentifier) {
+      return null
+    }
+
+    return { subject, email, name, tokenIdentifier }
+  } catch {
+    return null
+  }
+}
+
 function normalizeOwnerHint(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64)
 }
@@ -49,6 +73,31 @@ async function resolveOwner(
 
   return { ownerId: `anon:${ownerHint}`, ownerSource: 'anonymous' as OwnerSource }
 }
+
+http.route({
+  path: '/api/auth/status',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/auth/status',
+  method: 'POST',
+  handler: httpAction(async (ctx) => {
+    const identity = await resolveIdentity(ctx)
+    if (!identity) {
+      return json({ authenticated: false })
+    }
+
+    return json({
+      authenticated: true,
+      subject: identity.subject,
+      email: identity.email,
+      name: identity.name,
+      tokenIdentifier: identity.tokenIdentifier,
+    })
+  }),
+})
 
 http.route({
   path: '/api/sync/pull',

@@ -802,6 +802,20 @@ kbd {
   color: var(--ink-secondary);
 }
 
+.auth-status-card {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+  background: var(--bg-1);
+}
+
+.auth-status-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
 .inline-field {
   display: grid;
   grid-template-columns: 1fr auto auto;
