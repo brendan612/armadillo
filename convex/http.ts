@@ -1,26 +1,12 @@
-import { httpRouter } from 'convex/server'
+﻿import { httpRouter } from 'convex/server'
 import { api } from './_generated/api'
 import { httpAction } from './_generated/server'
+import { auth } from './auth'
 
-type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
 type OwnerSource = 'auth' | 'anonymous'
 
-type VaultItemPayload = {
-  id: string
-  title: string
-  username: string
-  passwordMasked: string
-  urls: string[]
-  category: string
-  folder: string
-  tags: string[]
-  risk: RiskState
-  updatedAt: string
-  note: string
-  securityQuestions: { question: string; answer: string }[]
-}
-
 const http = httpRouter()
+auth.addHttpRoutes(http)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -52,7 +38,7 @@ async function resolveOwner(
       return { ownerId: `user:${identity.subject}`, ownerSource: 'auth' as OwnerSource }
     }
   } catch {
-    // If auth is not configured for this HTTP route yet, fall back to anonymous owner.
+    // Fall through to anonymous owner hint for offline/unauthenticated mode.
   }
 
   const ownerHintRaw = request.headers.get('x-armadillo-owner') || ''
@@ -65,91 +51,69 @@ async function resolveOwner(
 }
 
 http.route({
-  path: '/api/items/list',
+  path: '/api/sync/pull',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
 })
 
 http.route({
-  path: '/api/items/upsert',
+  path: '/api/sync/push',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
 })
 
 http.route({
-  path: '/api/items/delete',
-  method: 'OPTIONS',
-  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
-})
-
-http.route({
-  path: '/api/items/list',
+  path: '/api/sync/pull',
   method: 'POST',
   handler: httpAction(async (ctx, request) => {
     const owner = await resolveOwner(ctx, request)
     if (!owner) {
-      return json({ error: 'Owner could not be resolved. Sign in or provide owner header.' }, 401)
+      return json({ error: 'Owner could not be resolved.' }, 401)
     }
 
-    const items = await ctx.runQuery(api.items.listByOwner, { ownerId: owner.ownerId })
-    return json({ items, ownerSource: owner.ownerSource })
-  }),
-})
-
-http.route({
-  path: '/api/items/upsert',
-  method: 'POST',
-  handler: httpAction(async (ctx, request) => {
-    const owner = await resolveOwner(ctx, request)
-    if (!owner) {
-      return json({ error: 'Owner could not be resolved. Sign in or provide owner header.' }, 401)
+    const payload = (await request.json()) as { vaultId?: string }
+    if (!payload.vaultId) {
+      return json({ error: 'vaultId is required' }, 400)
     }
 
-    const payload = (await request.json()) as { item?: Partial<VaultItemPayload> }
-    if (!payload.item?.id || !payload.item.title || !payload.item.username) {
-      return json({ error: 'A valid item is required' }, 400)
-    }
-
-    const item: VaultItemPayload = {
-      id: payload.item.id,
-      title: payload.item.title,
-      username: payload.item.username,
-      passwordMasked: payload.item.passwordMasked ?? '********',
-      urls: Array.isArray(payload.item.urls) ? payload.item.urls : [],
-      category: payload.item.category ?? 'General',
-      folder: payload.item.folder ?? 'Personal',
-      tags: Array.isArray(payload.item.tags) ? payload.item.tags : [],
-      risk: payload.item.risk ?? 'safe',
-      updatedAt: payload.item.updatedAt ?? 'just now',
-      note: payload.item.note ?? '',
-      securityQuestions: Array.isArray(payload.item.securityQuestions) ? payload.item.securityQuestions : [],
-    }
-
-    const saved = await ctx.runMutation(api.items.upsertForOwner, { ownerId: owner.ownerId, item })
-    return json({ ok: true, item: saved, ownerSource: owner.ownerSource })
-  }),
-})
-
-http.route({
-  path: '/api/items/delete',
-  method: 'POST',
-  handler: httpAction(async (ctx, request) => {
-    const owner = await resolveOwner(ctx, request)
-    if (!owner) {
-      return json({ error: 'Owner could not be resolved. Sign in or provide owner header.' }, 401)
-    }
-
-    const payload = (await request.json()) as { itemId?: string }
-    if (!payload.itemId) {
-      return json({ error: 'itemId is required' }, 400)
-    }
-
-    const result = await ctx.runMutation(api.items.deleteForOwner, {
+    const snapshot = await ctx.runQuery(api.sync.pullByOwnerVault, {
       ownerId: owner.ownerId,
-      itemId: payload.itemId,
+      vaultId: payload.vaultId,
     })
 
-    return json({ ok: true, deleted: result.deleted, ownerSource: owner.ownerSource })
+    return json({ snapshot: snapshot ? JSON.parse(snapshot.encryptedFile) : null, ownerSource: owner.ownerSource })
+  }),
+})
+
+http.route({
+  path: '/api/sync/push',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+
+    const payload = (await request.json()) as {
+      vaultId?: string
+      revision?: number
+      encryptedFile?: string
+      updatedAt?: string
+    }
+
+    if (!payload.vaultId || typeof payload.revision !== 'number' || !payload.encryptedFile || !payload.updatedAt) {
+      return json({ error: 'vaultId, revision, encryptedFile, and updatedAt are required' }, 400)
+    }
+
+    const result = await ctx.runMutation(api.sync.pushByOwnerVault, {
+      ownerId: owner.ownerId,
+      vaultId: payload.vaultId,
+      revision: payload.revision,
+      encryptedFile: payload.encryptedFile,
+      updatedAt: payload.updatedAt,
+    })
+
+    return json({ ok: true, accepted: result.accepted, ownerSource: owner.ownerSource })
   }),
 })
 

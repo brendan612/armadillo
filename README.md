@@ -1,15 +1,23 @@
-# armadillo
+﻿# armadillo
 
-Armadillo is a cross-platform password manager frontend prototype with an Electron desktop shell and Convex-backed sync endpoints.
+Armadillo is a local-first encrypted password vault.
+
+- Canonical storage is an encrypted `.armadillo` vault file per device.
+- Master password unlock is required.
+- Optional cloud sync replicates encrypted snapshots only.
 
 ## What is implemented
 
-- Distinctive Armadillo design system across web, desktop, and mobile modes
-- 3-pane desktop/web workspace + progressive mobile panes
-- Platform preview switch (`Auto`, `Web`, `Desktop`, `Mobile`)
-- Electron shell integration via preload bridge
-- Convex backend schema + HTTP endpoints for vault item list/upsert/delete
-- Functional CRUD (create, edit, delete) with local-storage fallback when Convex is unavailable
+- Encrypted vault file format (`armadillo-v1`) with wrapped vault keys.
+- Master-password create/unlock flows.
+- Import/export transferable `.armadillo` files.
+- Credential CRUD in decrypted in-memory session only.
+- Optional cloud sync over Convex HTTP actions:
+  - `POST /api/sync/pull`
+  - `POST /api/sync/push`
+- Convex Auth routes enabled with Google OAuth provider wiring.
+- Optional passkey identity binding for owner hinting.
+- Biometric quick-unlock adapter (device-bound, local only) for supported platforms.
 
 ## Run web
 
@@ -26,33 +34,27 @@ npm run dev:electron
 
 ## Convex setup
 
-1. Log in and create/link a Convex project:
-
 ```bash
 npx convex dev
 ```
 
-2. Add env vars to `.env` (use `.env.example` as template):
+Client `.env` values:
 
 ```bash
 VITE_CONVEX_URL=https://<your-deployment>.convex.cloud
 VITE_CONVEX_HTTP_URL=https://<your-deployment>.convex.site
 ```
 
-3. Restart `npm run dev`.
-
-## Convex endpoints used by the UI
-
-- `POST /api/items/list`
-- `POST /api/items/upsert`
-- `POST /api/items/delete`
-
-Owner resolution is automatic:
-- Uses authenticated user subject when auth is configured/present.
-- Falls back to an anonymous device owner key via `x-armadillo-owner`.
-
-## Build
+Convex Auth Google provider env values (set in Convex deployment env):
 
 ```bash
-npm run build
+AUTH_GOOGLE_ID=<google-oauth-client-id>
+AUTH_GOOGLE_SECRET=<google-oauth-client-secret>
 ```
+
+## Security notes
+
+- Local vault KDF now uses Argon2id parameters embedded per vault file.
+- Existing legacy PBKDF2 vaults remain unlockable (compat fallback).
+- Cloud stores only encrypted vault snapshots; decryption is client-side only.
+- Biometric quick-unlock is device-local and requires prior master-password unlock/enrollment.

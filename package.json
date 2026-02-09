@@ -1,42 +1,45 @@
 {
-    "name":  "armadillo",
-    "private":  true,
-    "version":  "0.0.0",
-    "type":  "module",
-    "scripts":  {
-                    "dev":  "vite",
-                    "dev:web":  "vite",
-                    "dev:electron":  "concurrently -k \"npm:dev:web\" \"npm:electron:wait\"",
-                    "electron:wait":  "wait-on tcp:5173 && electron .",
-                    "electron":  "electron .",
-                    "build:web":  "tsc -b \u0026\u0026 vite build",
-                    "build":  "npm run build:web",
-                    "lint":  "eslint .",
-                    "preview":  "vite preview",
-                    "convex:dev":  "convex dev",
-                    "convex:deploy":  "convex deploy"
-                },
-    "dependencies":  {
-                         "convex":  "^1.31.7",
-                         "react":  "^19.2.0",
-                         "react-dom":  "^19.2.0"
-                     },
-    "devDependencies":  {
-                            "@eslint/js":  "^9.39.1",
-                            "@types/node":  "^24.10.1",
-                            "@types/react":  "^19.2.5",
-                            "@types/react-dom":  "^19.2.3",
-                            "@vitejs/plugin-react":  "^5.1.1",
-                            "concurrently":  "^9.2.1",
-                            "electron":  "^40.2.1",
-                            "eslint":  "^9.39.1",
-                            "eslint-plugin-react-hooks":  "^7.0.1",
-                            "eslint-plugin-react-refresh":  "^0.4.24",
-                            "globals":  "^16.5.0",
-                            "typescript":  "~5.9.3",
-                            "typescript-eslint":  "^8.46.4",
-                            "vite":  "^7.2.4",
-                            "wait-on":  "^9.0.3"
-                        },
-    "main":  "electron/main.cjs"
+    "name": "armadillo",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host",
+        "dev:web": "vite",
+        "dev:electron": "concurrently -k \"npm:dev:web\" \"npm:electron:wait\"",
+        "electron:wait": "wait-on tcp:5173 && electron .",
+        "electron": "electron .",
+        "build:web": "tsc -b && vite build",
+        "build": "npm run build:web",
+        "lint": "eslint .",
+        "preview": "vite preview",
+        "convex:dev": "convex dev",
+        "convex:deploy": "convex deploy"
+    },
+    "dependencies": {
+        "@auth/core": "^0.37.0",
+        "@convex-dev/auth": "^0.0.90",
+        "@noble/hashes": "^2.0.1",
+        "convex": "^1.31.7",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.1",
+        "@types/node": "^24.10.1",
+        "@types/react": "^19.2.5",
+        "@types/react-dom": "^19.2.3",
+        "@vitejs/plugin-react": "^5.1.1",
+        "concurrently": "^9.2.1",
+        "electron": "^40.2.1",
+        "eslint": "^9.39.1",
+        "eslint-plugin-react-hooks": "^7.0.1",
+        "eslint-plugin-react-refresh": "^0.4.24",
+        "globals": "^16.5.0",
+        "typescript": "~5.9.3",
+        "typescript-eslint": "^8.46.4",
+        "vite": "^7.2.4",
+        "wait-on": "^9.0.3"
+    },
+    "main": "electron/main.cjs"
 }

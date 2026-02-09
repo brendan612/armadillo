@@ -1,14 +1,28 @@
-import { useEffect, useMemo, useState } from 'react'
-import { convexConfigured, deleteVaultItem, listVaultItems, upsertVaultItem } from './lib/convexApi'
-import type { RiskState, SaveVaultItemInput, SecurityQuestion, VaultItem } from './types/vault'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useConvexAuth } from 'convex/react'
+import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
+import { convexConfigured, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
+import { bindPasskeyOwner, getOwnerMode } from './lib/owner'
+import { biometricEnrollmentExists, biometricSupported, enrollBiometricQuickUnlock, unlockWithBiometric } from './lib/biometric'
+import {
+  clearLocalVaultFile,
+  createVaultFile,
+  loadLocalVaultFile,
+  parseVaultFileFromText,
+  readPayloadWithSessionKey,
+  rewriteVaultFile,
+  saveLocalVaultFile,
+  serializeVaultFile,
+  unlockVaultFile,
+} from './lib/vaultFile'
+import type { RiskState, SecurityQuestion, VaultItem, VaultSession } from './types/vault'
 
+type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details' | 'generator' | 'security'
 type MobileStep = 'nav' | 'list' | 'detail'
-type PlatformOverride = 'auto' | 'web' | 'desktop' | 'mobile'
 type SyncState = 'local' | 'syncing' | 'live' | 'error'
-type ThemePreset = 'midnight' | 'daylight' | 'void' | 'ember'
 
-const LOCAL_ITEMS_KEY = 'armadillo.local.items'
+const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const riskOrder: RiskState[] = ['exposed', 'reused', 'weak', 'stale', 'safe']
 
 const shellSections = [
@@ -16,24 +30,6 @@ const shellSections = [
   { name: 'Favorites' },
   { name: 'Shared' },
   { name: 'Security Center' },
-]
-
-const THEME_PRESETS: { id: ThemePreset; label: string; colors: [string, string, string, string] }[] = [
-  { id: 'midnight', label: 'Midnight', colors: ['#0b0d13', '#171b27', '#1d2235', '#d4854a'] },
-  { id: 'daylight', label: 'Daylight', colors: ['#f3f4f7', '#ffffff', '#e9ebf0', '#00b892'] },
-  { id: 'void', label: 'Void', colors: ['#000000', '#0a0a14', '#10101c', '#00ffcc'] },
-  { id: 'ember', label: 'Ember', colors: ['#0e0a06', '#1e160e', '#281e14', '#e8824a'] },
-]
-
-const ACCENT_COLORS = [
-  { name: 'Copper', value: '#d4854a' },
-  { name: 'Teal', value: '#00d4aa' },
-  { name: 'Cyan', value: '#22d3ee' },
-  { name: 'Blue', value: '#3b82f6' },
-  { name: 'Indigo', value: '#6366f1' },
-  { name: 'Rose', value: '#f43f5e' },
-  { name: 'Amber', value: '#f59e0b' },
-  { name: 'Emerald', value: '#10b981' },
 ]
 
 function riskLabel(risk: RiskState) {
@@ -51,21 +47,6 @@ function riskLabel(risk: RiskState) {
   }
 }
 
-function hexToRgba(hex: string, alpha: number) {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
-function getContrastColor(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  return luminance > 0.55 ? '#000000' : '#ffffff'
-}
-
 function getAutoPlatform(): 'web' | 'desktop' | 'mobile' {
   if (window.armadilloShell?.isElectron) return 'desktop'
   if (window.matchMedia('(max-width: 900px)').matches) return 'mobile'
@@ -74,7 +55,7 @@ function getAutoPlatform(): 'web' | 'desktop' | 'mobile' {
 
 function buildEmptyItem(): VaultItem {
   return {
-    id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Date.now()),
+    id: crypto.randomUUID(),
     title: 'New Credential',
     username: '',
     passwordMasked: '',
@@ -89,19 +70,12 @@ function buildEmptyItem(): VaultItem {
   }
 }
 
-function loadLocalItems(): VaultItem[] {
-  try {
-    const raw = localStorage.getItem(LOCAL_ITEMS_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as VaultItem[]
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-function saveLocalItems(items: VaultItem[]) {
-  localStorage.setItem(LOCAL_ITEMS_KEY, JSON.stringify(items))
+function generatePassword(length: number, includeSymbols: boolean, excludeAmbiguous: boolean) {
+  const chars = `ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789${includeSymbols ? '!@#$%^&*()-_=+[]{}' : ''}`
+  const safeChars = excludeAmbiguous ? chars.replace(/[O0Il|`~]/g, '') : chars
+  const randomBytes = new Uint8Array(length)
+  crypto.getRandomValues(randomBytes)
+  return Array.from(randomBytes, (byte) => safeChars[byte % safeChars.length]).join('')
 }
 
 function SecurityMetric({ count, label, detail, tone }: { count: number; label: string; detail: string; tone: string }) {
@@ -117,9 +91,14 @@ function SecurityMetric({ count, label, detail, tone }: { count: number; label: 
 }
 
 function App() {
-  const [theme, setTheme] = useState<ThemePreset>(() => (localStorage.getItem('armadillo-theme') as ThemePreset) || 'midnight')
-  const [accentColor, setAccentColor] = useState(() => localStorage.getItem('armadillo-accent') || '#d4854a')
-  const [showSettings, setShowSettings] = useState(false)
+  const hasExistingVault = Boolean(loadLocalVaultFile())
+  const [phase, setPhase] = useState<AppPhase>(hasExistingVault ? 'unlock' : 'create')
+  const [vaultSession, setVaultSession] = useState<VaultSession | null>(null)
+  const [unlockPassword, setUnlockPassword] = useState('')
+  const [createPassword, setCreatePassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [vaultError, setVaultError] = useState('')
+  const [pendingVaultExists] = useState(hasExistingVault)
 
   const [items, setItems] = useState<VaultItem[]>([])
   const [query, setQuery] = useState('')
@@ -127,86 +106,106 @@ function App() {
   const [selectedId, setSelectedId] = useState('')
   const [activePanel, setActivePanel] = useState<Panel>('details')
   const [mobileStep, setMobileStep] = useState<MobileStep>('nav')
-  const [platformOverride, setPlatformOverride] = useState<PlatformOverride>('auto')
   const [syncState, setSyncState] = useState<SyncState>('local')
-  const [syncMessage, setSyncMessage] = useState('Loading...')
+  const [syncMessage, setSyncMessage] = useState('Offline mode')
   const [isSaving, setIsSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [cloudSyncEnabled, setCloudSyncEnabled] = useState(localStorage.getItem(CLOUD_SYNC_PREF_KEY) === 'true')
+  const [ownerMode, setOwnerMode] = useState(getOwnerMode())
+  const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
+  const [authMessage, setAuthMessage] = useState('')
 
   const [genLength, setGenLength] = useState(20)
   const [includeSymbols, setIncludeSymbols] = useState(true)
   const [excludeAmbiguous, setExcludeAmbiguous] = useState(true)
-  const [generatorNonce, setGeneratorNonce] = useState(0)
+  const [generatedPreview, setGeneratedPreview] = useState(() => generatePassword(20, true, true))
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
+  const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const { isAuthenticated } = useConvexAuth()
+  const { signIn, signOut } = useAuthActions()
+  const authToken = useAuthToken()
+  const authStatus = useMemo(() => {
+    if (!convexConfigured()) return 'Convex URL not configured'
+    if (isAuthenticated && authToken) return 'Google account connected'
+    if (isAuthenticated && !authToken) return 'Google authenticated, token pending'
+    return 'Google account not connected'
+  }, [isAuthenticated, authToken])
+
+  function applySession(session: VaultSession) {
+    setVaultSession(session)
+    setItems(session.payload.items)
+    const firstId = session.payload.items[0]?.id || ''
+    setSelectedId(firstId)
+    setDraft(session.payload.items[0] ?? null)
+  }
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    localStorage.setItem('armadillo-theme', theme)
-  }, [theme])
+    localStorage.setItem(CLOUD_SYNC_PREF_KEY, String(cloudSyncEnabled))
+  }, [cloudSyncEnabled])
 
   useEffect(() => {
-    const root = document.documentElement.style
-    root.setProperty('--accent', accentColor)
-    root.setProperty('--accent-soft', hexToRgba(accentColor, 0.12))
-    root.setProperty('--accent-glow', hexToRgba(accentColor, 0.22))
-    root.setProperty('--accent-contrast', getContrastColor(accentColor))
-    localStorage.setItem('armadillo-accent', accentColor)
-  }, [accentColor])
+    setConvexAuthToken(authToken ?? null)
+  }, [authToken])
 
   useEffect(() => {
     let cancelled = false
 
-    async function loadItems() {
-      const localItems = loadLocalItems()
-
-      if (!convexConfigured()) {
-        if (!cancelled) {
-          setItems(localItems)
-          setSelectedId(localItems[0]?.id || '')
+    async function reconcileCloud() {
+      if (!vaultSession || !cloudSyncEnabled || !convexConfigured()) {
+        if (!cloudSyncEnabled) {
           setSyncState('local')
-          setSyncMessage('Local mode')
+          setSyncMessage('Offline mode')
         }
         return
       }
 
       setSyncState('syncing')
-      setSyncMessage('Connecting to Convex...')
+      setSyncMessage('Syncing encrypted vault...')
 
       try {
-        const remote = await listVaultItems()
-        if (!cancelled && remote) {
-          setItems(remote.items)
-          setSelectedId((current) => current || remote.items[0]?.id || '')
-          setSyncState('live')
-          setSyncMessage(remote.ownerSource === 'auth' ? 'Synced (signed-in owner)' : 'Synced (anonymous owner)')
+        const remote = await pullRemoteSnapshot(vaultSession.file.vaultId)
+        if (cancelled || !remote) {
+          return
         }
+
+        if (remote.snapshot && remote.snapshot.revision > vaultSession.file.revision) {
+          try {
+            const remotePayload = await readPayloadWithSessionKey(vaultSession, remote.snapshot)
+            const nextSession: VaultSession = {
+              file: remote.snapshot,
+              payload: remotePayload,
+              vaultKey: vaultSession.vaultKey,
+            }
+            saveLocalVaultFile(nextSession.file)
+            applySession(nextSession)
+            setSyncState('live')
+            setSyncMessage(`Pulled remote encrypted update (${remote.ownerSource})`)
+            return
+          } catch {
+            setSyncState('error')
+            setSyncMessage('Remote snapshot cannot be decrypted with current unlocked vault')
+            return
+          }
+        }
+
+        await pushRemoteSnapshot(vaultSession.file)
+        setSyncState('live')
+        setSyncMessage(`Encrypted sync active (${remote.ownerSource})`)
       } catch {
         if (!cancelled) {
-          setItems(localItems)
-          setSelectedId(localItems[0]?.id || '')
           setSyncState('error')
-          setSyncMessage('Convex unavailable - local mode')
+          setSyncMessage('Cloud sync unavailable, local encrypted file remains canonical')
         }
       }
     }
 
-    void loadItems()
+    void reconcileCloud()
+
     return () => {
       cancelled = true
     }
-  }, [])
-
-  useEffect(() => {
-    if (syncState !== 'live') {
-      saveLocalItems(items)
-    }
-  }, [items, syncState])
-
-  useEffect(() => {
-    const selected = items.find((item) => item.id === selectedId) ?? null
-    setDraft(selected)
-  }, [items, selectedId])
+  }, [vaultSession, cloudSyncEnabled])
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -225,7 +224,7 @@ function App() {
   }, [items, query])
 
   const selected = filtered.find((item) => item.id === selectedId) ?? null
-  const effectivePlatform = platformOverride === 'auto' ? getAutoPlatform() : platformOverride
+  const effectivePlatform = getAutoPlatform()
 
   const folders = useMemo(() => {
     const set = new Set(items.map((item) => item.folder).filter(Boolean))
@@ -245,23 +244,97 @@ function App() {
     return { exposed, reused, weak, stale }
   }, [items])
 
-  const generatedPreview = useMemo(() => {
-    const chars = `ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789${includeSymbols ? '!@#$%^&*()-_=+[]{}' : ''}`
-    const safeChars = excludeAmbiguous ? chars.replace(/[O0Il|`~]/g, '') : chars
-    const entropyBump = (generatorNonce % safeChars.length) || 1
-    return Array.from({ length: genLength }, () => {
-      const random = Math.floor(Math.random() * safeChars.length)
-      return safeChars[(random + entropyBump) % safeChars.length]
-    }).join('')
-  }, [genLength, includeSymbols, excludeAmbiguous, generatorNonce])
-
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
   }
 
+  async function createVault() {
+    setVaultError('')
+
+    if (createPassword.length < 12) {
+      setVaultError('Master password must be at least 12 characters.')
+      return
+    }
+
+    if (createPassword !== confirmPassword) {
+      setVaultError('Master password confirmation does not match.')
+      return
+    }
+
+    try {
+      const session = await createVaultFile(createPassword)
+      saveLocalVaultFile(session.file)
+      applySession(session)
+      setPhase('ready')
+      setSyncState('local')
+      setSyncMessage('Encrypted local vault created (.armadillo)')
+      setCreatePassword('')
+      setConfirmPassword('')
+    } catch {
+      setVaultError('Failed to create encrypted vault.')
+    }
+  }
+
+  async function unlockVault() {
+    setVaultError('')
+    const file = loadLocalVaultFile()
+    if (!file) {
+      setVaultError('No local vault file found.')
+      setPhase('create')
+      return
+    }
+
+    try {
+      const session = await unlockVaultFile(file, unlockPassword)
+      applySession(session)
+      setPhase('ready')
+      setSyncMessage('Vault unlocked locally')
+      setUnlockPassword('')
+    } catch {
+      setVaultError('Invalid master password or corrupted vault file.')
+    }
+  }
+
+  function lockVault() {
+    setVaultSession(null)
+    setItems([])
+    setDraft(null)
+    setSelectedId('')
+    setPhase('unlock')
+    setSyncMessage('Vault locked')
+  }
+
+  async function persistItems(nextItems: VaultItem[]) {
+    if (!vaultSession) {
+      return
+    }
+
+    const nextSession = await rewriteVaultFile(vaultSession, { items: nextItems })
+    applySession(nextSession)
+    saveLocalVaultFile(nextSession.file)
+
+    if (cloudSyncEnabled && convexConfigured()) {
+      try {
+        setSyncState('syncing')
+        const result = await pushRemoteSnapshot(nextSession.file)
+        if (result) {
+          setSyncState('live')
+          setSyncMessage(result.accepted ? `Encrypted sync pushed (${result.ownerSource})` : 'Sync ignored older revision')
+        }
+      } catch {
+        setSyncState('error')
+        setSyncMessage('Encrypted change saved locally; cloud sync failed')
+      }
+    } else {
+      setSyncState('local')
+      setSyncMessage('Encrypted change saved locally')
+    }
+  }
+
   function createItem() {
     const item = buildEmptyItem()
-    setItems((current) => [item, ...current])
+    const next = [item, ...items]
+    void persistItems(next)
     setSelectedId(item.id)
     setDraft(item)
     setMobileStep('detail')
@@ -273,49 +346,18 @@ function App() {
     setIsSaving(true)
 
     const nextItem: VaultItem = { ...draft, updatedAt: new Date().toLocaleString() }
-    setItems((current) => current.map((item) => (item.id === nextItem.id ? nextItem : item)))
+    const nextItems = items.map((item) => (item.id === nextItem.id ? nextItem : item))
+    await persistItems(nextItems)
 
-    try {
-      const payload: SaveVaultItemInput = { ...nextItem }
-      const remote = await upsertVaultItem(payload)
-
-      if (remote) {
-        setItems((current) => current.map((item) => (item.id === remote.item.id ? remote.item : item)))
-        setSyncState('live')
-        setSyncMessage(remote.ownerSource === 'auth' ? 'Saved (signed-in owner)' : 'Saved (anonymous owner)')
-      } else {
-        setSyncState('local')
-        setSyncMessage('Saved locally')
-      }
-    } catch {
-      setSyncState('error')
-      setSyncMessage('Save failed - local changes retained')
-    } finally {
-      setIsSaving(false)
-    }
+    setIsSaving(false)
   }
 
   async function removeCurrentItem() {
     if (!draft) return
     const deletingId = draft.id
-
     const remaining = items.filter((item) => item.id !== deletingId)
-    setItems(remaining)
+    await persistItems(remaining)
     setSelectedId(remaining[0]?.id || '')
-
-    try {
-      const result = await deleteVaultItem(deletingId)
-      if (result) {
-        setSyncState('live')
-        setSyncMessage(result.ownerSource === 'auth' ? 'Deleted (signed-in owner)' : 'Deleted (anonymous owner)')
-      } else {
-        setSyncState('local')
-        setSyncMessage('Deleted locally')
-      }
-    } catch {
-      setSyncState('error')
-      setSyncMessage('Delete failed on Convex - removed locally')
-    }
   }
 
   async function copyPassword() {
@@ -335,6 +377,185 @@ function App() {
     setDraftField('securityQuestions', next)
   }
 
+  function exportVaultFile() {
+    if (!vaultSession) {
+      return
+    }
+
+    const text = serializeVaultFile(vaultSession.file)
+    const blob = new Blob([text], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `vault-${vaultSession.file.vaultId}.armadillo`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setSyncMessage('Encrypted vault exported (.armadillo)')
+  }
+
+  function triggerImport() {
+    importFileInputRef.current?.click()
+  }
+
+  async function onImportFileSelected(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    try {
+      const text = await file.text()
+      const parsed = parseVaultFileFromText(text)
+      saveLocalVaultFile(parsed)
+      setVaultSession(null)
+      setItems([])
+      setDraft(null)
+      setSelectedId('')
+      setPhase('unlock')
+      setSyncMessage('Encrypted vault imported. Unlock with master password.')
+    } catch {
+      setSyncMessage('Failed to import vault file')
+    }
+
+    event.currentTarget.value = ''
+  }
+
+  async function createPasskeyIdentity() {
+    try {
+      await bindPasskeyOwner()
+      setOwnerMode(getOwnerMode())
+      setSyncMessage('Passkey identity bound for cloud sync owner')
+    } catch {
+      setSyncMessage('Passkey setup failed or not supported on this device')
+    }
+  }
+
+  async function enableBiometricUnlock() {
+    if (!vaultSession) return
+    try {
+      await enrollBiometricQuickUnlock(vaultSession)
+      setBiometricEnabled(true)
+      setSyncMessage('Biometric quick unlock enabled on this device')
+    } catch {
+      setSyncMessage('Biometric enrollment failed on this device')
+    }
+  }
+
+  async function unlockVaultBiometric() {
+    const file = loadLocalVaultFile()
+    if (!file) {
+      setVaultError('No local vault file found.')
+      return
+    }
+
+    try {
+      const session = await unlockWithBiometric(file)
+      applySession(session)
+      setPhase('ready')
+      setSyncMessage('Vault unlocked with biometrics')
+    } catch {
+      setVaultError('Biometric unlock failed. Use master password.')
+    }
+  }
+
+  async function signInWithGoogle() {
+    try {
+      await signIn('google')
+      setAuthMessage('Google sign-in started')
+    } catch {
+      setAuthMessage('Google sign-in failed')
+    }
+  }
+
+  async function signOutCloud() {
+    try {
+      await signOut()
+      setAuthMessage('Signed out')
+    } catch {
+      setAuthMessage('Sign out failed')
+    }
+  }
+
+  if (phase === 'create') {
+    return (
+      <div className="app-shell">
+        <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
+          <h1>Create Local Armadillo Vault</h1>
+          <p className="muted">A local encrypted `.armadillo` vault file is the canonical database on this device.</p>
+          <p className="muted">{authStatus}</p>
+          <label>
+            Master Password
+            <input
+              type="password"
+              name="armadillo_new_master_password"
+              autoComplete="new-password"
+              value={createPassword}
+              onChange={(event) => setCreatePassword(event.target.value)}
+            />
+          </label>
+          <label>
+            Confirm Master Password
+            <input
+              type="password"
+              name="armadillo_confirm_master_password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </label>
+          {vaultError && <p style={{ color: '#d85f5f' }}>{vaultError}</p>}
+          <button className="solid" onClick={() => void createVault()}>Create Encrypted Vault</button>
+          {pendingVaultExists && <button className="ghost" onClick={() => setPhase('unlock')}>Unlock Existing Vault</button>}
+        </main>
+      </div>
+    )
+  }
+
+  if (phase === 'unlock') {
+    return (
+      <div className="app-shell">
+        <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
+          <h1>Unlock Armadillo Vault</h1>
+          <p className="muted">Unlock your local encrypted `.armadillo` vault with your master password.</p>
+          <p className="muted">{authStatus}</p>
+          <form
+            autoComplete="off"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void unlockVault()
+            }}
+          >
+            <label>
+              Master Password
+              <input
+                type="password"
+                name="armadillo_unlock_master_password"
+                autoComplete="new-password"
+                data-lpignore="true"
+                value={unlockPassword}
+                onChange={(event) => setUnlockPassword(event.target.value)}
+              />
+            </label>
+          </form>
+          {vaultError && <p style={{ color: '#d85f5f' }}>{vaultError}</p>}
+          <button className="solid" onClick={() => void unlockVault()}>Unlock Vault</button>
+          {biometricSupported() && pendingVaultExists && (
+            <button className="ghost" onClick={() => void unlockVaultBiometric()}>Unlock with Biometrics</button>
+          )}
+          <button className="ghost" onClick={triggerImport}>Import .armadillo Vault File</button>
+          {!pendingVaultExists && <button className="ghost" onClick={() => setPhase('create')}>Create New Vault</button>}
+        </main>
+        <input
+          ref={importFileInputRef}
+          type="file"
+          accept=".armadillo,application/octet-stream,application/json"
+          style={{ display: 'none' }}
+          onChange={(event) => void onImportFileSelected(event)}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className={`app-shell platform-${effectivePlatform}`}>
       <div className="shell-noise" aria-hidden="true" />
@@ -343,22 +564,43 @@ function App() {
         <div className="topbar-brand">
           <h1>Armadillo</h1>
           <div className={`sync-badge sync-${syncState}`}>{syncMessage}</div>
+          <div className="muted" style={{ fontSize: '.8rem' }}>{authStatus}</div>
         </div>
 
-        <div className="topbar-actions">
-          <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Settings">
-            Settings
+        <div className="topbar-actions" style={{ gap: '.5rem', flexWrap: 'wrap' }}>
+          <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
+          <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
+          {biometricSupported() && (
+            <button className={biometricEnabled ? 'solid' : 'ghost'} onClick={() => void enableBiometricUnlock()}>
+              {biometricEnabled ? 'Biometric Enabled' : 'Enable Biometric'}
+            </button>
+          )}
+          <button className={cloudSyncEnabled ? 'solid' : 'ghost'} onClick={() => setCloudSyncEnabled((value) => !value)}>
+            {cloudSyncEnabled ? 'Cloud Sync On' : 'Cloud Sync Off'}
           </button>
+          {!isAuthenticated ? (
+            <button className="ghost" onClick={() => void signInWithGoogle()}>Sign in with Google</button>
+          ) : (
+            <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
+          )}
+          <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Passkey Identity</button>
+          <button className="ghost" onClick={lockVault}>Lock</button>
           <button className="solid" onClick={createItem}>+ New Credential</button>
         </div>
       </header>
+
+      {authMessage && (
+        <div style={{ padding: '0 1rem .6rem', fontSize: '.82rem', color: '#8e9388' }}>
+          {authMessage}
+        </div>
+      )}
 
       {effectivePlatform === 'desktop' && (
         <div className="desktop-frame" aria-hidden="true">
           <span className="dot" />
           <span className="dot" />
           <span className="dot" />
-          <p>Armadillo Desktop Shell</p>
+          <p>Armadillo Desktop Shell · Owner: {ownerMode}</p>
         </div>
       )}
 
@@ -549,21 +791,54 @@ function App() {
               <p className="muted">Policy-aware generation with ambiguity controls.</p>
               <label>
                 Length: {genLength}
-                <input type="range" min={12} max={48} value={genLength} onChange={(event) => setGenLength(Number(event.target.value))} />
+                <input
+                  type="range"
+                  min={12}
+                  max={48}
+                  value={genLength}
+                  onChange={(event) => {
+                    const nextLength = Number(event.target.value)
+                    setGenLength(nextLength)
+                    setGeneratedPreview(generatePassword(nextLength, includeSymbols, excludeAmbiguous))
+                  }}
+                />
               </label>
               <div className="switches">
                 <label>
-                  <input type="checkbox" checked={includeSymbols} onChange={(event) => setIncludeSymbols(event.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={includeSymbols}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                      setIncludeSymbols(next)
+                      setGeneratedPreview(generatePassword(genLength, next, excludeAmbiguous))
+                    }}
+                  />
                   Include symbols
                 </label>
                 <label>
-                  <input type="checkbox" checked={excludeAmbiguous} onChange={(event) => setExcludeAmbiguous(event.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={excludeAmbiguous}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                      setExcludeAmbiguous(next)
+                      setGeneratedPreview(generatePassword(genLength, includeSymbols, next))
+                    }}
+                  />
                   Exclude ambiguous chars
                 </label>
               </div>
               <div className="preview">{generatedPreview}</div>
               <div className="gen-actions">
-                <button className="ghost" onClick={() => setGeneratorNonce((current) => current + 1)}>Regenerate</button>
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    setGeneratedPreview(generatePassword(genLength, includeSymbols, excludeAmbiguous))
+                  }}
+                >
+                  Regenerate
+                </button>
                 <button className="solid" onClick={() => { if (draft) { setDraftField('passwordMasked', generatedPreview); setActivePanel('details') } }}>
                   Use Password
                 </button>
@@ -574,7 +849,7 @@ function App() {
           {activePanel === 'security' && (
             <div className="security-panel">
               <h3>Security Center</h3>
-              <p className="muted">Vault health overview and remediation actions.</p>
+              <p className="muted">Vault health overview based on encrypted local data.</p>
               <ul>
                 <SecurityMetric count={securityCounts.exposed} label="Exposed credentials" detail="Entries marked as exposed" tone="danger" />
                 <SecurityMetric count={securityCounts.reused} label="Reused passwords" detail="Entries marked as reused" tone="caution" />
@@ -592,71 +867,29 @@ function App() {
         </section>
       </main>
 
-      {showSettings && (
-        <div className="settings-overlay">
-          <div className="settings-backdrop" onClick={() => setShowSettings(false)} />
-          <div className="settings-panel">
-            <div className="settings-header">
-              <h2>Settings</h2>
-              <button className="icon-btn" onClick={() => setShowSettings(false)} aria-label="Close settings">Close</button>
-            </div>
-            <div className="settings-body">
-              <div className="settings-section">
-                <h3>Theme</h3>
-                <div className="theme-grid">
-                  {THEME_PRESETS.map((preset) => (
-                    <div key={preset.id} className={`theme-card ${theme === preset.id ? 'active' : ''}`} onClick={() => setTheme(preset.id)}>
-                      <div className="theme-swatch">
-                        {preset.colors.map((color, i) => (
-                          <span key={i} style={{ background: color }} />
-                        ))}
-                      </div>
-                      <span className="theme-label">{preset.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+      <input
+        ref={importFileInputRef}
+        type="file"
+        accept=".armadillo,application/octet-stream,application/json"
+        style={{ display: 'none' }}
+        onChange={(event) => void onImportFileSelected(event)}
+      />
 
-              <div className="settings-section">
-                <h3>Accent Color</h3>
-                <div className="accent-grid">
-                  {ACCENT_COLORS.map((color) => (
-                    <div
-                      key={color.value}
-                      className={`accent-swatch ${accentColor === color.value ? 'active' : ''}`}
-                      style={{ background: color.value }}
-                      onClick={() => setAccentColor(color.value)}
-                      title={color.name}
-                    />
-                  ))}
-                </div>
-              </div>
+      <div style={{ padding: '0 1rem 1rem', fontSize: '.82rem', color: '#8e9388' }}>
+        Unlock methods: master password required. Biometric/passkey quick-unlock can be layered via platform integrations.
+        {convexConfigured() ? ' Convex sync endpoint configured.' : ' Convex sync endpoint not configured.'}
+      </div>
 
-              <div className="settings-section">
-                <h3>Display Density</h3>
-                <div className="toggle-row">
-                  <button className={density === 'compact' ? 'active' : ''} onClick={() => setDensity('compact')}>Compact</button>
-                  <button className={density === 'comfortable' ? 'active' : ''} onClick={() => setDensity('comfortable')}>Comfortable</button>
-                </div>
-              </div>
-
-              <div className="settings-section">
-                <h3>Platform Preview</h3>
-                <div className="platform-grid">
-                  {(['auto', 'web', 'desktop', 'mobile'] as PlatformOverride[]).map((p) => (
-                    <button key={p} className={platformOverride === p ? 'active' : ''} onClick={() => setPlatformOverride(p)}>
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      )}
+      <div style={{ padding: '0 1rem 1rem', display: 'flex', gap: '.5rem' }}>
+        <button className="ghost" onClick={() => { clearLocalVaultFile(); window.location.reload() }}>Reset Local Vault</button>
+      </div>
     </div>
   )
 }
 
 export default App
+
+
+
+
+
