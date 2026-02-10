@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
-import { convexConfigured, getCloudAuthStatus, pullRemoteSnapshot, pullRemoteVaultByOwner, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
+import { convexConfigured, getCloudAuthStatus, listRemoteVaultsByOwner, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from './lib/convexApi'
 import { bindPasskeyOwner, getOwnerMode } from './lib/owner'
 import { biometricEnrollmentExists, biometricSupported, enrollBiometricQuickUnlock, unlockWithBiometric } from './lib/biometric'
 import {
@@ -28,12 +28,7 @@ type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'e
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const riskOrder: RiskState[] = ['exposed', 'reused', 'weak', 'stale', 'safe']
 
-const shellSections = [
-  { name: 'All Items' },
-  { name: 'Favorites' },
-  { name: 'Shared' },
-  { name: 'Security Center' },
-]
+/* shell sections moved inline into sidebar nav */
 
 function riskLabel(risk: RiskState) {
   switch (risk) {
@@ -113,6 +108,7 @@ function App() {
   const [syncMessage, setSyncMessage] = useState('Offline mode')
   const [isSaving, setIsSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState(localStorage.getItem(CLOUD_SYNC_PREF_KEY) === 'true')
   const [ownerMode, setOwnerMode] = useState(getOwnerMode())
   const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
@@ -121,6 +117,8 @@ function App() {
   const [cloudIdentity, setCloudIdentity] = useState('')
   const [localVaultPath, setLocalVaultPath] = useState(() => getLocalVaultPath())
   const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
+  const [cloudVaultCandidates, setCloudVaultCandidates] = useState<ArmadilloVaultFile[]>([])
+  const [debugStatusLines, setDebugStatusLines] = useState<string[]>([])
 
   const [genLength, setGenLength] = useState(20)
   const [includeSymbols, setIncludeSymbols] = useState(true)
@@ -142,6 +140,11 @@ function App() {
     if (cloudAuthState === 'error') return 'Cloud auth check failed. Local vault is still available.'
     return 'Google account not connected'
   }, [cloudConnected, cloudIdentity, cloudAuthState, isAuthenticated, authToken])
+
+  function pushDebug(message: string) {
+    const timestamp = new Date().toLocaleTimeString()
+    setDebugStatusLines((prev) => [...prev.slice(-5), `${timestamp} ${message}`])
+  }
 
   function applySession(session: VaultSession) {
     setVaultSession(session)
@@ -183,10 +186,11 @@ function App() {
       setCloudAuthState('checking')
       try {
         const status = await getCloudAuthStatus()
+        console.log('[cloud-auth] /api/auth/status response', status)
         if (cancelled) return
 
         if (status?.authenticated) {
-          const identityLabel = status.email || status.name || status.subject || status.tokenIdentifier || 'Google account'
+          const identityLabel = status.email || status.name || 'Google account'
           setCloudAuthState('connected')
           setCloudIdentity(identityLabel)
         } else {
@@ -228,23 +232,45 @@ function App() {
   useEffect(() => {
     if (phase === 'ready' || cloudAuthState !== 'connected') {
       setCloudVaultSnapshot(null)
+      setCloudVaultCandidates([])
       return
     }
 
     let cancelled = false
 
     async function checkCloudVault() {
+      if (!authToken) {
+        setCloudVaultSnapshot(null)
+        setCloudVaultCandidates([])
+        setAuthMessage('Google session token pending. Retrying cloud check...')
+        pushDebug('[cloud] token pending')
+        return
+      }
+
+      setConvexAuthToken(authToken)
       setAuthMessage('Checking cloud for existing vault...')
       try {
-        const remote = await pullRemoteVaultByOwner()
+        const remote = await listRemoteVaultsByOwner()
         if (cancelled) return
 
-        if (remote?.snapshot) {
-          setCloudVaultSnapshot(remote.snapshot)
+        if (remote?.ownerSource === 'anonymous') {
+          setCloudVaultSnapshot(null)
+          setCloudVaultCandidates([])
+          setAuthMessage('Cloud request resolved as anonymous owner. Sign out and sign in with Google again.')
+          pushDebug('[cloud] owner resolved to anonymous')
+          return
+        }
+
+        if ((remote?.snapshots?.length || 0) > 0) {
+          const snapshots = remote?.snapshots || []
+          const latest = snapshots[0]
+          setCloudVaultSnapshot(latest)
+          setCloudVaultCandidates(snapshots)
+          pushDebug(`[cloud] snapshots found: ${snapshots.length}, latest v=${latest.vaultId} r=${latest.revision}`)
 
           // On the create screen (no local vault), auto-restore immediately
           if (phase === 'create') {
-            saveLocalVaultFile(remote.snapshot)
+            saveLocalVaultFile(latest)
             setAuthMessage('Found your cloud vault! Enter your master password to unlock it.')
             setPhase('unlock')
           } else {
@@ -252,14 +278,18 @@ function App() {
           }
         } else {
           setCloudVaultSnapshot(null)
+          setCloudVaultCandidates([])
           setAuthMessage('No cloud vault found for this account')
+          pushDebug('[cloud] no snapshot found')
         }
       } catch (err) {
         console.error('[armadillo] cloud vault check failed:', err)
         const detail = err instanceof Error ? err.message : String(err)
         if (!cancelled) {
           setCloudVaultSnapshot(null)
+          setCloudVaultCandidates([])
           setAuthMessage(`Cloud vault check failed: ${detail}`)
+          pushDebug(`[cloud] check failed: ${detail}`)
         }
       }
     }
@@ -268,7 +298,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [phase, cloudAuthState])
+  }, [phase, cloudAuthState, authToken])
 
   useEffect(() => {
     const shell = window.armadilloShell
@@ -387,6 +417,24 @@ function App() {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
   }
 
+  function buildPasswordCandidates(raw: string) {
+    const candidates: string[] = []
+    const pushUnique = (value: string) => {
+      if (value && !candidates.includes(value)) {
+        candidates.push(value)
+      }
+    }
+
+    pushUnique(raw)
+    pushUnique(raw.trim())
+    pushUnique(raw.normalize('NFC'))
+    pushUnique(raw.normalize('NFC').trim())
+    pushUnique(raw.replace(/[\u200B-\u200D\uFEFF]/g, ''))
+    pushUnique(raw.replace(/[\u200B-\u200D\uFEFF]/g, '').trim())
+
+    return candidates
+  }
+
   async function createVault() {
     setVaultError('')
 
@@ -422,23 +470,115 @@ function App() {
       setPhase('create')
       return
     }
+    console.log('[unlock] attempting local vault', {
+      vaultId: file.vaultId,
+      revision: file.revision,
+      kdf: file.kdf.algorithm,
+      updatedAt: file.updatedAt,
+    })
+    pushDebug(`[unlock] trying local v=${file.vaultId} r=${file.revision} kdf=${file.kdf.algorithm}`)
+
+    const passwordCandidates = buildPasswordCandidates(unlockPassword)
+    pushDebug(`[unlock] password variants: ${passwordCandidates.length}`)
 
     try {
-      const session = await unlockVaultFile(file, unlockPassword)
+      let session: VaultSession | null = null
+      let localLastError: unknown = null
+      for (const passwordCandidate of passwordCandidates) {
+        try {
+          session = await unlockVaultFile(file, passwordCandidate)
+          break
+        } catch (error) {
+          localLastError = error
+          // Try next password candidate.
+        }
+      }
+      if (!session) {
+        if (localLastError instanceof Error) {
+          pushDebug(`[unlock] local error: ${localLastError.name}: ${localLastError.message}`)
+        }
+        throw new Error('Local unlock failed for all password variants')
+      }
       applySession(session)
       setPhase('ready')
       setSyncMessage('Vault unlocked locally')
       setUnlockPassword('')
-    } catch {
+    } catch (initialError) {
+      if (cloudConnected && convexConfigured()) {
+        try {
+          setConvexAuthToken(authToken ?? null)
+          const remote = await listRemoteVaultsByOwner()
+          console.log('[unlock] cloud recovery list response', {
+            ownerSource: remote?.ownerSource,
+            count: remote?.snapshots?.length ?? 0,
+          })
+          pushDebug(`[unlock] recovery owner=${remote?.ownerSource ?? 'none'} candidates=${remote?.snapshots?.length ?? 0}`)
+          if (remote?.ownerSource === 'anonymous') {
+            setAuthMessage('Cloud recovery resolved as anonymous owner. Sign out and sign in with Google again.')
+            throw new Error('Cloud owner resolved to anonymous during signed-in recovery')
+          }
+          const candidates = (remote?.snapshots || []).filter(
+            (candidate) => candidate.vaultId !== file.vaultId || candidate.revision !== file.revision,
+          )
+          pushDebug(`[unlock] candidate list after excluding local: ${candidates.length}`)
+
+          for (const candidate of candidates) {
+            pushDebug(`[unlock] trying cloud candidate v=${candidate.vaultId} r=${candidate.revision}`)
+            try {
+              let recovered: VaultSession | null = null
+              let candidateLastError: unknown = null
+              for (const passwordCandidate of passwordCandidates) {
+                try {
+                  recovered = await unlockVaultFile(candidate, passwordCandidate)
+                  break
+                } catch (error) {
+                  candidateLastError = error
+                  // Try next password candidate.
+                }
+              }
+              if (!recovered) {
+                if (candidateLastError instanceof Error) {
+                  pushDebug(`[unlock] candidate error: ${candidateLastError.name}: ${candidateLastError.message}`)
+                }
+                throw new Error('Candidate failed for all password variants')
+              }
+              saveLocalVaultFile(candidate)
+              applySession(recovered)
+              setPhase('ready')
+              setSyncMessage('Vault unlocked from cloud snapshot')
+              setAuthMessage('Recovered using a matching cloud vault snapshot')
+              pushDebug(`[unlock] recovered from cloud v=${candidate.vaultId} r=${candidate.revision}`)
+              setUnlockPassword('')
+              return
+            } catch {
+              // Try next candidate.
+            }
+          }
+        } catch (recoveryError) {
+          console.error('[armadillo] cloud unlock recovery failed:', recoveryError)
+          pushDebug('[unlock] recovery request failed')
+        }
+      }
+
+      console.error('[armadillo] unlock failed:', initialError)
+      pushDebug('[unlock] failed for all candidates')
+      const detail = initialError instanceof Error ? `${initialError.name}: ${initialError.message}` : String(initialError)
+      if (detail.includes('crypto.subtle is unavailable') || detail.includes('Web Crypto API is unavailable')) {
+        setVaultError('This browser cannot decrypt vault data in the current context. Open the app over HTTPS/localhost or use the desktop app.')
+        return
+      }
       setVaultError('Invalid master password or corrupted vault file.')
     }
   }
 
-  function loadVaultFromCloud() {
-    if (!cloudVaultSnapshot) return
-    saveLocalVaultFile(cloudVaultSnapshot)
+  function loadVaultFromCloud(snapshot?: ArmadilloVaultFile) {
+    const chosen = snapshot || cloudVaultSnapshot
+    if (!chosen) return
+    saveLocalVaultFile(chosen)
     setCloudVaultSnapshot(null)
+    setCloudVaultCandidates([])
     setAuthMessage('Cloud vault loaded. Enter your master password to unlock it.')
+    pushDebug(`[cloud] loaded v=${chosen.vaultId} r=${chosen.revision}`)
     setPhase('unlock')
   }
 
@@ -677,6 +817,39 @@ function App() {
     }
   }
 
+  async function pushVaultToCloudNow() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before pushing to cloud')
+      return
+    }
+    if (!convexConfigured()) {
+      setSyncMessage('Convex is not configured')
+      return
+    }
+    if (!cloudConnected || !authToken) {
+      setSyncMessage('Sign in with Google before pushing to cloud')
+      return
+    }
+
+    try {
+      setConvexAuthToken(authToken)
+      setSyncState('syncing')
+      setSyncMessage('Pushing vault snapshot to cloud...')
+      const result = await pushRemoteSnapshot(vaultSession.file)
+      if (result?.ok) {
+        setSyncState('live')
+        setSyncMessage(`Manual cloud push complete (${result.ownerSource})`)
+      } else {
+        setSyncState('error')
+        setSyncMessage('Manual cloud push did not complete')
+      }
+    } catch (error) {
+      console.error('[armadillo] manual cloud push failed:', error)
+      setSyncState('error')
+      setSyncMessage('Manual cloud push failed')
+    }
+  }
+
   async function completeDesktopGoogleSignIn(callbackUrl: string) {
     try {
       const url = new URL(callbackUrl)
@@ -708,7 +881,7 @@ function App() {
   if (phase === 'create') {
     return (
       <div className="app-shell">
-        <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
+        <main className="detail-grid auth-screen">
           <h1>Create Local Armadillo Vault</h1>
           <p className="muted">A local encrypted `.armadillo` vault file is the canonical database on this device.</p>
           <section className="auth-status-card">
@@ -726,8 +899,24 @@ function App() {
             )}
           </section>
           {authMessage && <p className="muted" style={{ margin: 0 }}>{authMessage}</p>}
-          {cloudVaultSnapshot && (
-            <button className="solid" onClick={loadVaultFromCloud}>Load Vault from Cloud</button>
+          {debugStatusLines.length > 0 && (
+            <div className="muted" style={{ margin: 0, fontSize: '.75rem' }}>
+              {debugStatusLines.map((line) => <p key={line} style={{ margin: 0 }}>{line}</p>)}
+            </div>
+          )}
+          {cloudVaultCandidates.length > 0 && (
+            <div className="detail-grid" style={{ gap: '.45rem' }}>
+              <p className="muted" style={{ margin: 0 }}>Cloud snapshots:</p>
+              {cloudVaultCandidates.slice(0, 8).map((snapshot) => (
+                <button
+                  key={`${snapshot.vaultId}-${snapshot.revision}-${snapshot.updatedAt}`}
+                  className="solid"
+                  onClick={() => loadVaultFromCloud(snapshot)}
+                >
+                  {`Load ${snapshot.vaultId.slice(0, 8)} r${snapshot.revision} (${new Date(snapshot.updatedAt).toLocaleString()})`}
+                </button>
+              ))}
+            </div>
           )}
           {window.armadilloShell?.isElectron && (
             <>
@@ -766,7 +955,7 @@ function App() {
   if (phase === 'unlock') {
     return (
       <div className="app-shell">
-        <main className="detail-grid" style={{ maxWidth: 540, margin: '4rem auto' }}>
+        <main className="detail-grid auth-screen">
           <h1>Unlock Armadillo Vault</h1>
           <p className="muted">Unlock your local encrypted `.armadillo` vault with your master password.</p>
           <section className="auth-status-card">
@@ -784,6 +973,11 @@ function App() {
             )}
           </section>
           {authMessage && <p className="muted" style={{ margin: 0 }}>{authMessage}</p>}
+          {debugStatusLines.length > 0 && (
+            <div className="muted" style={{ margin: 0, fontSize: '.75rem' }}>
+              {debugStatusLines.map((line) => <p key={line} style={{ margin: 0 }}>{line}</p>)}
+            </div>
+          )}
           {window.armadilloShell?.isElectron && (
             <>
               <p className="muted" style={{ margin: 0 }}>Vault file path: {localVaultPath || 'Not set'}</p>
@@ -819,8 +1013,19 @@ function App() {
           {biometricSupported() && pendingVaultExists && (
             <button className="ghost" onClick={() => void unlockVaultBiometric()}>Unlock with Biometrics</button>
           )}
-          {cloudVaultSnapshot && (
-            <button className="solid" onClick={loadVaultFromCloud}>Load Vault from Cloud</button>
+          {cloudVaultCandidates.length > 0 && (
+            <div className="detail-grid" style={{ gap: '.45rem' }}>
+              <p className="muted" style={{ margin: 0 }}>Cloud snapshots:</p>
+              {cloudVaultCandidates.slice(0, 8).map((snapshot) => (
+                <button
+                  key={`${snapshot.vaultId}-${snapshot.revision}-${snapshot.updatedAt}`}
+                  className="solid"
+                  onClick={() => loadVaultFromCloud(snapshot)}
+                >
+                  {`Load ${snapshot.vaultId.slice(0, 8)} r${snapshot.revision} (${new Date(snapshot.updatedAt).toLocaleString()})`}
+                </button>
+              ))}
+            </div>
           )}
           <button className="ghost" onClick={triggerImport}>Import .armadillo Vault File</button>
           {!pendingVaultExists && <button className="ghost" onClick={() => setPhase('create')}>Create New Vault</button>}
@@ -844,41 +1049,20 @@ function App() {
         <div className="topbar-brand">
           <h1>Armadillo</h1>
           <div className={`sync-badge sync-${syncState}`}>{syncMessage}</div>
-          <div className="muted" style={{ fontSize: '.8rem' }}>{authStatus}</div>
         </div>
 
-        <div className="topbar-actions" style={{ gap: '.5rem', flexWrap: 'wrap' }}>
-          <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
-          <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
-          {window.armadilloShell?.isElectron && (
-            <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
-          )}
-          {biometricSupported() && (
-            <button className={biometricEnabled ? 'solid' : 'ghost'} onClick={() => void enableBiometricUnlock()}>
-              {biometricEnabled ? 'Biometric Enabled' : 'Enable Biometric'}
-            </button>
-          )}
-          <button className={cloudSyncEnabled ? 'solid' : 'ghost'} onClick={() => setCloudSyncEnabled((value) => !value)}>
-            {cloudSyncEnabled ? 'Cloud Sync On' : 'Cloud Sync Off'}
-          </button>
-          {!cloudConnected ? (
-            <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
-              {cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
-            </button>
-          ) : (
-            <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
-          )}
-          <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Passkey Identity</button>
-          <button className="ghost" onClick={lockVault}>Lock</button>
+        <div className="topbar-actions">
           <button className="solid" onClick={createItem}>+ New Credential</button>
+          <button className="icon-btn" onClick={lockVault} title="Lock vault">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          </button>
+          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd"/></svg>
+          </button>
         </div>
       </header>
 
-      {authMessage && (
-        <div style={{ padding: '0 1rem .6rem', fontSize: '.82rem', color: '#8e9388' }}>
-          {authMessage}
-        </div>
-      )}
+      {authMessage && <div className="auth-message">{authMessage}</div>}
 
       {effectivePlatform === 'desktop' && (
         <div className="desktop-frame" aria-hidden="true">
@@ -891,32 +1075,54 @@ function App() {
 
       <main className={`workspace density-${density}`}>
         <aside className={`pane pane-left ${mobileStep === 'nav' ? 'mobile-active' : ''}`}>
-          <section className="plate">
+          <div className="sidebar-header">
             <h2>Vault</h2>
-            <p className="muted">{items.length} item(s)</p>
-            <ul className="section-list">
-              {shellSections.map((section) => (
-                <li key={section.name} className={section.name === 'All Items' ? 'active' : ''} onClick={() => setMobileStep('list')}>
-                  <span>{section.name}</span>
-                  <span>{section.name === 'All Items' ? items.length : ''}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
+            <span className="sidebar-count">{items.length} items</span>
+          </div>
 
-          <section className="plate">
-            <h3>Folders</h3>
-            <ul className="token-list">
-              {folders.length === 0 ? <li>None</li> : folders.map((folder) => <li key={folder}>{folder}</li>)}
-            </ul>
-          </section>
+          <nav className="sidebar-nav">
+            <button className="sidebar-nav-item active" onClick={() => setMobileStep('list')}>
+              <span>All Items</span>
+              <span className="sidebar-badge">{items.length}</span>
+            </button>
+            <button className="sidebar-nav-item" onClick={() => { setActivePanel('security'); setMobileStep('detail') }}>
+              <span>Security Center</span>
+              {(securityCounts.exposed + securityCounts.weak) > 0 && (
+                <span className="sidebar-badge warn">{securityCounts.exposed + securityCounts.weak}</span>
+              )}
+            </button>
+          </nav>
 
-          <section className="plate">
-            <h3>Categories</h3>
-            <ul className="token-list categories">
-              {categories.length === 0 ? <li>None</li> : categories.map((category) => <li key={category}>{category}</li>)}
-            </ul>
-          </section>
+          {(securityCounts.exposed > 0 || securityCounts.weak > 0 || securityCounts.reused > 0 || securityCounts.stale > 0) && (
+            <div className="sidebar-health">
+              {securityCounts.exposed > 0 && <span className="health-dot exposed">{securityCounts.exposed} exposed</span>}
+              {securityCounts.weak > 0 && <span className="health-dot weak">{securityCounts.weak} weak</span>}
+              {securityCounts.reused > 0 && <span className="health-dot reused">{securityCounts.reused} reused</span>}
+              {securityCounts.stale > 0 && <span className="health-dot stale">{securityCounts.stale} stale</span>}
+            </div>
+          )}
+
+          {folders.length > 0 && (
+            <div className="sidebar-section">
+              <h3>Folders</h3>
+              <div className="sidebar-tags">
+                {folders.map((folder) => (
+                  <button key={folder} className="sidebar-tag" onClick={() => { setQuery(folder); setMobileStep('list') }}>{folder}</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {categories.length > 0 && (
+            <div className="sidebar-section">
+              <h3>Categories</h3>
+              <div className="sidebar-tags">
+                {categories.map((cat) => (
+                  <button key={cat} className="sidebar-tag" onClick={() => { setQuery(cat); setMobileStep('list') }}>{cat}</button>
+                ))}
+              </div>
+            </div>
+          )}
         </aside>
 
         <section className={`pane pane-middle ${mobileStep === 'list' ? 'mobile-active' : ''}`}>
@@ -1144,13 +1350,15 @@ function App() {
             </div>
           )}
 
-          <div className="mobile-nav">
-            <button onClick={() => setMobileStep('nav')}>Taxonomy</button>
-            <button onClick={() => setMobileStep('list')}>Items</button>
-            <button onClick={() => setMobileStep('detail')}>Detail</button>
-          </div>
         </section>
       </main>
+
+      <div className="mobile-nav">
+        <button className={mobileStep === 'nav' ? 'active' : ''} onClick={() => setMobileStep('nav')}>Menu</button>
+        <button className={mobileStep === 'list' ? 'active' : ''} onClick={() => setMobileStep('list')}>Vault</button>
+        <button className={mobileStep === 'detail' ? 'active' : ''} onClick={() => setMobileStep('detail')}>Detail</button>
+      </div>
+      <div className="mobile-nav-spacer" />
 
       <input
         ref={importFileInputRef}
@@ -1160,21 +1368,90 @@ function App() {
         onChange={(event) => void onImportFileSelected(event)}
       />
 
-      <div style={{ padding: '0 1rem 1rem', fontSize: '.82rem', color: '#8e9388' }}>
-        Unlock methods: master password required. Biometric/passkey quick-unlock can be layered via platform integrations.
-        {convexConfigured() ? ' Convex sync endpoint configured.' : ' Convex sync endpoint not configured.'}
-        {window.armadilloShell?.isElectron ? ` Local vault path: ${localVaultPath || 'Not set'}.` : ''}
-      </div>
+      {showSettings && (
+        <div className="settings-overlay">
+          <div className="settings-backdrop" onClick={() => setShowSettings(false)} />
+          <div className="settings-panel">
+            <div className="settings-header">
+              <h2>Settings</h2>
+              <button className="icon-btn" onClick={() => setShowSettings(false)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="settings-body">
+              <section className="settings-section">
+                <h3>Account</h3>
+                <div className="settings-identity">
+                  <span className={`dot-status ${cloudConnected ? 'connected' : 'disconnected'}`} />
+                  <span>{cloudConnected ? cloudIdentity || 'Google connected' : 'Not signed in'}</span>
+                </div>
+                <div className="settings-action-list">
+                  {!cloudConnected ? (
+                    <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
+                      {cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                    </button>
+                  ) : (
+                    <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
+                  )}
+                  <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Passkey Identity</button>
+                </div>
+              </section>
 
-      <div style={{ padding: '0 1rem 1rem', display: 'flex', gap: '.5rem' }}>
-        <button className="ghost" onClick={() => { clearLocalVaultFile(); window.location.reload() }}>Reset Local Vault</button>
-      </div>
+              <div className="settings-divider" />
+
+              <section className="settings-section">
+                <h3>Cloud Sync</h3>
+                <div className="settings-toggle-row">
+                  <span>Auto Sync</span>
+                  <button className={cloudSyncEnabled ? 'solid' : 'ghost'} onClick={() => setCloudSyncEnabled((v) => !v)}>
+                    {cloudSyncEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <div className="settings-action-list">
+                  <button className="ghost" onClick={() => void pushVaultToCloudNow()}>Push Vault to Cloud Now</button>
+                </div>
+              </section>
+
+              <div className="settings-divider" />
+
+              <section className="settings-section">
+                <h3>Security</h3>
+                <div className="settings-action-list">
+                  {biometricSupported() && (
+                    <button className={biometricEnabled ? 'solid' : 'ghost'} onClick={() => void enableBiometricUnlock()}>
+                      {biometricEnabled ? 'Biometric Enabled' : 'Enable Biometric'}
+                    </button>
+                  )}
+                </div>
+              </section>
+
+              <div className="settings-divider" />
+
+              <section className="settings-section">
+                <h3>Vault</h3>
+                <div className="settings-action-list">
+                  <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
+                  <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
+                  {window.armadilloShell?.isElectron && (
+                    <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+                  )}
+                </div>
+              </section>
+
+              <div className="settings-divider" />
+
+              <section className="settings-section">
+                <h3>Danger Zone</h3>
+                <div className="settings-action-list">
+                  <button className="ghost" onClick={() => { clearLocalVaultFile(); window.location.reload() }}>Reset Local Vault</button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 export default App
-
-
-
-

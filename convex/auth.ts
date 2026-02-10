@@ -15,6 +15,10 @@ export const { auth, signIn, signOut, store } = convexAuth({
       if (/^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(redirectTo)) {
         return redirectTo
       }
+      // Allow HTTPS ngrok dev tunnels.
+      if (/^https:\/\/[a-z0-9-]+\.ngrok-free\.app(\/|$)/.test(redirectTo)) {
+        return redirectTo
+      }
       const siteUrl = (process.env.SITE_URL || '').replace(/\/$/, '')
 
       if (redirectTo.startsWith('?') || redirectTo.startsWith('/')) {

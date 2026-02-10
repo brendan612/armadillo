@@ -27,6 +27,11 @@ type PullResponse = {
   ownerSource: SyncIdentitySource
 }
 
+type ListByOwnerResponse = {
+  snapshots: ArmadilloVaultFile[]
+  ownerSource: SyncIdentitySource
+}
+
 type PushResponse = {
   ok: boolean
   accepted: boolean
@@ -83,6 +88,14 @@ export async function pullRemoteVaultByOwner(): Promise<PullResponse | null> {
   }
 
   return postJson<PullResponse>('/api/sync/pull-by-owner', {})
+}
+
+export async function listRemoteVaultsByOwner(): Promise<ListByOwnerResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+
+  return postJson<ListByOwnerResponse>('/api/sync/list-by-owner', {})
 }
 
 export async function pullRemoteSnapshot(vaultId: string): Promise<PullResponse | null> {

@@ -1,6 +1,7 @@
 import { httpRouter } from 'convex/server'
 import { api } from './_generated/api'
 import { httpAction } from './_generated/server'
+import type { Id } from './_generated/dataModel'
 import { auth } from './auth'
 
 type OwnerSource = 'auth' | 'anonymous'
@@ -30,8 +31,11 @@ async function resolveIdentity(
   try {
     const identity = await ctx.auth?.getUserIdentity?.()
     if (!identity) {
+      console.log('[auth/status] getUserIdentity: null')
       return null
     }
+    console.log('[auth/status] getUserIdentity keys:', Object.keys(identity))
+    console.log('[auth/status] getUserIdentity payload:', JSON.stringify(identity, null, 2))
 
     const subject = typeof identity.subject === 'string' ? identity.subject : null
     const email = typeof identity.email === 'string' ? identity.email : null
@@ -59,7 +63,8 @@ async function resolveOwner(
   try {
     const identity = await ctx.auth?.getUserIdentity?.()
     if (identity?.subject) {
-      return { ownerId: `user:${identity.subject}`, ownerSource: 'auth' as OwnerSource }
+      const userId = identity.subject.split('|')[0]
+      return { ownerId: `user:${userId}`, ownerSource: 'auth' as OwnerSource }
     }
   } catch {
     // Fall through to anonymous owner hint for offline/unauthenticated mode.
@@ -88,16 +93,67 @@ http.route({
     if (!identity) {
       return json({ authenticated: false })
     }
+    console.log('[auth/status] normalized identity:', JSON.stringify(identity, null, 2))
 
-    // JWT claims don't include email/name -- look them up from the users table
+    // JWT claims may omit email/name -- look them up from auth tables.
     let email = identity.email
     let name = identity.name
-    const identifier = identity.tokenIdentifier || identity.subject
-    if ((!email || !name) && identifier) {
+
+    const subjectUserId = identity.subject?.split('|')[0] || null
+    const subjectSessionId = identity.subject?.split('|')[1] || null
+    console.log('[auth/status] subjectUserId:', subjectUserId)
+    console.log('[auth/status] subjectSessionId:', subjectSessionId)
+    if ((!email || !name) && subjectUserId) {
+      try {
+        const user = await ctx.db.get(subjectUserId as Id<'users'>)
+        console.log('[auth/status] user by subject id:', user)
+        if (user) {
+          email = email || user.email || null
+          name = name || user.name || null
+        }
+      } catch {
+        // Fall through to tokenIdentifier lookup.
+      }
+    }
+
+    if ((!email || !name) && subjectSessionId) {
+      try {
+        const session = await ctx.db.get(subjectSessionId as Id<'authSessions'>)
+        console.log('[auth/status] session by subject session id:', session)
+        if (session?.userId) {
+          const userFromSession = await ctx.db.get(session.userId)
+          console.log('[auth/status] user by session.userId:', userFromSession)
+          if (userFromSession) {
+            email = email || userFromSession.email || null
+            name = name || userFromSession.name || null
+          }
+        }
+      } catch {
+        // Fall through to tokenIdentifier lookup.
+      }
+    }
+
+    if (!email && subjectUserId) {
+      try {
+        const googleAccount = await ctx.db
+          .query('authAccounts')
+          .withIndex('userIdAndProvider', (q) => q.eq('userId', subjectUserId as Id<'users'>).eq('provider', 'google'))
+          .unique()
+        console.log('[auth/status] google authAccount by userId:', googleAccount)
+        if (googleAccount?.emailVerified) {
+          email = googleAccount.emailVerified
+        }
+      } catch {
+        // Fall through to tokenIdentifier lookup.
+      }
+    }
+
+    if ((!email || !name) && identity.tokenIdentifier) {
       try {
         const profile = await ctx.runQuery(api.sync.getUserProfile, {
-          tokenIdentifier: identifier,
+          tokenIdentifier: identity.tokenIdentifier,
         })
+        console.log('[auth/status] profile by tokenIdentifier:', profile)
         if (profile) {
           email = email || profile.email
           name = name || profile.name
@@ -107,13 +163,15 @@ http.route({
       }
     }
 
-    return json({
+    const response = {
       authenticated: true,
       subject: identity.subject,
       email,
       name,
       tokenIdentifier: identity.tokenIdentifier,
-    })
+    }
+    console.log('[auth/status] response:', JSON.stringify(response, null, 2))
+    return json(response)
   }),
 })
 
@@ -136,6 +194,12 @@ http.route({
 })
 
 http.route({
+  path: '/api/sync/list-by-owner',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
   path: '/api/sync/pull-by-owner',
   method: 'POST',
   handler: httpAction(async (ctx, request) => {
@@ -144,11 +208,73 @@ http.route({
       return json({ error: 'Owner could not be resolved.' }, 401)
     }
 
-    const snapshot = await ctx.runQuery(api.sync.pullByOwner, {
+    let snapshot = await ctx.runQuery(api.sync.pullByOwner, {
       ownerId: owner.ownerId,
     })
 
+    if (!snapshot && owner.ownerSource === 'auth' && owner.ownerId.startsWith('user:')) {
+      const userId = owner.ownerId.slice('user:'.length)
+      snapshot = await ctx.runQuery(api.sync.pullByLegacyUserPrefix, { userId })
+      if (snapshot) {
+        console.log('[sync/pull-by-owner] resolved legacy snapshot for userId:', userId)
+      }
+    }
+
     return json({ snapshot: snapshot ? JSON.parse(snapshot.encryptedFile) : null, ownerSource: owner.ownerSource })
+  }),
+})
+
+http.route({
+  path: '/api/sync/list-by-owner',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+
+    const seen = new Set<string>()
+    const entries: Array<{ vaultId: string; revision: number; encryptedFile: string; updatedAt: string }> = []
+
+    const primary = await ctx.runQuery(api.sync.listByOwner, {
+      ownerId: owner.ownerId,
+    })
+
+    for (const entry of primary) {
+      const key = `${entry.ownerId}|${entry.vaultId}|${entry.revision}|${entry.updatedAt}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        entries.push({
+          vaultId: entry.vaultId,
+          revision: entry.revision,
+          encryptedFile: entry.encryptedFile,
+          updatedAt: entry.updatedAt,
+        })
+      }
+    }
+
+    if (owner.ownerSource === 'auth' && owner.ownerId.startsWith('user:')) {
+      const userId = owner.ownerId.slice('user:'.length)
+      const legacy = await ctx.runQuery(api.sync.listByLegacyUserPrefix, { userId })
+      for (const entry of legacy) {
+        const key = `${entry.ownerId}|${entry.vaultId}|${entry.revision}|${entry.updatedAt}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          entries.push({
+            vaultId: entry.vaultId,
+            revision: entry.revision,
+            encryptedFile: entry.encryptedFile,
+            updatedAt: entry.updatedAt,
+          })
+        }
+      }
+    }
+
+    const snapshots = entries
+      .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))
+      .map((entry) => JSON.parse(entry.encryptedFile))
+
+    return json({ snapshots, ownerSource: owner.ownerSource })
   }),
 })
 

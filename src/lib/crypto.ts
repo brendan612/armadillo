@@ -4,6 +4,21 @@ import { utf8ToBytes } from '@noble/hashes/utils.js'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+function requireWebCrypto() {
+  if (typeof crypto === 'undefined') {
+    throw new Error('Web Crypto API is unavailable in this browser context. Use HTTPS/localhost or the desktop app.')
+  }
+  return crypto
+}
+
+function requireSubtleCrypto() {
+  const webCrypto = requireWebCrypto()
+  if (!webCrypto.subtle) {
+    throw new Error('crypto.subtle is unavailable. Open Armadillo over HTTPS/localhost, or use the desktop app.')
+  }
+  return webCrypto.subtle
+}
+
 function toBase64(bytes: Uint8Array) {
   let binary = ''
   for (const value of bytes) {
@@ -23,7 +38,7 @@ function fromBase64(encoded: string) {
 
 function randomBytes(length: number) {
   const bytes = new Uint8Array(length)
-  crypto.getRandomValues(bytes)
+  requireWebCrypto().getRandomValues(bytes)
   return bytes
 }
 
@@ -43,8 +58,9 @@ async function deriveKeyBytesArgon2id(password: string, salt: Uint8Array, iterat
 }
 
 async function deriveLegacyKeyBytesPbkdf2(password: string, salt: Uint8Array, iterations: number) {
-  const passwordKey = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits'])
-  const bits = await crypto.subtle.deriveBits(
+  const subtle = requireSubtleCrypto()
+  const passwordKey = await subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits'])
+  const bits = await subtle.deriveBits(
     {
       name: 'PBKDF2',
       salt: toArrayBuffer(salt),
@@ -81,12 +97,13 @@ async function deriveMasterKeyRawBytes(params: {
 }
 
 async function importAesKeyFromBytes(bytes: Uint8Array) {
-  return crypto.subtle.importKey('raw', toArrayBuffer(bytes), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  return requireSubtleCrypto().importKey('raw', toArrayBuffer(bytes), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 
 async function encryptBytesWithKey(key: CryptoKey, bytes: Uint8Array) {
+  const subtle = requireSubtleCrypto()
   const nonce = randomBytes(12)
-  const encrypted = await crypto.subtle.encrypt(
+  const encrypted = await subtle.encrypt(
     {
       name: 'AES-GCM',
       iv: toArrayBuffer(nonce),
@@ -101,9 +118,10 @@ async function encryptBytesWithKey(key: CryptoKey, bytes: Uint8Array) {
 }
 
 async function decryptBytesWithKey(key: CryptoKey, encrypted: { nonce: string; ciphertext: string }) {
+  const subtle = requireSubtleCrypto()
   const nonce = fromBase64(encrypted.nonce)
   const ciphertext = fromBase64(encrypted.ciphertext)
-  const decrypted = await crypto.subtle.decrypt(
+  const decrypted = await subtle.decrypt(
     {
       name: 'AES-GCM',
       iv: toArrayBuffer(nonce),
@@ -115,7 +133,7 @@ async function decryptBytesWithKey(key: CryptoKey, encrypted: { nonce: string; c
 }
 
 export async function createVaultKey() {
-  return crypto.subtle.generateKey(
+  return requireSubtleCrypto().generateKey(
     {
       name: 'AES-GCM',
       length: 256,
@@ -126,13 +144,13 @@ export async function createVaultKey() {
 }
 
 export async function wrapVaultKey(masterKey: CryptoKey, vaultKey: CryptoKey) {
-  const rawVaultKey = await crypto.subtle.exportKey('raw', vaultKey)
+  const rawVaultKey = await requireSubtleCrypto().exportKey('raw', vaultKey)
   return encryptBytesWithKey(masterKey, new Uint8Array(rawVaultKey))
 }
 
 export async function unwrapVaultKey(masterKey: CryptoKey, wrapped: { nonce: string; ciphertext: string }) {
   const rawKey = await decryptBytesWithKey(masterKey, wrapped)
-  return crypto.subtle.importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  return requireSubtleCrypto().importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
 }
 
 export async function encryptJsonWithKey<T>(key: CryptoKey, value: T) {

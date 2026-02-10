@@ -1,15 +1,17 @@
 import { mutation, query } from './_generated/server'
+import type { Id } from './_generated/dataModel'
 import { v } from 'convex/values'
 
 export const getUserProfile = query({
   args: { tokenIdentifier: v.string() },
   handler: async (ctx, args) => {
-    // tokenIdentifier format is "issuer|userId" — extract the userId part
+    // tokenIdentifier format is usually "issuer|userId|sessionId".
+    // Extract userId (the 2nd segment), not the sessionId.
     const parts = args.tokenIdentifier.split('|')
-    const rawId = parts.length > 1 ? parts[parts.length - 1] : parts[0]
+    const rawId = parts.length >= 2 ? parts[1] : parts[0]
 
     try {
-      const user = await ctx.db.get(rawId as any)
+      const user = await ctx.db.get(rawId as Id<'users'>)
       if (!user) return null
       return {
         email: user.email ?? null,
@@ -42,6 +44,53 @@ export const pullByOwner = query({
       encryptedFile: latest.encryptedFile,
       updatedAt: latest.updatedAt,
     }
+  },
+})
+
+export const listByOwner = query({
+  args: {
+    ownerId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query('vaultSnapshots')
+      .withIndex('by_owner', (q) => q.eq('ownerId', args.ownerId))
+      .collect()
+  },
+})
+
+export const pullByLegacyUserPrefix = query({
+  args: {
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Legacy owner IDs were stored as user:<userId>|<sessionId>.
+    const prefix = `user:${args.userId}|`
+    const snapshots = await ctx.db.query('vaultSnapshots').collect()
+    const legacyMatches = snapshots.filter((snapshot) => snapshot.ownerId.startsWith(prefix))
+
+    if (legacyMatches.length === 0) {
+      return null
+    }
+
+    const latest = legacyMatches.sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))[0]
+    return {
+      revision: latest.revision,
+      encryptedFile: latest.encryptedFile,
+      updatedAt: latest.updatedAt,
+    }
+  },
+})
+
+export const listByLegacyUserPrefix = query({
+  args: {
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Legacy owner IDs were stored as user:<userId>|<sessionId>.
+    const prefix = `user:${args.userId}|`
+    const snapshots = await ctx.db.query('vaultSnapshots').collect()
+    return snapshots.filter((snapshot) => snapshot.ownerId.startsWith(prefix))
   },
 })
 
@@ -106,3 +155,4 @@ export const pushByOwnerVault = mutation({
     return { accepted: true }
   },
 })
+
