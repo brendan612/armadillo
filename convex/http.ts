@@ -31,11 +31,8 @@ async function resolveIdentity(
   try {
     const identity = await ctx.auth?.getUserIdentity?.()
     if (!identity) {
-      console.log('[auth/status] getUserIdentity: null')
       return null
     }
-    console.log('[auth/status] getUserIdentity keys:', Object.keys(identity))
-    console.log('[auth/status] getUserIdentity payload:', JSON.stringify(identity, null, 2))
 
     const subject = typeof identity.subject === 'string' ? identity.subject : null
     const email = typeof identity.email === 'string' ? identity.email : null
@@ -93,7 +90,6 @@ http.route({
     if (!identity) {
       return json({ authenticated: false })
     }
-    console.log('[auth/status] normalized identity:', JSON.stringify(identity, null, 2))
 
     // JWT claims may omit email/name -- look them up from auth tables.
     let email = identity.email
@@ -101,12 +97,9 @@ http.route({
 
     const subjectUserId = identity.subject?.split('|')[0] || null
     const subjectSessionId = identity.subject?.split('|')[1] || null
-    console.log('[auth/status] subjectUserId:', subjectUserId)
-    console.log('[auth/status] subjectSessionId:', subjectSessionId)
     if ((!email || !name) && subjectUserId) {
       try {
         const user = await ctx.db.get(subjectUserId as Id<'users'>)
-        console.log('[auth/status] user by subject id:', user)
         if (user) {
           email = email || user.email || null
           name = name || user.name || null
@@ -119,10 +112,8 @@ http.route({
     if ((!email || !name) && subjectSessionId) {
       try {
         const session = await ctx.db.get(subjectSessionId as Id<'authSessions'>)
-        console.log('[auth/status] session by subject session id:', session)
         if (session?.userId) {
           const userFromSession = await ctx.db.get(session.userId)
-          console.log('[auth/status] user by session.userId:', userFromSession)
           if (userFromSession) {
             email = email || userFromSession.email || null
             name = name || userFromSession.name || null
@@ -139,7 +130,6 @@ http.route({
           .query('authAccounts')
           .withIndex('userIdAndProvider', (q) => q.eq('userId', subjectUserId as Id<'users'>).eq('provider', 'google'))
           .unique()
-        console.log('[auth/status] google authAccount by userId:', googleAccount)
         if (googleAccount?.emailVerified) {
           email = googleAccount.emailVerified
         }
@@ -153,7 +143,6 @@ http.route({
         const profile = await ctx.runQuery(api.sync.getUserProfile, {
           tokenIdentifier: identity.tokenIdentifier,
         })
-        console.log('[auth/status] profile by tokenIdentifier:', profile)
         if (profile) {
           email = email || profile.email
           name = name || profile.name
@@ -170,7 +159,6 @@ http.route({
       name,
       tokenIdentifier: identity.tokenIdentifier,
     }
-    console.log('[auth/status] response:', JSON.stringify(response, null, 2))
     return json(response)
   }),
 })
@@ -215,9 +203,6 @@ http.route({
     if (!snapshot && owner.ownerSource === 'auth' && owner.ownerId.startsWith('user:')) {
       const userId = owner.ownerId.slice('user:'.length)
       snapshot = await ctx.runQuery(api.sync.pullByLegacyUserPrefix, { userId })
-      if (snapshot) {
-        console.log('[sync/pull-by-owner] resolved legacy snapshot for userId:', userId)
-      }
     }
 
     return json({ snapshot: snapshot ? JSON.parse(snapshot.encryptedFile) : null, ownerSource: owner.ownerSource })

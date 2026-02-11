@@ -48,6 +48,18 @@ contextBridge.exposeInMainWorld('armadilloShell', {
   openExternal: (url) => shell.openExternal(url),
   chooseVaultSavePath: (currentPath) => ipcRenderer.invoke('armadillo:choose-vault-save-path', currentPath),
   getOAuthCallbackUrl: () => ipcRenderer.invoke('armadillo:get-oauth-callback-url'),
+  autofillCredentials: (username, password) => ipcRenderer.invoke('armadillo:autofill-credentials', { username, password }),
+  minimizeWindow: () => ipcRenderer.invoke('armadillo:window-minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('armadillo:window-toggle-maximize'),
+  isWindowMaximized: () => ipcRenderer.invoke('armadillo:window-is-maximized'),
+  closeWindow: () => ipcRenderer.invoke('armadillo:window-close'),
+  onWindowMaximizedChanged: (callback) => {
+    const listener = (_, maximized) => callback(Boolean(maximized));
+    ipcRenderer.on('armadillo:window-maximized-changed', listener);
+    return () => {
+      ipcRenderer.removeListener('armadillo:window-maximized-changed', listener);
+    };
+  },
   onOAuthCallback: (callback) => {
     const listener = (_, url) => callback(url);
     ipcRenderer.on('armadillo:oauth-callback', listener);

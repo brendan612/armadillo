@@ -1,9 +1,12 @@
 const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
 const http = require('http');
 const path = require('node:path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 
 const isDev = !app.isPackaged;
 const deepLinkProtocol = 'armadillo';
+const execFileAsync = promisify(execFile);
 let mainWindow = null;
 let oauthServer = null;
 let oauthCallbackUrl = null;
@@ -98,6 +101,51 @@ function registerDeepLinkHandlers() {
   });
 }
 
+function toBase64(value) {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
+async function runWindowsAutofill(username, password) {
+  const userBase64 = toBase64(username);
+  const passBase64 = toBase64(password);
+  const script = `
+$u=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${userBase64}'));
+$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${passBase64}'));
+Add-Type -AssemblyName System.Windows.Forms;
+$ws=New-Object -ComObject WScript.Shell;
+function Escape-SendKeys([string]$text){
+  $escaped='';
+  foreach($ch in $text.ToCharArray()){
+    switch($ch){
+      '+' {$escaped+='{+}'}
+      '^' {$escaped+='{^}'}
+      '%' {$escaped+='{%}'}
+      '~' {$escaped+='{~}'}
+      '(' {$escaped+='{(}'}
+      ')' {$escaped+='{)}'}
+      '[' {$escaped+='{[}'}
+      ']' {$escaped+='{]}'}
+      '{' {$escaped+='{{}'}
+      '}' {$escaped+='{}}'}
+      default {$escaped+=$ch}
+    }
+  }
+  return $escaped;
+}
+Start-Sleep -Milliseconds 140;
+$ws.SendKeys('%{TAB}');
+Start-Sleep -Milliseconds 280;
+$ws.SendKeys((Escape-SendKeys $u));
+Start-Sleep -Milliseconds 90;
+$ws.SendKeys('{TAB}');
+Start-Sleep -Milliseconds 90;
+$ws.SendKeys((Escape-SendKeys $p));
+Start-Sleep -Milliseconds 90;
+$ws.SendKeys('{ENTER}');
+`;
+  await execFileAsync('powershell.exe', ['-NoProfile', '-Command', script]);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1500,
@@ -106,6 +154,9 @@ function createWindow() {
     minHeight: 760,
     title: 'Armadillo',
     backgroundColor: '#f2ede4',
+    frame: false,
+    titleBarStyle: 'hidden',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -142,6 +193,16 @@ function createWindow() {
       void shell.openExternal(url);
     }
   });
+
+  const emitMaximizedState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('armadillo:window-maximized-changed', mainWindow.isMaximized());
+  };
+
+  mainWindow.on('maximize', emitMaximizedState);
+  mainWindow.on('unmaximize', emitMaximizedState);
+  mainWindow.on('enter-full-screen', emitMaximizedState);
+  mainWindow.on('leave-full-screen', emitMaximizedState);
 }
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -180,6 +241,45 @@ app.whenReady().then(() => {
     }
 
     return result.filePath.toLowerCase().endsWith('.armadillo') ? result.filePath : `${result.filePath}.armadillo`;
+  });
+  ipcMain.handle('armadillo:window-minimize', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    mainWindow.minimize();
+    return true;
+  });
+  ipcMain.handle('armadillo:window-toggle-maximize', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+    return mainWindow.isMaximized();
+  });
+  ipcMain.handle('armadillo:window-is-maximized', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    return mainWindow.isMaximized();
+  });
+  ipcMain.handle('armadillo:window-close', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    mainWindow.close();
+    return true;
+  });
+  ipcMain.handle('armadillo:autofill-credentials', async (_event, payload) => {
+    const username = typeof payload?.username === 'string' ? payload.username : '';
+    const password = typeof payload?.password === 'string' ? payload.password : '';
+    if (!username && !password) {
+      return { ok: false, error: 'Missing credentials.' };
+    }
+    if (process.platform !== 'win32') {
+      return { ok: false, error: 'Autofill is currently supported on Windows desktop only.' };
+    }
+    try {
+      await runWindowsAutofill(username, password);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Desktop autofill failed.' };
+    }
   });
   createWindow();
   const initialDeepLink = extractDeepLinkArg(process.argv);

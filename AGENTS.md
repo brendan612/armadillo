@@ -9,5 +9,41 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-11
+  - Updated `electron/main.cjs`, `electron/preload.cjs`, `src/vite-env.d.ts`, `src/App.tsx`, `src/index.css`, `src/lib/convexClient.ts`
+  - Fixed subfolder creation crash by replacing `prompt()` with an in-app modal, removed risk UI and density toggle, redesigned item rows with inline metadata/actions, and added Windows desktop autofill + item context menu actions.
+- 2026-02-11
+  - Updated `src/App.tsx`, `src/index.css`
+  - Replaced unsupported `prompt()` subfolder flow with an in-app modal, removed density toggle (compact default), added item URL preview + item right-click menu actions, and polished list/context visuals.
+- 2026-02-11
+  - Updated `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/App.tsx`, `src/index.css`
+  - Implemented the planned folder-tree architecture and compact detail editor (folder/category dropdown row), including folder context actions, Trash restore flow, retention settings, and payload migration to structured folders/categories/trash.
+- 2026-02-11
+  - Updated `src/App.tsx`, `convex/http.ts`
+  - Removed locked-screen and auth/sync debugging traces (UI debug lines + verbose logs) to clean production flow without changing sync behavior.
+- 2026-02-11
+  - Updated `src/App.tsx`
+  - Cleaned cloud snapshot UX on locked screens by prioritizing one "latest snapshot" action and collapsing older snapshots behind a toggle.
+- 2026-02-11
+  - Updated `src/App.tsx`, `README.md`
+  - Renamed user-facing cloud "snapshot(s)" wording to "save(s)" for clearer terminology consistency.
+- 2026-02-11
+  - Updated `src/App.tsx`
+  - Placed unlock and biometric actions inline with the master password field on the unlock screen, and changed biometric button text to a thumbprint.
+- 2026-02-11
+  - Updated `src/App.tsx`, `package.json`, `package-lock.json`
+  - Replaced biometric emoji with a proper `lucide-react` fingerprint icon for the unlock action.
+- 2026-02-11
+  - Updated `src/App.tsx`, `src/index.css`
+  - Added a dedicated inline biometric button style to center the fingerprint icon correctly in the unlock row.
+- 2026-02-11
+  - Updated `electron/main.cjs`, `electron/preload.cjs`, `src/App.tsx`, `src/index.css`, `src/vite-env.d.ts`
+  - Replaced the native desktop title bar with a themed custom draggable title bar and wired custom minimize/maximize/close controls.
+- 2026-02-11
+  - Updated `src/App.tsx`, `src/index.css`
+  - Made the custom desktop title bar render on create/unlock screens too, span full width, and use left app name + centered vault name + right window controls.
+- 2026-02-11
+  - Updated `src/App.tsx`, `src/index.css`
+  - Added a close button in the item detail header to dismiss the open item and return mobile users to the list.
 - 2026-02-10
   - Added `AGENTS.md` with a change-tracking policy.

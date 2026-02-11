@@ -1,4 +1,5 @@
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
+export const VAULT_SCHEMA_VERSION = 2 as const
 
 export type SecurityQuestion = {
   question: string
@@ -13,6 +14,8 @@ export type VaultItem = {
   urls: string[]
   category: string
   folder: string
+  categoryId?: string | null
+  folderId?: string | null
   tags: string[]
   risk: RiskState
   updatedAt: string
@@ -20,8 +23,45 @@ export type VaultItem = {
   securityQuestions: SecurityQuestion[]
 }
 
+export type VaultFolder = {
+  id: string
+  name: string
+  parentId: string | null
+  color: string
+  icon: string
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type VaultCategory = {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type VaultTrashKind = 'folderTreeSnapshot' | 'itemSnapshot'
+
+export type VaultTrashEntry = {
+  id: string
+  kind: VaultTrashKind
+  payload: unknown
+  deletedAt: string
+  purgeAt: string
+}
+
+export type VaultSettings = {
+  trashRetentionDays: number
+}
+
 export type VaultPayload = {
+  schemaVersion: number
   items: VaultItem[]
+  folders: VaultFolder[]
+  categories: VaultCategory[]
+  trash: VaultTrashEntry[]
+  settings: VaultSettings
 }
 
 export type EncryptedBlob = {

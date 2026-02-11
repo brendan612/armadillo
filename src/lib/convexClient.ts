@@ -2,9 +2,10 @@ import { ConvexReactClient } from 'convex/react'
 
 export const convexUrl = import.meta.env.VITE_CONVEX_URL || ''
 export const convexClient = convexUrl ? new ConvexReactClient(convexUrl) : null
+type ConvexClientWithAddress = ConvexReactClient & { address?: string }
 
 export function convexAuthStorageNamespace() {
-  const address = ((convexClient as any)?.address as string | undefined) || convexUrl
+  const address = (convexClient as ConvexClientWithAddress | null)?.address || convexUrl
   return address.replace(/[^a-zA-Z0-9]/g, '')
 }
 
@@ -15,7 +16,7 @@ export function convexAuthStorageNamespaces() {
     values.add(value.replace(/[^a-zA-Z0-9]/g, ''))
   }
 
-  add(((convexClient as any)?.address as string | undefined) || '')
+  add((convexClient as ConvexClientWithAddress | null)?.address || '')
   add(convexUrl)
   add(convexUrl.replace(/\/$/, ''))
   add(`${convexUrl.replace(/\/$/, '')}/`)

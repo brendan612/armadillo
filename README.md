@@ -1,10 +1,10 @@
-﻿# armadillo
+# armadillo
 
 Armadillo is a local-first encrypted password vault.
 
 - Canonical storage is an encrypted `.armadillo` vault file per device.
 - Master password unlock is required.
-- Optional cloud sync replicates encrypted snapshots only.
+- Optional cloud sync replicates encrypted saves only.
 
 ## What is implemented
 
@@ -56,5 +56,6 @@ AUTH_GOOGLE_SECRET=<google-oauth-client-secret>
 
 - Local vault KDF now uses Argon2id parameters embedded per vault file.
 - Existing legacy PBKDF2 vaults remain unlockable (compat fallback).
-- Cloud stores only encrypted vault snapshots; decryption is client-side only.
+- Cloud stores only encrypted vault saves; decryption is client-side only.
 - Biometric quick-unlock is device-local and requires prior master-password unlock/enrollment.
+
