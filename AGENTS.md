@@ -10,6 +10,12 @@
 
 ## Recent Changes
 - 2026-02-11
+  - Updated `electron/main.cjs`
+  - Changed hardcoded dev server URL from port 5173 to 4000 to match updated package.json scripts.
+- 2026-02-11
+  - Updated `src/App.tsx`, `src/app/AppRouter.tsx`, `src/app/AppShell.tsx`, `src/app/contexts/VaultAppContext.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/auth/components/*`, `src/features/layout/components/*`, `src/features/nav/components/*`, `src/features/items/components/*`, `src/features/folders/components/*`, `src/features/settings/components/SettingsModal.tsx`, `src/shared/utils/*`, `src/lib/convexClient.ts`, `src/app/types/app.ts`
+  - Refactored the monolithic `App.tsx` into a feature/component architecture with a central `useVaultApp` orchestration hook + context provider, preserving behavior while improving reusability and clarity.
+- 2026-02-11
   - Updated `electron/main.cjs`, `electron/preload.cjs`, `src/vite-env.d.ts`, `src/App.tsx`, `src/index.css`, `src/lib/convexClient.ts`
   - Fixed subfolder creation crash by replacing `prompt()` with an in-app modal, removed risk UI and density toggle, redesigned item rows with inline metadata/actions, and added Windows desktop autofill + item context menu actions.
 - 2026-02-11
