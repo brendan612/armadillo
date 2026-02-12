@@ -9,6 +9,36 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-12
+  - Updated `src/features/items/components/ItemContextMenu.tsx`
+  - Removed an unused `Copy` icon import so TypeScript build checks can run cleanly while validating drag/drop fixes.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`, `src/index.css`
+  - Rebuilt folder drag/drop into a single custom pointer/touch system with explicit before/inside/after zones, restoring both reliable reordering and true nesting while showing a draggable folder ghost under the cursor.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`, `src/app/hooks/useVaultApp.ts`, `src/index.css`
+  - Made row drops resolve to before/after by cursor position (fixing no-op downward moves), allowed same-parent append-to-end moves, and upgraded drag preview to show the actual folder being dragged.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`, `src/index.css`
+  - Added a desktop mouse-pointer drag fallback for folder rows (with live drag preview) so click-hold drag reordering works even when native HTML drag events are flaky.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`
+  - Changed folder row drops to reorder siblings when source/target share a parent (instead of nesting), so drag/drop reordering works with normal row dragging.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`, `src/app/hooks/useVaultApp.ts`, `src/index.css`
+  - Restored folder drag/drop rearrangement with sibling reorder lanes + persistent manual ordering, and replaced `[ ]` folder placeholders with a real folder icon.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderContextMenu.tsx`, `src/features/items/components/ItemContextMenu.tsx`, `src/index.css`
+  - Replaced flat-button context menus with a polished `.ctx-menu` system: lucide icons, grouped sections with dividers, keyboard-shortcut hints, viewport clamping, entrance animation, and danger-zone styling.
+- 2026-02-12
+  - Updated `src/features/nav/components/FolderTree.tsx`, `src/index.css`
+  - Improved folder tree drag/drop with an explicit top root drop lane, live drop placeholders, and per-folder collapse/expand controls for easier navigation.
+- 2026-02-12
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/nav/components/FolderTree.tsx`, `src/features/nav/components/FolderContextMenu.tsx`, `src/app/AppShell.tsx`, `src/index.css`; removed `src/features/folders/components/CreateFolderModal.tsx`
+  - Replaced folder create/rename modals with inline tree editing, added desktop+touch folder drag reparenting, and split context actions into inline Rename plus separate Properties.
+- 2026-02-12
+  - Updated `src/index.css`, `src/features/nav/components/SidebarPane.tsx`
+  - Added explicit spacing between the “Folders” heading and the first folder row, and removed an unused `mt-5` class for consistent sidebar layout.
 - 2026-02-11
   - Updated `electron/main.cjs`
   - Changed hardcoded dev server URL from port 5173 to 4000 to match updated package.json scripts.
@@ -53,3 +83,4 @@
   - Added a close button in the item detail header to dismiss the open item and return mobile users to the list.
 - 2026-02-10
   - Added `AGENTS.md` with a change-tracking policy.
+

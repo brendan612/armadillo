@@ -1,65 +1,143 @@
+import { useEffect, useRef } from 'react'
+import {
+  ExternalLink,
+  KeyRound,
+  UserRound,
+  ClipboardPaste,
+  CopyPlus,
+  Trash2,
+} from 'lucide-react'
 import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function ItemContextMenu() {
   const { itemContextMenu, items } = useVaultAppState()
-  const { setSelectedId, setMobileStep, setItemContextMenu, duplicateItem, copyToClipboard, autofillItem, removeItemById } = useVaultAppActions()
+  const {
+    setSelectedId,
+    setMobileStep,
+    setItemContextMenu,
+    duplicateItem,
+    copyToClipboard,
+    autofillItem,
+    removeItemById,
+  } = useVaultAppActions()
+
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!itemContextMenu || !menuRef.current) return
+    const el = menuRef.current
+    const rect = el.getBoundingClientRect()
+    const pad = 8
+    let x = itemContextMenu.x
+    let y = itemContextMenu.y
+
+    if (x + rect.width > window.innerWidth - pad) {
+      x = window.innerWidth - rect.width - pad
+    }
+    if (y + rect.height > window.innerHeight - pad) {
+      y = window.innerHeight - rect.height - pad
+    }
+    if (x < pad) x = pad
+    if (y < pad) y = pad
+
+    el.style.left = `${x}px`
+    el.style.top = `${y}px`
+    el.style.opacity = '1'
+  }, [itemContextMenu])
 
   if (!itemContextMenu) return null
 
+  const item = items.find((row) => row.id === itemContextMenu.itemId)
+
+  function dismiss() {
+    setItemContextMenu(null)
+  }
+
   return (
     <div
-      className="folder-context-menu item-context-menu"
-      style={{ left: itemContextMenu.x, top: itemContextMenu.y }}
-      onPointerDown={(event) => event.stopPropagation()}
+      ref={menuRef}
+      className="ctx-menu"
+      style={{ left: itemContextMenu.x, top: itemContextMenu.y, opacity: 0 }}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       <button
-        className="ghost"
+        className="ctx-menu-item"
         onClick={() => {
           setSelectedId(itemContextMenu.itemId)
           setMobileStep('detail')
-          setItemContextMenu(null)
+          dismiss()
         }}
       >
-        Open Item
+        <ExternalLink className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Open Item</span>
       </button>
-      <button className="ghost" onClick={() => void duplicateItem(itemContextMenu.itemId)}>Duplicate</button>
+
       <button
-        className="ghost"
+        className="ctx-menu-item"
         onClick={() => {
-          const item = items.find((row) => row.id === itemContextMenu.itemId)
+          void duplicateItem(itemContextMenu.itemId)
+          dismiss()
+        }}
+      >
+        <CopyPlus className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Duplicate</span>
+      </button>
+
+      <div className="ctx-menu-divider" />
+
+      <button
+        className="ctx-menu-item"
+        onClick={() => {
           if (item?.username) {
-            void copyToClipboard(item.username, 'Username copied to clipboard', 'Clipboard copy failed')
+            void copyToClipboard(item.username, 'Username copied', 'Copy failed')
           }
-          setItemContextMenu(null)
+          dismiss()
         }}
       >
-        Copy Username
+        <UserRound className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Copy Username</span>
+        <kbd className="ctx-menu-shortcut">Ctrl+U</kbd>
       </button>
+
       <button
-        className="ghost"
+        className="ctx-menu-item"
         onClick={() => {
-          const item = items.find((row) => row.id === itemContextMenu.itemId)
           if (item?.passwordMasked) {
-            void copyToClipboard(item.passwordMasked, 'Password copied to clipboard', 'Clipboard copy failed')
+            void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed')
           }
-          setItemContextMenu(null)
+          dismiss()
         }}
       >
-        Copy Password
+        <KeyRound className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Copy Password</span>
+        <kbd className="ctx-menu-shortcut">Ctrl+P</kbd>
       </button>
+
       <button
-        className="ghost"
+        className="ctx-menu-item"
         onClick={() => {
-          const item = items.find((row) => row.id === itemContextMenu.itemId)
           if (item) {
             void autofillItem(item)
           }
-          setItemContextMenu(null)
+          dismiss()
         }}
       >
-        Autofill Previous App
+        <ClipboardPaste className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Autofill</span>
       </button>
-      <button className="ghost" onClick={() => void removeItemById(itemContextMenu.itemId)}>Delete Item</button>
+
+      <div className="ctx-menu-divider" />
+
+      <button
+        className="ctx-menu-item danger"
+        onClick={() => {
+          void removeItemById(itemContextMenu.itemId)
+          dismiss()
+        }}
+      >
+        <Trash2 className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Delete Item</span>
+      </button>
     </div>
   )
 }

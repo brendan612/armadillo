@@ -28,6 +28,9 @@ type FolderFilterMode = 'direct' | 'recursive'
 type SidebarNode = 'all' | 'unfiled' | 'trash' | `folder:${string}`
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
+type FolderInlineEditorState =
+  | { mode: 'create'; parentId: string | null; value: string }
+  | { mode: 'rename'; folderId: string; parentId: string | null; value: string }
 
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const DEFAULT_FOLDER_COLOR = '#7f9cff'
@@ -155,8 +158,7 @@ export function useVaultApp() {
   const [itemContextMenu, setItemContextMenu] = useState<ItemContextMenuState>(null)
   const [folderEditor, setFolderEditor] = useState<VaultFolder | null>(null)
   const [folderEditorOpen, setFolderEditorOpen] = useState(false)
-  const [createFolderModal, setCreateFolderModal] = useState<{ parentId: string | null } | null>(null)
-  const [newFolderName, setNewFolderName] = useState('')
+  const [folderInlineEditor, setFolderInlineEditor] = useState<FolderInlineEditorState | null>(null)
   const [newCategoryValue, setNewCategoryValue] = useState('')
   const [newFolderValue, setNewFolderValue] = useState('')
 
@@ -742,15 +744,33 @@ export function useVaultApp() {
   }
 
   function getChildrenFolders(parentId: string | null) {
-    return folders
-      .filter((folder) => folder.parentId === parentId)
-      .sort((a, b) => a.name.localeCompare(b.name))
+    return folders.filter((folder) => folder.parentId === parentId)
   }
 
   function openFolderEditor(folder: VaultFolder) {
     setFolderEditor({ ...folder })
     setFolderEditorOpen(true)
     setContextMenu(null)
+  }
+
+  function startFolderInlineRename(folderId: string) {
+    const target = folders.find((folder) => folder.id === folderId)
+    if (!target) return
+    setFolderInlineEditor({
+      mode: 'rename',
+      folderId: target.id,
+      parentId: target.parentId,
+      value: target.name,
+    })
+    setContextMenu(null)
+  }
+
+  function updateFolderInlineEditorValue(value: string) {
+    setFolderInlineEditor((prev) => (prev ? { ...prev, value } : prev))
+  }
+
+  function cancelFolderInlineEditor() {
+    setFolderInlineEditor(null)
   }
 
   async function saveFolderEditor() {
@@ -765,32 +785,83 @@ export function useVaultApp() {
   }
 
   function createSubfolder(parentId: string | null) {
-    setCreateFolderModal({ parentId })
-    setNewFolderName('')
+    setFolderInlineEditor({ mode: 'create', parentId, value: '' })
     setContextMenu(null)
   }
 
-  async function submitCreateSubfolder() {
-    if (!createFolderModal) return
-    const name = newFolderName.trim()
-    if (!name) return
+  async function commitFolderInlineEditor() {
+    if (!folderInlineEditor) return false
+    const name = folderInlineEditor.value.trim()
+    if (!name) return false
     const now = new Date().toISOString()
-    const nextFolder: VaultFolder = {
-      id: crypto.randomUUID(),
-      name,
-      parentId: createFolderModal.parentId,
-      color: DEFAULT_FOLDER_COLOR,
-      icon: DEFAULT_FOLDER_ICON,
-      notes: '',
-      createdAt: now,
-      updatedAt: now,
+    if (folderInlineEditor.mode === 'create') {
+      const nextFolder: VaultFolder = {
+        id: crypto.randomUUID(),
+        name,
+        parentId: folderInlineEditor.parentId,
+        color: DEFAULT_FOLDER_COLOR,
+        icon: DEFAULT_FOLDER_ICON,
+        notes: '',
+        createdAt: now,
+        updatedAt: now,
+      }
+      const nextFolders = [...folders, nextFolder]
+      setFolderInlineEditor(null)
+      setFolders(nextFolders)
+      await persistPayload({ folders: nextFolders })
+      setSelectedNode(`folder:${nextFolder.id}`)
+      return true
     }
-    const nextFolders = [...folders, nextFolder]
-    setCreateFolderModal(null)
-    setNewFolderName('')
+    const target = folders.find((folder) => folder.id === folderInlineEditor.folderId)
+    if (!target) return false
+    const nextFolders = folders.map((folder) => (folder.id === target.id ? { ...folder, name, updatedAt: now } : folder))
+    setFolderInlineEditor(null)
     setFolders(nextFolders)
     await persistPayload({ folders: nextFolders })
-    setSelectedNode(`folder:${nextFolder.id}`)
+    return true
+  }
+
+  async function moveFolder(folderId: string, parentId: string | null, beforeFolderId?: string) {
+    const target = folders.find((folder) => folder.id === folderId)
+    if (!target) return false
+    if (parentId === folderId) return false
+    if (beforeFolderId === folderId) return false
+
+    const beforeFolder = beforeFolderId ? folders.find((folder) => folder.id === beforeFolderId) : null
+    if (beforeFolderId && !beforeFolder) return false
+    if (beforeFolder && beforeFolder.parentId !== parentId) return false
+
+    if (parentId) {
+      const descendantIds = new Set(collectDescendantIds(folderId, folders))
+      if (descendantIds.has(parentId)) return false
+    }
+
+    const now = new Date().toISOString()
+    const movedFolder: VaultFolder = { ...target, parentId, updatedAt: now }
+    const baseFolders = folders.filter((folder) => folder.id !== folderId)
+
+    let insertIndex = -1
+    if (beforeFolder) {
+      insertIndex = baseFolders.findIndex((folder) => folder.id === beforeFolder.id)
+    } else {
+      for (let i = baseFolders.length - 1; i >= 0; i -= 1) {
+        if (baseFolders[i].parentId === parentId) {
+          insertIndex = i + 1
+          break
+        }
+      }
+    }
+
+    const nextFolders = [...baseFolders]
+    if (insertIndex < 0 || insertIndex > nextFolders.length) {
+      nextFolders.push(movedFolder)
+    } else {
+      nextFolders.splice(insertIndex, 0, movedFolder)
+    }
+
+    setFolders(nextFolders)
+    await persistPayload({ folders: nextFolders })
+    return true
   }
 
   async function deleteFolderCascade(folderId: string) {
@@ -1268,8 +1339,7 @@ export function useVaultApp() {
       itemContextMenu,
       folderEditor,
       folderEditorOpen,
-      createFolderModal,
-      newFolderName,
+      folderInlineEditor,
       newCategoryValue,
       newFolderValue,
       genLength,
@@ -1308,8 +1378,7 @@ export function useVaultApp() {
       setContextMenu,
       setFolderEditor,
       setFolderEditorOpen,
-      setCreateFolderModal,
-      setNewFolderName,
+      setFolderInlineEditor,
       setNewCategoryValue,
       setNewFolderValue,
       setGenLength,
@@ -1333,9 +1402,13 @@ export function useVaultApp() {
       lockVault,
       closeOpenItem,
       createSubfolder,
+      startFolderInlineRename,
+      updateFolderInlineEditorValue,
+      cancelFolderInlineEditor,
+      commitFolderInlineEditor,
       openFolderEditor,
       saveFolderEditor,
-      submitCreateSubfolder,
+      moveFolder,
       deleteFolderCascade,
       restoreTrashEntry,
       deleteTrashEntryPermanently,

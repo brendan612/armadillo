@@ -6,7 +6,6 @@ import { ItemListPane } from '../features/items/components/ItemListPane'
 import { ItemDetailPane } from '../features/items/components/ItemDetailPane'
 import { FolderContextMenu } from '../features/nav/components/FolderContextMenu'
 import { ItemContextMenu } from '../features/items/components/ItemContextMenu'
-import { CreateFolderModal } from '../features/folders/components/CreateFolderModal'
 import { EditFolderModal } from '../features/folders/components/EditFolderModal'
 import { SettingsModal } from '../features/settings/components/SettingsModal'
 import { MobileNav } from '../features/layout/components/MobileNav'
@@ -30,7 +29,6 @@ export function AppShell() {
 
       <FolderContextMenu />
       <ItemContextMenu />
-      <CreateFolderModal />
       <EditFolderModal />
 
       <MobileNav />

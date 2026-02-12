@@ -50,7 +50,7 @@ export function SidebarPane() {
 
       <div className="sidebar-section">
         <h3>Folders</h3>
-        <div className="folder-tree mt-5"><FolderTree parentId={null} /></div>
+        <div className="folder-tree"><FolderTree parentId={null} /></div>
       </div>
     </aside>
   )
