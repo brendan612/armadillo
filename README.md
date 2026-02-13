@@ -32,6 +32,51 @@ npm run dev
 npm run dev:electron
 ```
 
+## Build Windows installer (.exe)
+
+```bash
+npm install
+npm run dist:win
+```
+
+Output:
+
+- `release/Armadillo-Setup-<version>-x64.exe`
+
+Notes:
+
+- This build is unsigned in the current setup, so Windows SmartScreen warnings are expected.
+
+## Build Android APK (.apk)
+
+Prerequisites:
+
+- Android SDK + Android command-line tools
+- JDK 17
+
+First-time Android project setup:
+
+```bash
+npx cap add android
+```
+
+Build a sideloadable debug APK:
+
+```bash
+npm install
+npm run apk:debug
+```
+
+Output:
+
+- `android/app/build/outputs/apk/debug/app-debug.apk`
+
+Optional release APK (unsigned):
+
+```bash
+npm run apk:release
+```
+
 ## Convex setup
 
 ```bash

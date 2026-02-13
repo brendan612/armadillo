@@ -1,4 +1,4 @@
-import { Copy, Keyboard, NotebookPen, UserRound } from 'lucide-react'
+import { ChevronLeft, Copy, Keyboard, NotebookPen, UserRound } from 'lucide-react'
 import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
@@ -23,6 +23,10 @@ export function ItemListPane() {
   return (
     <section className={`pane pane-middle ${mobileStep === 'list' ? 'mobile-active' : ''}`}>
       <div className="pane-head">
+        <button className="mobile-back-btn" onClick={() => setMobileStep('nav')}>
+          <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
+          Menu
+        </button>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, URL, tag, category..." />
         {selectedNode.startsWith('folder:') && (
           <div className="toggle-row">

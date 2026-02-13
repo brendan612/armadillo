@@ -1,4 +1,6 @@
+import { Plus } from 'lucide-react'
 import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import logoSrc from '../../../assets/armadillo.png'
 
 export function Topbar() {
   const { syncState, syncMessage, authMessage } = useVaultAppState()
@@ -7,12 +9,16 @@ export function Topbar() {
   return (
     <header className="topbar">
       <div className="topbar-brand">
+        <img className="topbar-logo" src={logoSrc} alt="Armadillo" />
         <div className={`sync-badge sync-${syncState}`}>{syncMessage}</div>
         {authMessage && <span className="auth-message">{authMessage}</span>}
       </div>
 
       <div className="topbar-actions">
-        <button className="solid" onClick={createItem}>+ New Credential</button>
+        <button className="solid" onClick={createItem}>
+          <span className="topbar-new-btn-text">+ New Credential</span>
+          <span className="topbar-new-btn-icon"><Plus size={18} strokeWidth={2.2} /></span>
+        </button>
         <button className="icon-btn" onClick={lockVault} title="Lock vault">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         </button>

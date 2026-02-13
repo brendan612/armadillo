@@ -21,6 +21,7 @@ export type VaultItem = {
   updatedAt: string
   note: string
   securityQuestions: SecurityQuestion[]
+  passwordExpiryDate?: string | null
 }
 
 export type VaultFolder = {
@@ -51,8 +52,19 @@ export type VaultTrashEntry = {
   purgeAt: string
 }
 
+export type GeneratorPreset = {
+  id: string
+  name: string
+  length: number
+  uppercase: boolean
+  lowercase: boolean
+  digits: boolean
+  symbols: boolean
+}
+
 export type VaultSettings = {
   trashRetentionDays: number
+  generatorPresets: GeneratorPreset[]
 }
 
 export type VaultPayload = {

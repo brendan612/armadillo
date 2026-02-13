@@ -26,6 +26,7 @@ export function defaultVaultPayload(): VaultPayload {
 export function defaultVaultSettings(): VaultSettings {
   return {
     trashRetentionDays: 30,
+    generatorPresets: [],
   }
 }
 
@@ -193,6 +194,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const settingsSource = (base.settings && typeof base.settings === 'object' ? base.settings : {}) as Record<string, unknown>
   const settings: VaultSettings = {
     trashRetentionDays: safeRetentionDays(settingsSource.trashRetentionDays),
+    generatorPresets: Array.isArray(settingsSource.generatorPresets) ? settingsSource.generatorPresets : [],
   }
 
   const trashSource = Array.isArray(base.trash) ? base.trash : []

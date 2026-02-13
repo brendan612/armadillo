@@ -3,7 +3,15 @@ import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/Vaul
 
 export function SidebarPane() {
   const { items, trash, selectedNode, mobileStep } = useVaultAppState()
-  const { setSelectedNode, setMobileStep, createSubfolder } = useVaultAppActions()
+  const { setSelectedNode, setMobileStep, createSubfolder, setTreeContextMenu } = useVaultAppActions()
+
+  function handleTreeContextMenu(event: React.MouseEvent) {
+    // Only show tree context menu when clicking empty area (not on a folder node)
+    const target = event.target as HTMLElement
+    if (target.closest('.folder-tree-node')) return
+    event.preventDefault()
+    setTreeContextMenu({ x: event.clientX, y: event.clientY })
+  }
 
   return (
     <aside className={`pane pane-left ${mobileStep === 'nav' ? 'mobile-active' : ''}`}>
@@ -50,7 +58,9 @@ export function SidebarPane() {
 
       <div className="sidebar-section">
         <h3>Folders</h3>
-        <div className="folder-tree"><FolderTree parentId={null} /></div>
+        <div className="folder-tree" onContextMenu={handleTreeContextMenu}>
+          <FolderTree parentId={null} />
+        </div>
       </div>
     </aside>
   )

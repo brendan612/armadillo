@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { ConvexHttpClient } from 'convex/browser'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
+import { App as CapacitorApp } from '@capacitor/app'
+import { Browser } from '@capacitor/browser'
 import { convexConfigured, getCloudAuthStatus, listRemoteVaultsByOwner, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from '../../lib/convexApi'
+import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
 import { biometricEnrollmentExists, enrollBiometricQuickUnlock, unlockWithBiometric } from '../../lib/biometric'
+import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
+import { LocalNotifications } from '@capacitor/local-notifications'
+import AutofillBridge from '../../plugins/autofillBridge'
 import {
   clearLocalVaultFile,
   createVaultFile,
@@ -20,7 +27,7 @@ import {
 import type { ArmadilloVaultFile, SecurityQuestion, VaultCategory, VaultFolder, VaultItem, VaultPayload, VaultSession, VaultSettings, VaultTrashEntry } from '../../types/vault'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
-type Panel = 'details' | 'generator'
+type Panel = 'details'
 type MobileStep = 'nav' | 'list' | 'detail'
 type SyncState = 'local' | 'syncing' | 'live' | 'error'
 type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
@@ -35,14 +42,10 @@ type FolderInlineEditorState =
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const DEFAULT_FOLDER_COLOR = '#7f9cff'
 const DEFAULT_FOLDER_ICON = 'folder'
+const OAUTH_VERIFIER_STORAGE_KEY = '__convexAuthOAuthVerifier'
+const ANDROID_OAUTH_REDIRECT_URL = 'armadillo://oauth-callback'
 
 /* shell sections moved inline into sidebar nav */
-
-function getAutoPlatform(): 'web' | 'desktop' | 'mobile' {
-  if (window.armadilloShell?.isElectron) return 'desktop'
-  if (window.matchMedia('(max-width: 900px)').matches) return 'mobile'
-  return 'web'
-}
 
 function buildEmptyItem(folderName = '', categoryName = '', folderId: string | null = null, categoryId: string | null = null): VaultItem {
   return {
@@ -60,6 +63,7 @@ function buildEmptyItem(folderName = '', categoryName = '', folderId: string | n
     updatedAt: new Date().toLocaleString(),
     note: '',
     securityQuestions: [],
+    passwordExpiryDate: null,
   }
 }
 
@@ -110,12 +114,33 @@ function getSafeRetentionDays(value: number) {
   return Math.min(3650, Math.max(1, Math.round(value)))
 }
 
-function generatePassword(length: number, includeSymbols: boolean, excludeAmbiguous: boolean) {
-  const chars = `ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789${includeSymbols ? '!@#$%^&*()-_=+[]{}' : ''}`
-  const safeChars = excludeAmbiguous ? chars.replace(/[O0Il|`~]/g, '') : chars
-  const randomBytes = new Uint8Array(length)
-  crypto.getRandomValues(randomBytes)
-  return Array.from(randomBytes, (byte) => safeChars[byte % safeChars.length]).join('')
+type ExpiryAlert = {
+  itemId: string
+  title: string
+  status: 'expired' | 'expiring'
+}
+
+type TreeContextMenuState = { x: number; y: number } | null
+
+function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  const soonThreshold = new Date(now)
+  soonThreshold.setDate(soonThreshold.getDate() + 7)
+
+  const alerts: ExpiryAlert[] = []
+  for (const item of items) {
+    if (!item.passwordExpiryDate) continue
+    const expiry = new Date(item.passwordExpiryDate)
+    if (isNaN(expiry.getTime())) continue
+    expiry.setHours(0, 0, 0, 0)
+    if (expiry <= now) {
+      alerts.push({ itemId: item.id, title: item.title, status: 'expired' })
+    } else if (expiry <= soonThreshold) {
+      alerts.push({ itemId: item.id, title: item.title, status: 'expiring' })
+    }
+  }
+  return alerts
 }
 
 export function useVaultApp() {
@@ -132,7 +157,7 @@ export function useVaultApp() {
   const [folders, setFolders] = useState<VaultFolder[]>([])
   const [categories, setCategories] = useState<VaultCategory[]>([])
   const [trash, setTrash] = useState<VaultTrashEntry[]>([])
-  const [vaultSettings, setVaultSettings] = useState<VaultSettings>({ trashRetentionDays: 30 })
+  const [vaultSettings, setVaultSettings] = useState<VaultSettings>({ trashRetentionDays: 30, generatorPresets: [] })
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [activePanel, setActivePanel] = useState<Panel>('details')
@@ -162,10 +187,9 @@ export function useVaultApp() {
   const [newCategoryValue, setNewCategoryValue] = useState('')
   const [newFolderValue, setNewFolderValue] = useState('')
 
-  const [genLength, setGenLength] = useState(20)
-  const [includeSymbols, setIncludeSymbols] = useState(true)
-  const [excludeAmbiguous, setExcludeAmbiguous] = useState(true)
-  const [generatedPreview, setGeneratedPreview] = useState(() => generatePassword(20, true, true))
+  const [treeContextMenu, setTreeContextMenu] = useState<TreeContextMenuState>(null)
+  const [expiryAlerts, setExpiryAlerts] = useState<ExpiryAlert[]>([])
+  const [expiryAlertsDismissed, setExpiryAlertsDismissed] = useState(false)
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -192,20 +216,131 @@ export function useVaultApp() {
     return parts[parts.length - 1] || 'vault.armadillo'
   }, [localVaultPath])
 
+  const completeGoogleSignInFromCallback = useCallback(async (callbackUrl: string, source: 'desktop' | 'android') => {
+    try {
+      const url = new URL(callbackUrl)
+      const error = url.searchParams.get('error')
+      const errorDescription = url.searchParams.get('error_description')
+      const code = url.searchParams.get('code')
+      const state = url.searchParams.get('state')
+
+      if (error) {
+        setAuthMessage(`Google callback error: ${errorDescription || error}`)
+        return
+      }
+
+      if (!code) {
+        setAuthMessage('Google callback missing code')
+        return
+      }
+
+      setAuthMessage(`OAuth callback received from ${source}. Finalizing session...`)
+      await (signIn as unknown as (provider: string | undefined, params: { code: string; state?: string }) => Promise<unknown>)(undefined, {
+        code,
+        ...(state ? { state } : {}),
+      })
+      setAuthMessage('Google sign-in complete. Verifying session...')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setAuthMessage(`${source === 'android' ? 'Android' : 'Desktop'} browser callback failed: ${detail}`)
+    }
+  }, [signIn])
+
+  const startAndroidGoogleSignIn = useCallback(async () => {
+    if (!convexUrl) {
+      setAuthMessage('Convex URL is not configured for mobile sign-in')
+      return
+    }
+
+    const verifierKey = `${OAUTH_VERIFIER_STORAGE_KEY}_${convexAuthStorageNamespace()}`
+    const previousVerifier = localStorage.getItem(verifierKey) ?? undefined
+    localStorage.removeItem(verifierKey)
+
+    try {
+      const authClient = new ConvexHttpClient(convexUrl)
+      const result = await authClient.action(
+        'auth:signIn' as never,
+        {
+          provider: 'google',
+          params: { redirectTo: ANDROID_OAUTH_REDIRECT_URL },
+          verifier: previousVerifier,
+        } as never,
+      ) as { redirect?: string; verifier?: string }
+
+      if (!result.redirect || !result.verifier) {
+        setAuthMessage('Google sign-in failed to produce a redirect URL')
+        return
+      }
+
+      localStorage.setItem(verifierKey, result.verifier)
+      await Browser.open({ url: result.redirect })
+      setAuthMessage('Google sign-in opened in browser. Return to Armadillo after approval.')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setAuthMessage(`Android Google sign-in failed: ${detail}`)
+    }
+  }, [])
+
   function applySession(session: VaultSession) {
     setVaultSession(session)
     setItems(session.payload.items)
     setFolders(session.payload.folders)
     setCategories(session.payload.categories)
     setTrash(purgeExpiredTrash(session.payload.trash))
+    const settings = session.payload.settings
     setVaultSettings({
-      trashRetentionDays: getSafeRetentionDays(session.payload.settings.trashRetentionDays),
+      trashRetentionDays: getSafeRetentionDays(settings.trashRetentionDays),
+      generatorPresets: (settings as Record<string, unknown>).generatorPresets
+        ? (settings.generatorPresets ?? [])
+        : [],
     })
+    const alerts = computeExpiryAlerts(session.payload.items)
+    setExpiryAlerts(alerts)
+    setExpiryAlertsDismissed(false)
+    scheduleExpiryNotifications(alerts)
     const firstId = session.payload.items[0]?.id || ''
     setSelectedId(firstId)
     setDraft(session.payload.items[0] ?? null)
     setSelectedNode('all')
     setFolderFilterMode('direct')
+    syncCredentialsToNative(session.payload.items)
+  }
+
+  function syncCredentialsToNative(vaultItems: VaultItem[]) {
+    if (!isNativeAndroid()) return
+    const credentials = vaultItems.map((item) => ({
+      id: item.id,
+      title: item.title,
+      username: item.username || '',
+      password: item.passwordMasked || '',
+      urls: item.urls,
+    }))
+    AutofillBridge.syncCredentials({ credentials }).catch(() => {
+      /* non-blocking */
+    })
+  }
+
+  function clearNativeCredentials() {
+    if (!isNativeAndroid()) return
+    AutofillBridge.clearCredentials().catch(() => {
+      /* non-blocking */
+    })
+  }
+
+  function scheduleExpiryNotifications(alerts: ExpiryAlert[]) {
+    if (!isNativeAndroid() || alerts.length === 0) return
+    LocalNotifications.requestPermissions().then((perm) => {
+      if (perm.display !== 'granted') return
+      const notifications = alerts.slice(0, 10).map((alert, index) => ({
+        title: alert.status === 'expired' ? 'Password Expired' : 'Password Expiring Soon',
+        body: `${alert.title} — ${alert.status === 'expired' ? 'password has expired' : 'password is expiring within 7 days'}`,
+        id: 9000 + index,
+        schedule: { at: new Date(Date.now() + 2000) },
+        smallIcon: 'ic_launcher',
+        autoCancel: true,
+      }))
+      void LocalNotifications.schedule({ notifications })
+    }).catch(() => { /* non-blocking */ })
   }
 
   useEffect(() => {
@@ -358,36 +493,8 @@ export function useVaultApp() {
       return
     }
 
-    const completeDesktopGoogleSignIn = async (callbackUrl: string) => {
-      try {
-        const url = new URL(callbackUrl)
-        const error = url.searchParams.get('error')
-        const errorDescription = url.searchParams.get('error_description')
-        const code = url.searchParams.get('code')
-
-        if (error) {
-          setAuthMessage(`Google callback error: ${errorDescription || error}`)
-          return
-        }
-
-        if (!code) {
-          setAuthMessage('Google callback missing code')
-          return
-        }
-
-        setAuthMessage('OAuth callback received. Finalizing desktop session...')
-        await (signIn as unknown as (provider: string | undefined, params: { code: string }) => Promise<unknown>)(undefined, {
-          code,
-        })
-        setAuthMessage('Google sign-in complete. Verifying session...')
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : 'unknown error'
-        setAuthMessage(`Desktop browser callback failed: ${detail}`)
-      }
-    }
-
     const unsubscribe = shell.onOAuthCallback((url) => {
-      void completeDesktopGoogleSignIn(url)
+      void completeGoogleSignInFromCallback(url, 'desktop')
     })
 
     return () => {
@@ -395,12 +502,41 @@ export function useVaultApp() {
         unsubscribe()
       }
     }
-  }, [signIn])
+  }, [completeGoogleSignInFromCallback])
+
+  useEffect(() => {
+    if (!isNativeAndroid()) {
+      return
+    }
+
+    let ignore = false
+    const handleUrl = (url: string) => {
+      if (!url || !url.startsWith('armadillo://')) return
+      void completeGoogleSignInFromCallback(url, 'android')
+      void Browser.close().catch(() => {})
+    }
+
+    const listener = CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      if (ignore) return
+      handleUrl(url)
+    })
+
+    void CapacitorApp.getLaunchUrl().then((launchData) => {
+      if (ignore || !launchData?.url) return
+      handleUrl(launchData.url)
+    }).catch(() => {})
+
+    return () => {
+      ignore = true
+      void listener.then((handle) => handle.remove())
+    }
+  }, [completeGoogleSignInFromCallback])
 
   useEffect(() => {
     function handlePointerDown() {
       setContextMenu(null)
       setItemContextMenu(null)
+      setTreeContextMenu(null)
     }
     window.addEventListener('pointerdown', handlePointerDown)
     return () => window.removeEventListener('pointerdown', handlePointerDown)
@@ -733,6 +869,7 @@ export function useVaultApp() {
     setSelectedId('')
     setPhase('unlock')
     setSyncMessage('Vault locked')
+    clearNativeCredentials()
   }
 
   function closeOpenItem() {
@@ -960,6 +1097,24 @@ export function useVaultApp() {
       setSyncState('local')
       setSyncMessage('Encrypted change saved locally')
     }
+  }
+
+  async function addGeneratorPreset(preset: VaultSettings['generatorPresets'][number]) {
+    const nextPresets = [...vaultSettings.generatorPresets, preset]
+    const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
+    setVaultSettings(nextSettings)
+    await persistPayload({ settings: nextSettings })
+  }
+
+  async function removeGeneratorPreset(presetId: string) {
+    const nextPresets = vaultSettings.generatorPresets.filter((p) => p.id !== presetId)
+    const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
+    setVaultSettings(nextSettings)
+    await persistPayload({ settings: nextSettings })
+  }
+
+  function dismissExpiryAlerts() {
+    setExpiryAlertsDismissed(true)
   }
 
   function ensureCategoryByName(nameRaw: string, source = categories) {
@@ -1250,6 +1405,12 @@ export function useVaultApp() {
       return
     }
 
+    if (isNativeAndroid()) {
+      setAuthMessage('Starting Android Google sign-in...')
+      await startAndroidGoogleSignIn()
+      return
+    }
+
     try {
       setAuthMessage('Redirecting to Google sign-in...')
       await signIn('google', { redirectTo: window.location.origin })
@@ -1342,10 +1503,9 @@ export function useVaultApp() {
       folderInlineEditor,
       newCategoryValue,
       newFolderValue,
-      genLength,
-      includeSymbols,
-      excludeAmbiguous,
-      generatedPreview,
+      treeContextMenu,
+      expiryAlerts,
+      expiryAlertsDismissed,
       draft,
     },
     derived: {
@@ -1381,10 +1541,7 @@ export function useVaultApp() {
       setFolderInlineEditor,
       setNewCategoryValue,
       setNewFolderValue,
-      setGenLength,
-      setIncludeSymbols,
-      setExcludeAmbiguous,
-      setGeneratedPreview,
+      setTreeContextMenu,
       setShowAllCloudSnapshots,
       setDraftField,
       copyToClipboard,
@@ -1428,6 +1585,9 @@ export function useVaultApp() {
       persistPayload,
       clearLocalVaultFile,
       getChildrenFolders,
+      addGeneratorPreset,
+      removeGeneratorPreset,
+      dismissExpiryAlerts,
     },
     refs: {
       importFileInputRef,

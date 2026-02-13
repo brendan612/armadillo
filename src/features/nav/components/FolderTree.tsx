@@ -271,10 +271,8 @@ export function FolderTree({ parentId }: FolderTreeProps) {
           const isCollapsed = collapsedIds.has(folder.id)
           const directCount = items.filter((item) => item.folderId === folder.id).length
           const isEditing = folderInlineEditor?.mode === 'rename' && folderInlineEditor.folderId === folder.id
-          const isDragOverBefore = dragOverTarget === `before:${folder.id}`
           const isDragOverInside = dragOverTarget === `inside:${folder.id}`
           const isDragOverAfter = dragOverTarget === `after:${folder.id}`
-          const isDragOver = isDragOverBefore || isDragOverInside || isDragOverAfter
           const isDragging = dragSourceId === folder.id
           const showTouchMenu = touching && !activeDrag
 

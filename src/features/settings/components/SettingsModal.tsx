@@ -1,5 +1,8 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { biometricSupported } from '../../../lib/biometric'
+import { isNativeAndroid } from '../../../shared/utils/platform'
 import { getSafeRetentionDays } from '../../../shared/utils/trash'
+import AutofillBridge from '../../../plugins/autofillBridge'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function SettingsModal() {
@@ -27,6 +30,49 @@ export function SettingsModal() {
     persistPayload,
     clearLocalVaultFile,
   } = useVaultAppActions()
+
+  const [autofillEnabled, setAutofillEnabled] = useState(false)
+  const [autofillSupported, setAutofillSupported] = useState(false)
+
+  const checkAutofillStatus = useCallback(() => {
+    if (!isNativeAndroid()) return
+    AutofillBridge.isAutofillServiceEnabled()
+      .then((result) => {
+        setAutofillEnabled(result.enabled)
+        setAutofillSupported(result.supported)
+      })
+      .catch(() => {
+        setAutofillSupported(false)
+      })
+  }, [])
+
+  useEffect(() => {
+    if (showSettings) {
+      checkAutofillStatus()
+    }
+  }, [showSettings, checkAutofillStatus])
+
+  // Let the system back gesture (Android swipe / browser back) close the modal
+  const closedByPopStateRef = useRef(false)
+  useEffect(() => {
+    if (!showSettings) return
+
+    closedByPopStateRef.current = false
+    window.history.pushState({ settingsOpen: true }, '')
+
+    function onPopState() {
+      closedByPopStateRef.current = true
+      setShowSettings(false)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => {
+      window.removeEventListener('popstate', onPopState)
+      // If closed by X / backdrop (not popstate), clean up the history entry we pushed
+      if (!closedByPopStateRef.current) {
+        window.history.back()
+      }
+    }
+  }, [showSettings, setShowSettings])
 
   if (!showSettings) return null
 
@@ -87,6 +133,31 @@ export function SettingsModal() {
             </div>
           </section>
 
+          {isNativeAndroid() && autofillSupported && (
+            <>
+              <div className="settings-divider" />
+              <section className="settings-section">
+                <h3>Autofill</h3>
+                <div className="settings-identity">
+                  <span className={`dot-status ${autofillEnabled ? 'connected' : 'disconnected'}`} />
+                  <span>{autofillEnabled ? 'Armadillo is your autofill provider' : 'Autofill not enabled'}</span>
+                </div>
+                <div className="settings-action-list">
+                  <button
+                    className={autofillEnabled ? 'solid' : 'ghost'}
+                    onClick={() => {
+                      void AutofillBridge.openAutofillSettings().then(() => {
+                        setTimeout(checkAutofillStatus, 1000)
+                      })
+                    }}
+                  >
+                    {autofillEnabled ? 'Autofill Settings' : 'Enable Autofill'}
+                  </button>
+                </div>
+              </section>
+            </>
+          )}
+
           <div className="settings-divider" />
 
           <section className="settings-section">
@@ -113,7 +184,7 @@ export function SettingsModal() {
                 value={vaultSettings.trashRetentionDays}
                 onChange={(event) => {
                   const nextDays = getSafeRetentionDays(Number(event.target.value))
-                  setVaultSettings({ trashRetentionDays: nextDays })
+                  setVaultSettings((prev) => ({ ...prev, trashRetentionDays: nextDays }))
                 }}
               />
             </label>

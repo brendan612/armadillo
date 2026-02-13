@@ -353,17 +353,20 @@ kbd {
    TOPBAR
    ============================================ */
 .topbar {
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 10;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
   padding: 0.45rem 0.65rem;
+  background: var(--bg-0);
 }
 
 .desktop-titlebar {
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 15;
   display: flex;
   align-items: center;
@@ -456,7 +459,13 @@ kbd {
   flex: 1;
 }
 
-/* topbar-brand h1 and svg removed — brand shown in desktop titlebar only */
+.topbar-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
 
 .sync-badge {
   display: inline-flex;
@@ -495,6 +504,8 @@ kbd {
   gap: 0.35rem;
   flex-shrink: 0;
 }
+
+.topbar-new-btn-icon { display: none; }
 
 /* ============================================
    WORKSPACE  &  PANES
@@ -1218,21 +1229,194 @@ body.folder-dragging * {
   gap: 0.45rem;
 }
 
+/* ============================================
+   AUTH SCREENS (Unlock / Create)
+   ============================================ */
 .auth-screen {
-  max-width: 540px;
-  margin: 4rem auto;
-  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 42px);
+  padding: 2rem 1.25rem;
+  overflow-y: auto;
 }
 
-.auth-message {
-  font-size: 0.74rem;
+.platform-web .auth-screen {
+  min-height: 100vh;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* staggered entrance for card children */
+.auth-card > * {
+  animation: auth-fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.auth-card > *:nth-child(1) { animation-delay: 0ms; }
+.auth-card > *:nth-child(2) { animation-delay: 60ms; }
+.auth-card > *:nth-child(3) { animation-delay: 110ms; }
+.auth-card > *:nth-child(4) { animation-delay: 160ms; }
+.auth-card > *:nth-child(5) { animation-delay: 200ms; }
+.auth-card > *:nth-child(6) { animation-delay: 240ms; }
+.auth-card > *:nth-child(7) { animation-delay: 270ms; }
+.auth-card > *:nth-child(8) { animation-delay: 300ms; }
+.auth-card > *:nth-child(9) { animation-delay: 330ms; }
+
+/* ---- Hero (icon + title + tagline) ---- */
+.auth-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  text-align: center;
+  padding-bottom: 0.35rem;
+}
+
+.auth-icon {
+  width: 68px;
+  height: 68px;
+  border-radius: 20px;
+  object-fit: cover;
+  margin-bottom: 0.15rem;
+  animation: auth-breathe 4s ease-in-out infinite;
+}
+
+.auth-hero h1 {
+  margin: 0;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+
+.auth-tagline {
+  margin: 0;
+  font-size: 0.84rem;
   color: var(--ink-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+  line-height: 1.4;
 }
 
+/* ---- Form section ---- */
+.auth-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.auth-form-section label {
+  display: grid;
+  gap: 0.28rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+
+/* unified input + button group */
+.auth-input-group {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 3px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 3px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.auth-input-group:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.auth-input-group input {
+  border: none;
+  background: transparent;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+}
+
+.auth-input-group input:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+
+.auth-input-group button {
+  border-radius: 8px;
+}
+
+.auth-input-group button.solid {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.82rem;
+}
+
+/* ---- Error display ---- */
+.auth-error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--exposed);
+  padding: 0.5rem 0.65rem;
+  background: color-mix(in srgb, var(--exposed) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--exposed) 18%, transparent);
+  border-radius: 8px;
+  text-align: center;
+}
+
+/* ---- Divider ---- */
+.auth-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 0.15rem 0;
+}
+
+/* ---- Secondary / tertiary actions ---- */
+.auth-secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.auth-secondary button {
+  font-size: 0.8rem;
+}
+
+.auth-secondary .muted {
+  text-align: center;
+}
+
+/* ---- Standalone primary button on create screen ---- */
+.auth-primary-btn {
+  width: 100%;
+  padding: 0.6rem 1rem;
+  font-size: 0.88rem;
+}
+
+/* ---- Biometric button inside input group ---- */
+.biometric-inline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  padding: 0.45rem;
+  line-height: 1;
+}
+
+.biometric-inline-btn svg {
+  display: block;
+}
+
+/* ---- Retained: inline field (used outside auth) ---- */
 .inline-field {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -1245,17 +1429,13 @@ body.folder-dragging * {
   letter-spacing: 0.05em;
 }
 
-.biometric-inline-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 42px;
-  padding: 0.45rem;
-  line-height: 1;
-}
-
-.biometric-inline-btn svg {
-  display: block;
+.auth-message {
+  font-size: 0.74rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* ---- Context-menu system ---- */
@@ -1464,6 +1644,329 @@ body.folder-dragging * {
   display: flex;
   justify-content: flex-end;
   gap: 0.35rem;
+}
+
+/* ---- Generator Popover (inline) ---- */
+.gen-popover-anchor {
+  position: relative;
+}
+
+.gen-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: 320px;
+  max-height: 480px;
+  overflow-y: auto;
+  background: var(--surface-solid);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.5rem;
+  animation: fade-in 0.15s ease-out;
+}
+
+.gen-popover h4 {
+  margin: 0;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.gen-popover-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 0.15rem 0;
+}
+
+.gen-preset-list {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.gen-preset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.gen-preset-item:hover {
+  background: var(--bg-3);
+  border-color: var(--line-strong);
+}
+
+.gen-preset-name {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.gen-preset-meta {
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+}
+
+.gen-preset-delete {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gen-preset-delete:hover {
+  background: var(--exposed);
+  color: #fff;
+}
+
+.gen-config-panel {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.gen-config-panel > label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.gen-config-panel > label input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.gen-toggles {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.gen-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0.32rem 0;
+  background: var(--bg-2);
+  border: none;
+  border-right: 1px solid var(--line);
+  transition: all 0.15s ease;
+  user-select: none;
+  margin: 0;
+  min-height: 0;
+}
+
+.gen-toggle:last-child {
+  border-right: none;
+}
+
+.gen-toggle:hover {
+  background: var(--bg-3);
+}
+
+.gen-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.gen-toggle input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.gen-toggle-indicator { display: none; }
+
+.gen-preview {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: var(--bg-1);
+  word-break: break-all;
+  color: var(--ink);
+  user-select: all;
+  min-height: 2.2rem;
+}
+
+.gen-popover-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.gen-popover-actions button {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+}
+
+.gen-save-row {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.gen-save-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Password Confirm ---- */
+.password-confirm-row {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.password-mismatch input {
+  border-color: var(--exposed) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--exposed) 20%, transparent);
+}
+
+.password-mismatch-msg {
+  font-size: 0.72rem;
+  color: var(--exposed);
+  font-weight: 500;
+}
+
+/* ---- Expiry Date ---- */
+.expiry-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.expiry-field input[type="date"] {
+  flex: 1;
+}
+
+.expiry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.expiry-badge.expired {
+  background: color-mix(in srgb, var(--exposed) 15%, transparent);
+  color: var(--exposed);
+}
+
+.expiry-badge.expiring-soon {
+  background: color-mix(in srgb, var(--weak) 15%, transparent);
+  color: var(--weak);
+}
+
+.expiry-clear-btn {
+  width: 24px;
+  height: 24px;
+  min-height: 24px !important;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+}
+
+.expiry-clear-btn:hover {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
+/* ---- Expiry Alert Bar ---- */
+.expiry-alert-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  margin-bottom: 0.35rem;
+  background: color-mix(in srgb, var(--weak) 12%, var(--bg-2));
+  border: 1px solid color-mix(in srgb, var(--weak) 25%, transparent);
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink);
+  animation: fade-in 0.3s ease-out;
+}
+
+.expiry-alert-bar .alert-icon {
+  color: var(--weak);
+  flex-shrink: 0;
+}
+
+.expiry-alert-bar .alert-text {
+  flex: 1;
+}
+
+.expiry-alert-bar .alert-text strong {
+  color: var(--exposed);
+}
+
+.expiry-alert-bar .alert-dismiss {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.expiry-alert-bar .alert-dismiss:hover {
+  background: var(--bg-3);
+  color: var(--ink);
 }
 
 /* ============================================
@@ -1911,6 +2414,7 @@ body.folder-dragging * {
    MOBILE NAV
    ============================================ */
 .mobile-nav { display: none; }
+.mobile-back-btn { display: none; }
 
 /* ============================================
    PLATFORM MODIFIERS
@@ -1925,6 +2429,7 @@ body.folder-dragging * {
 }
 
 .platform-desktop .topbar {
+  top: 38px;
   padding-left: 0.75rem;
   padding-right: 0.75rem;
 }
@@ -1975,6 +2480,30 @@ body.folder-dragging * {
   50% { opacity: 0.65; }
 }
 
+@keyframes auth-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--accent) 8%, transparent),
+      0 0 30px color-mix(in srgb, var(--accent) 5%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 8px color-mix(in srgb, var(--accent) 3%, transparent),
+      0 0 60px color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+}
+
 /* ============================================
    RESPONSIVE
    ============================================ */
@@ -1987,18 +2516,89 @@ body.folder-dragging * {
 }
 
 @media (max-width: 900px) {
-  .workspace { grid-template-columns: 1fr; }
 
+  /* ---- Shell & safe areas ---- */
+  .app-shell {
+    padding: 0.35rem;
+    padding-top: calc(0.35rem + env(safe-area-inset-top, 0px));
+  }
+
+  /* ---- Workspace ---- */
+  .workspace {
+    grid-template-columns: 1fr;
+    gap: 0;
+    min-height: calc(100dvh - 6rem);
+  }
+
+  /* ---- Panes ---- */
   .pane {
     display: none;
-    min-height: calc(100vh - 8rem);
+    min-height: calc(100dvh - 8rem);
+    border-radius: 10px;
   }
 
   .pane.mobile-active {
     display: flex;
-    animation: pane-rise 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: pane-rise 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
+  .pane-left {
+    padding-bottom: calc(0.6rem + 60px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pane-middle {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pane-right {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ---- Mobile back buttons ---- */
+  .mobile-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.3rem 0.5rem;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.78rem;
+    font-weight: 500;
+    min-height: 36px;
+    cursor: pointer;
+  }
+
+  .mobile-back-btn:hover {
+    background: var(--accent-soft);
+    transform: none;
+  }
+
+  .mobile-back-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ---- Topbar — compact ---- */
+  .topbar {
+    position: relative;
+    top: auto;
+    padding: 0.3rem 0.45rem;
+    gap: 0.35rem;
+  }
+
+  .topbar-brand { min-width: 0; }
+
+  .sync-badge { display: none; }
+
+  .topbar-actions { gap: 0.25rem; }
+
+  .topbar-actions .topbar-new-btn-text { display: none; }
+
+  .topbar-actions .topbar-new-btn-icon { display: inline-flex; }
+
+  /* ---- Bottom navigation ---- */
   .mobile-nav {
     position: fixed;
     bottom: 0;
@@ -2008,33 +2608,41 @@ body.folder-dragging * {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 0;
-    padding: 0.35rem 0.5rem;
-    padding-bottom: calc(0.35rem + env(safe-area-inset-bottom, 0px));
+    padding: 0.25rem 0.5rem;
+    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
     background: var(--surface-solid);
     border-top: 1px solid var(--line);
     backdrop-filter: blur(var(--blur));
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.15);
   }
 
   .mobile-nav button {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.15rem;
-    min-height: 44px;
+    gap: 0.12rem;
+    min-height: 48px;
     justify-content: center;
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     font-weight: 500;
+    letter-spacing: 0.02em;
     color: var(--ink-muted);
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 0.3rem 0;
+    padding: 0.25rem 0;
     transition: color 0.15s;
   }
 
   .mobile-nav button:hover {
     background: transparent;
     transform: none;
+  }
+
+  .mobile-nav button svg {
+    width: 20px;
+    height: 20px;
+    stroke-width: 1.8;
   }
 
   .mobile-nav button.active {
@@ -2045,38 +2653,269 @@ body.folder-dragging * {
     content: '';
     display: block;
     width: 20px;
-    height: 2px;
+    height: 2.5px;
     background: var(--accent);
-    border-radius: 1px;
-    margin-top: 0.1rem;
+    border-radius: 2px;
+    margin-top: 0.12rem;
   }
 
   .mobile-nav-spacer {
-    height: calc(60px + env(safe-area-inset-bottom, 0px));
+    height: calc(64px + env(safe-area-inset-bottom, 0px));
   }
 
-  .detail-head { flex-direction: column; }
+  /* ---- Folder tree ---- */
+  .folder-tree {
+    max-height: none;
+  }
+
+  /* ---- Item list — touch targets ---- */
+  .item-list li {
+    padding: 0.55rem 0.5rem;
+    gap: 0.45rem;
+  }
+
+  .item-action-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+  }
+
+  .item-inline-actions {
+    gap: 0.12rem;
+  }
+
+  .item-info strong {
+    max-width: 160px;
+  }
+
+  .item-info .item-url {
+    max-width: 160px;
+  }
+
+  /* ---- Detail pane ---- */
+  .detail-head {
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.55rem 0.6rem;
+  }
+
+  .detail-head-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .detail-grid {
+    padding: 0.8rem 0.65rem;
+    gap: 0.75rem;
+  }
+
   .compact-meta-row { grid-template-columns: 1fr; }
+
+  .qa-row { grid-template-columns: 1fr; }
+
+  .inline-field {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+
+  .inline-field button {
+    width: 100%;
+  }
+
+  .save-row {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .save-row button {
+    width: 100%;
+  }
 
   .tab-row,
   .toggle-row { width: 100%; }
 
-  .topbar-brand { min-width: 0; }
-
-  .sync-badge { display: none; }
-
-  .auth-screen {
-    margin: 2rem auto;
+  .tab-row button,
+  .toggle-row button {
+    flex: 1;
   }
 
-  .auth-screen button {
+  /* ---- Context menus — bottom sheet ---- */
+  .ctx-menu {
+    position: fixed;
+    left: 0.5rem !important;
+    right: 0.5rem !important;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+    top: auto !important;
+    width: auto !important;
+    min-width: auto;
+    max-height: 60vh;
+    overflow-y: auto;
+    border-radius: 14px;
+    animation: ctx-slide-up 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    transform-origin: bottom center;
+  }
+
+  .ctx-menu-item {
+    padding: 10px 14px;
+    font-size: 0.88rem;
     min-height: 44px;
   }
 
+  .ctx-menu-shortcut {
+    display: none;
+  }
+
+  /* ---- Settings panel — full width on mobile ---- */
+  .settings-panel {
+    width: 100vw;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .settings-body {
+    padding-bottom: calc(1.2rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ---- Auth screens ---- */
+  .auth-screen {
+    min-height: calc(100dvh - 2rem);
+    padding: 1.5rem 1rem;
+    align-items: flex-start;
+    padding-top: max(3rem, 8vh);
+  }
+
+  .auth-card {
+    max-width: 100%;
+  }
+
+  .auth-icon {
+    width: 60px;
+    height: 60px;
+    border-radius: 17px;
+  }
+
+  .auth-hero h1 {
+    font-size: 1.45rem;
+  }
+
+  .auth-input-group {
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .auth-input-group button.solid {
+    padding: 0.45rem 0.75rem;
+  }
+
+  .auth-screen button,
+  .auth-screen .ghost,
+  .auth-screen .solid {
+    min-height: 44px;
+  }
+
+  /* ---- Global touch targets ---- */
   button,
   .ghost,
   .solid {
     min-height: 44px;
+  }
+
+  /* ---- Edit folder modal ---- */
+  .fp-icon-option {
+    width: 38px;
+    height: 38px;
+  }
+
+  .fp-color-swatch {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* ---- Expiry alert bar — touch-friendly dismiss ---- */
+  .expiry-alert-bar .alert-dismiss {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .expiry-clear-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px !important;
+  }
+
+  /* ---- Generator popover — full-width bottom sheet on mobile ---- */
+  .gen-popover {
+    position: fixed;
+    top: auto;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    left: 0.5rem;
+    right: 0.5rem;
+    width: auto;
+    max-height: 65vh;
+    border-radius: 14px;
+    animation: ctx-slide-up 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  .gen-popover-actions {
+    flex-direction: column;
+  }
+
+  .gen-popover-actions button {
+    width: 100%;
+  }
+
+  /* Segmented toggle bar — keep compact, override global 44px min-height */
+  .gen-toggle {
+    min-height: 36px;
+    font-size: 0.78rem;
+    padding: 0.4rem 0;
+  }
+
+  /* Preset items — adequate touch targets */
+  .gen-preset-item {
+    padding: 0.55rem 0.6rem;
+    min-height: 44px;
+  }
+
+  /* Preset delete button — slightly larger for touch but not giant */
+  .gen-preset-delete {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+  }
+
+  /* Save-as-preset row — stack on narrow screens */
+  .gen-save-row {
+    flex-wrap: wrap;
+  }
+
+  .gen-save-row input {
+    flex: 1 1 100%;
+  }
+
+  .gen-save-row button {
+    flex: 1;
+  }
+
+  /* ---- Generator panel (legacy tab — kept for compat) ---- */
+  .gen-actions {
+    flex-direction: column;
+  }
+
+  .gen-actions button {
+    width: 100%;
+  }
+}
+
+/* ---- Mobile-only animation ---- */
+@keyframes ctx-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

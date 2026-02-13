@@ -153,6 +153,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 760,
     title: 'Armadillo',
+    icon: path.join(__dirname, 'icon.png'),
     backgroundColor: '#f2ede4',
     frame: false,
     titleBarStyle: 'hidden',

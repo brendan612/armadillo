@@ -9,6 +9,12 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-13
+  - Updated `src/features/auth/components/UnlockVaultScreen.tsx`, `src/features/auth/components/CreateVaultScreen.tsx`, `src/index.css`
+  - Redesigned auth screens (unlock/create) with a centered card layout, shield icon hero with breathing glow, unified password input group, staggered entrance animations, and full responsive support across web/desktop/mobile.
+- 2026-02-13
+  - Updated `.gitignore`, `package.json`, `package-lock.json`, `capacitor.config.ts`, `android/**`, `src/app/hooks/useVaultApp.ts`, `src/shared/utils/platform.ts`, `src/features/nav/components/FolderTree.tsx`, `README.md`
+  - Added Windows NSIS `.exe` packaging via electron-builder and Android `.apk` packaging via Capacitor (including Android deep-link OAuth callback handling) so the app can ship on both desktop and Android.
 - 2026-02-12
   - Updated `src/features/items/components/ItemContextMenu.tsx`
   - Removed an unused `Copy` icon import so TypeScript build checks can run cleanly while validating drag/drop fixes.
@@ -83,4 +89,3 @@
   - Added a close button in the item detail header to dismiss the open item and return mobile users to the list.
 - 2026-02-10
   - Added `AGENTS.md` with a change-tracking policy.
-

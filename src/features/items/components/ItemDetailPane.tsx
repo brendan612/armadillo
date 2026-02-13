@@ -1,23 +1,34 @@
-import { generatePassword } from '../../../shared/utils/passwordGen'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, Dices, RefreshCw, Save, X, Trash2 } from 'lucide-react'
+import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+
+function getExpiryStatus(expiryDate: string | null | undefined): 'expired' | 'expiring' | null {
+  if (!expiryDate) return null
+  const expiry = new Date(expiryDate)
+  if (isNaN(expiry.getTime())) return null
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  expiry.setHours(0, 0, 0, 0)
+  if (expiry <= now) return 'expired'
+  const soon = new Date(now)
+  soon.setDate(soon.getDate() + 7)
+  if (expiry <= soon) return 'expiring'
+  return null
+}
 
 export function ItemDetailPane() {
   const {
-    activePanel,
     mobileStep,
     draft,
     showPassword,
     newCategoryValue,
     newFolderValue,
     isSaving,
-    genLength,
-    includeSymbols,
-    excludeAmbiguous,
-    generatedPreview,
+    vaultSettings,
   } = useVaultAppState()
   const { selected, categoryOptions, folderOptions } = useVaultAppDerived()
   const {
-    setActivePanel,
     closeOpenItem,
     setDraftField,
     setShowPassword,
@@ -27,24 +38,116 @@ export function ItemDetailPane() {
     updateSecurityQuestion,
     saveCurrentItem,
     removeCurrentItem,
-    setGenLength,
-    setIncludeSymbols,
-    setExcludeAmbiguous,
-    setGeneratedPreview,
+    setMobileStep,
+    addGeneratorPreset,
+    removeGeneratorPreset,
   } = useVaultAppActions()
+
+  // Generator popover state
+  const [showGenerator, setShowGenerator] = useState(false)
+  const [genConfig, setGenConfig] = useState<GeneratorConfig>({ ...DEFAULT_GENERATOR_CONFIG })
+  const [genPreview, setGenPreview] = useState(() => generatePassword(DEFAULT_GENERATOR_CONFIG))
+  const [showGenEditor, setShowGenEditor] = useState(false)
+  const [presetName, setPresetName] = useState('')
+  const [showPresetSave, setShowPresetSave] = useState(false)
+  const genPopoverRef = useRef<HTMLDivElement>(null)
+
+  // Password confirm state
+  const [passwordConfirm, setPasswordConfirm] = useState('')
+  const [saveError, setSaveError] = useState('')
+
+  // Reset confirm when draft changes
+  useEffect(() => {
+    setPasswordConfirm('')
+    setSaveError('')
+  }, [draft?.id])
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showGenerator) return
+    function handleClick(event: MouseEvent) {
+      if (genPopoverRef.current && !genPopoverRef.current.contains(event.target as Node)) {
+        setShowGenerator(false)
+        setShowGenEditor(false)
+        setShowPresetSave(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showGenerator])
+
+  function regenerate(config: GeneratorConfig) {
+    setGenPreview(generatePassword(config))
+  }
+
+  function updateConfig(patch: Partial<GeneratorConfig>) {
+    const next = { ...genConfig, ...patch }
+    setGenConfig(next)
+    regenerate(next)
+  }
+
+  function usePassword(password: string) {
+    if (draft) {
+      setDraftField('passwordMasked', password)
+      setPasswordConfirm(password)
+    }
+    setShowGenerator(false)
+    setShowGenEditor(false)
+    setShowPresetSave(false)
+  }
+
+  function handleQuickGenerate(preset: { length: number; uppercase: boolean; lowercase: boolean; digits: boolean; symbols: boolean }) {
+    const config: GeneratorConfig = {
+      length: preset.length,
+      uppercase: preset.uppercase,
+      lowercase: preset.lowercase,
+      digits: preset.digits,
+      symbols: preset.symbols,
+    }
+    const password = generatePassword(config)
+    usePassword(password)
+  }
+
+  async function handleSavePreset() {
+    const name = presetName.trim()
+    if (!name) return
+    await addGeneratorPreset({
+      id: crypto.randomUUID(),
+      name,
+      length: genConfig.length,
+      uppercase: genConfig.uppercase,
+      lowercase: genConfig.lowercase,
+      digits: genConfig.digits,
+      symbols: genConfig.symbols,
+    })
+    setPresetName('')
+    setShowPresetSave(false)
+  }
+
+  async function handleSave() {
+    setSaveError('')
+    if (passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
+      setSaveError('Passwords do not match')
+      return
+    }
+    await saveCurrentItem()
+  }
+
+  const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
+  const expiryStatus = draft ? getExpiryStatus(draft.passwordExpiryDate) : null
 
   return (
     <section className={`pane pane-right ${mobileStep === 'detail' ? 'mobile-active' : ''}`}>
       <div className="detail-head">
+        <button className="mobile-back-btn" onClick={() => setMobileStep('list')}>
+          <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
+          Vault
+        </button>
         <div>
           <p className="kicker">Credential Detail</p>
           <h2>{selected?.title ?? 'No item selected'}</h2>
         </div>
         <div className="detail-head-actions">
-          <div className="tab-row">
-            <button className={activePanel === 'details' ? 'active' : ''} onClick={() => setActivePanel('details')}>Details</button>
-            <button className={activePanel === 'generator' ? 'active' : ''} onClick={() => setActivePanel('generator')}>Generator</button>
-          </div>
           {selected && (
             <button className="ghost detail-close-btn" onClick={closeOpenItem} title="Close item">
               Close
@@ -53,7 +156,7 @@ export function ItemDetailPane() {
         </div>
       </div>
 
-      {activePanel === 'details' && draft && (
+      {draft && (
         <div className="detail-grid">
           <label>
             Title
@@ -63,6 +166,8 @@ export function ItemDetailPane() {
             Username
             <input value={draft.username} onChange={(event) => setDraftField('username', event.target.value)} />
           </label>
+
+          {/* Password + Generator */}
           <label>
             Password
             <div className="inline-field">
@@ -73,8 +178,142 @@ export function ItemDetailPane() {
               />
               <button onClick={() => setShowPassword((current) => !current)}>{showPassword ? 'Hide' : 'Reveal'}</button>
               <button onClick={() => void copyPassword()}>Copy</button>
+              <div className="gen-popover-anchor" ref={genPopoverRef}>
+                <button
+                  title="Generate password"
+                  onClick={() => {
+                    setShowGenerator((prev) => !prev)
+                    if (!showGenerator) {
+                      regenerate(genConfig)
+                      setShowGenEditor(false)
+                      setShowPresetSave(false)
+                    }
+                  }}
+                >
+                  <Dices size={15} strokeWidth={2} />
+                </button>
+
+                {showGenerator && (
+                  <div className="gen-popover">
+                    <h4>Password Generator</h4>
+
+                    {/* Presets */}
+                    {vaultSettings.generatorPresets.length > 0 && (
+                      <>
+                        <div className="gen-preset-list">
+                          {vaultSettings.generatorPresets.map((preset) => (
+                            <div key={preset.id} className="gen-preset-item">
+                              <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => handleQuickGenerate(preset)}>
+                                <span className="gen-preset-name">{preset.name}</span>
+                                <span className="gen-preset-meta">
+                                  {' '}{preset.length}ch
+                                  {preset.uppercase ? ' A-Z' : ''}
+                                  {preset.lowercase ? ' a-z' : ''}
+                                  {preset.digits ? ' 0-9' : ''}
+                                  {preset.symbols ? ' !@#' : ''}
+                                </span>
+                              </div>
+                              <button
+                                className="gen-preset-delete"
+                                title="Delete preset"
+                                onClick={(e) => { e.stopPropagation(); void removeGeneratorPreset(preset.id) }}
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="gen-popover-divider" />
+                      </>
+                    )}
+
+                    {/* Toggle editor */}
+                    {!showGenEditor ? (
+                      <button className="ghost" onClick={() => { setShowGenEditor(true); regenerate(genConfig) }}>
+                        Custom Generator
+                      </button>
+                    ) : (
+                      <div className="gen-config-panel">
+                        <label>
+                          Length: {genConfig.length}
+                          <input
+                            type="range"
+                            min={8}
+                            max={64}
+                            value={genConfig.length}
+                            onChange={(e) => updateConfig({ length: Number(e.target.value) })}
+                          />
+                        </label>
+
+                        <div className="gen-toggles">
+                          <label className={`gen-toggle ${genConfig.uppercase ? 'active' : ''}`}>
+                            <input type="checkbox" checked={genConfig.uppercase} onChange={(e) => updateConfig({ uppercase: e.target.checked })} />
+                            A-Z
+                          </label>
+                          <label className={`gen-toggle ${genConfig.lowercase ? 'active' : ''}`}>
+                            <input type="checkbox" checked={genConfig.lowercase} onChange={(e) => updateConfig({ lowercase: e.target.checked })} />
+                            a-z
+                          </label>
+                          <label className={`gen-toggle ${genConfig.digits ? 'active' : ''}`}>
+                            <input type="checkbox" checked={genConfig.digits} onChange={(e) => updateConfig({ digits: e.target.checked })} />
+                            0-9
+                          </label>
+                          <label className={`gen-toggle ${genConfig.symbols ? 'active' : ''}`}>
+                            <input type="checkbox" checked={genConfig.symbols} onChange={(e) => updateConfig({ symbols: e.target.checked })} />
+                            !@#$
+                          </label>
+                        </div>
+
+                        <div className="gen-preview">{genPreview}</div>
+
+                        <div className="gen-popover-actions">
+                          <button className="ghost" onClick={() => regenerate(genConfig)}>
+                            <RefreshCw size={13} /> Regenerate
+                          </button>
+                          <button className="solid" onClick={() => usePassword(genPreview)}>
+                            Use Password
+                          </button>
+                        </div>
+
+                        {!showPresetSave ? (
+                          <button className="ghost" onClick={() => setShowPresetSave(true)}>
+                            <Save size={13} /> Save as Preset
+                          </button>
+                        ) : (
+                          <div className="gen-save-row">
+                            <input
+                              placeholder="Preset name"
+                              value={presetName}
+                              onChange={(e) => setPresetName(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') void handleSavePreset() }}
+                              autoFocus
+                            />
+                            <button className="solid" onClick={() => void handleSavePreset()}>Save</button>
+                            <button className="ghost" onClick={() => setShowPresetSave(false)}>Cancel</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </label>
+
+          {/* Password Confirm */}
+          <div className={`password-confirm-row ${passwordMismatch ? 'password-mismatch' : ''}`}>
+            <label>
+              Confirm Password
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={passwordConfirm}
+                onChange={(e) => { setPasswordConfirm(e.target.value); setSaveError('') }}
+                placeholder="Retype password to verify"
+              />
+            </label>
+            {passwordMismatch && <span className="password-mismatch-msg">Passwords do not match</span>}
+          </div>
+
           <label>
             URLs (one per line)
             <textarea
@@ -142,6 +381,30 @@ export function ItemDetailPane() {
               }
             />
           </label>
+
+          {/* Password Expiry Date */}
+          <label>
+            Password Expiry Date
+            <div className="expiry-field">
+              <input
+                type="date"
+                value={draft.passwordExpiryDate ?? ''}
+                onChange={(e) => setDraftField('passwordExpiryDate', e.target.value || null)}
+              />
+              {draft.passwordExpiryDate && (
+                <button
+                  className="expiry-clear-btn"
+                  title="Clear expiry date"
+                  onClick={() => setDraftField('passwordExpiryDate', null)}
+                >
+                  <X size={14} />
+                </button>
+              )}
+              {expiryStatus === 'expired' && <span className="expiry-badge expired">Expired</span>}
+              {expiryStatus === 'expiring' && <span className="expiry-badge expiring-soon">Expiring Soon</span>}
+            </div>
+          </label>
+
           <label>
             Notes
             <textarea value={draft.note} onChange={(event) => setDraftField('note', event.target.value)} rows={3} />
@@ -168,69 +431,12 @@ export function ItemDetailPane() {
             <span>Updated: {draft.updatedAt}</span>
           </div>
 
-          <div className="save-row">
-            <button className="solid" onClick={() => void saveCurrentItem()} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save Item'}</button>
-            <button className="ghost" onClick={() => void removeCurrentItem()} disabled={isSaving}>Delete Item</button>
-          </div>
-        </div>
-      )}
+          {saveError && <p className="password-mismatch-msg">{saveError}</p>}
 
-      {activePanel === 'generator' && (
-        <div className="generator-panel">
-          <h3>Password Generator</h3>
-          <p className="muted">Policy-aware generation with ambiguity controls.</p>
-          <label>
-            Length: {genLength}
-            <input
-              type="range"
-              min={12}
-              max={48}
-              value={genLength}
-              onChange={(event) => {
-                const nextLength = Number(event.target.value)
-                setGenLength(nextLength)
-                setGeneratedPreview(generatePassword(nextLength, includeSymbols, excludeAmbiguous))
-              }}
-            />
-          </label>
-          <div className="switches">
-            <label>
-              <input
-                type="checkbox"
-                checked={includeSymbols}
-                onChange={(event) => {
-                  const next = event.target.checked
-                  setIncludeSymbols(next)
-                  setGeneratedPreview(generatePassword(genLength, next, excludeAmbiguous))
-                }}
-              />
-              Include symbols
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={excludeAmbiguous}
-                onChange={(event) => {
-                  const next = event.target.checked
-                  setExcludeAmbiguous(next)
-                  setGeneratedPreview(generatePassword(genLength, includeSymbols, next))
-                }}
-              />
-              Exclude ambiguous chars
-            </label>
-          </div>
-          <div className="preview">{generatedPreview}</div>
-          <div className="gen-actions">
-            <button
-              className="ghost"
-              onClick={() => {
-                setGeneratedPreview(generatePassword(genLength, includeSymbols, excludeAmbiguous))
-              }}
-            >
-              Regenerate
-            </button>
-            <button className="solid" onClick={() => { if (draft) { setDraftField('passwordMasked', generatedPreview); setActivePanel('details') } }}>
-              Use Password
+          <div className="save-row">
+            <button className="solid" onClick={() => void handleSave()} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save Item'}</button>
+            <button className="ghost" onClick={() => void removeCurrentItem()} disabled={isSaving}>
+              <Trash2 size={14} /> Delete Item
             </button>
           </div>
         </div>

@@ -15,6 +15,7 @@ jspm_packages/
 dist/
 dist-ssr/
 out/
+release/
 .next/
 .nuxt/
 .svelte-kit/

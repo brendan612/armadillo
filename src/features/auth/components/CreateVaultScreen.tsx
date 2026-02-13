@@ -2,6 +2,7 @@ import { CloudAuthStatusCard } from './CloudAuthStatusCard'
 import { CloudSnapshotsCard } from './CloudSnapshotsCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import logoSrc from '../../../assets/armadillo.png'
 
 export function CreateVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
@@ -12,41 +13,65 @@ export function CreateVaultScreen() {
     <div className={`app-shell platform-${effectivePlatform}`}>
       <div className="shell-noise" aria-hidden="true" />
       <DesktopTitlebar />
-      <main className="detail-grid auth-screen">
-        <h1>Create Local Armadillo Vault</h1>
-        <p className="muted">A local encrypted `.armadillo` vault file is the canonical database on this device.</p>
-        <CloudAuthStatusCard />
-        {authMessage && <p className="muted" style={{ margin: 0 }}>{authMessage}</p>}
-        <CloudSnapshotsCard />
-        {window.armadilloShell?.isElectron && (
-          <>
-            <p className="muted" style={{ margin: 0 }}>Vault file path: {localVaultPath || 'Not set'}</p>
-            <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
-          </>
-        )}
-        <label>
-          Master Password
-          <input
-            type="password"
-            name="armadillo_new_master_password"
-            autoComplete="new-password"
-            value={createPassword}
-            onChange={(event) => setCreatePassword(event.target.value)}
-          />
-        </label>
-        <label>
-          Confirm Master Password
-          <input
-            type="password"
-            name="armadillo_confirm_master_password"
-            autoComplete="new-password"
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-          />
-        </label>
-        {vaultError && <p style={{ color: '#d85f5f' }}>{vaultError}</p>}
-        <button className="solid" onClick={() => void createVault()}>Create Encrypted Vault</button>
-        {pendingVaultExists && <button className="ghost" onClick={() => setPhase('unlock')}>Unlock Existing Vault</button>}
+      <main className="auth-screen">
+        <div className="auth-card">
+          <div className="auth-hero">
+            <img className="auth-icon" src={logoSrc} alt="Armadillo" />
+            <h1>Armadillo</h1>
+            <p className="auth-tagline">Create a new encrypted vault</p>
+          </div>
+
+          <CloudAuthStatusCard />
+          {authMessage && <p className="muted" style={{ margin: 0, textAlign: 'center' }}>{authMessage}</p>}
+          <CloudSnapshotsCard />
+
+          {window.armadilloShell?.isElectron && (
+            <div className="auth-secondary">
+              <p className="muted" style={{ margin: 0 }}>
+                {localVaultPath || 'No vault file location set'}
+              </p>
+              <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+            </div>
+          )}
+
+          <div className="auth-form-section">
+            <label>
+              Master Password
+              <input
+                type="password"
+                name="armadillo_new_master_password"
+                autoComplete="new-password"
+                placeholder="Choose a strong master password"
+                value={createPassword}
+                onChange={(event) => setCreatePassword(event.target.value)}
+              />
+            </label>
+            <label>
+              Confirm Password
+              <input
+                type="password"
+                name="armadillo_confirm_master_password"
+                autoComplete="new-password"
+                placeholder="Re-enter master password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </label>
+          </div>
+
+          {vaultError && <p className="auth-error">{vaultError}</p>}
+
+          <button className="solid auth-primary-btn" onClick={() => void createVault()}>Create Encrypted Vault</button>
+
+          {pendingVaultExists && (
+            <>
+              <div className="auth-divider" />
+              <div className="auth-secondary">
+                <button className="ghost" onClick={() => setPhase('unlock')}>Unlock Existing Vault</button>
+              </div>
+            </>
+          )}
+        </div>
       </main>
     </div>
   )
