@@ -6,7 +6,7 @@ import logoSrc from '../../../assets/armadillo.png'
 
 export function CreateVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { createPassword, confirmPassword, vaultError, pendingVaultExists, authMessage, localVaultPath } = useVaultAppState()
+  const { createPassword, confirmPassword, vaultError, pendingVaultExists, authMessage, localVaultPath, storageMode, cloudCacheExpiresAt } = useVaultAppState()
   const { setCreatePassword, setConfirmPassword, createVault, setPhase, chooseLocalVaultLocation } = useVaultAppActions()
 
   return (
@@ -25,12 +25,21 @@ export function CreateVaultScreen() {
           {authMessage && <p className="muted" style={{ margin: 0, textAlign: 'center' }}>{authMessage}</p>}
           <CloudSnapshotsCard />
 
-          {window.armadilloShell?.isElectron && (
+          {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
             <div className="auth-secondary">
               <p className="muted" style={{ margin: 0 }}>
                 {localVaultPath || 'No vault file location set'}
               </p>
               <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
+            </div>
+          )}
+          {storageMode === 'cloud_only' && (
+            <div className="auth-secondary">
+              <p className="muted" style={{ margin: 0 }}>
+                {cloudCacheExpiresAt
+                  ? `Cloud-only cache expires ${new Date(cloudCacheExpiresAt).toLocaleString()}`
+                  : 'Cloud-only mode active. Vault data will be cached locally without a permanent file.'}
+              </p>
             </div>
           )}
 

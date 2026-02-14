@@ -1,4 +1,6 @@
-﻿import { decryptJsonWithKey } from './crypto'
+import { Capacitor } from '@capacitor/core'
+import { decryptJsonWithKey } from './crypto'
+import BiometricBridge from '../plugins/biometricBridge'
 import type { ArmadilloVaultFile, VaultPayload, VaultSession } from '../types/vault'
 
 type WrappedKey = {
@@ -6,15 +8,28 @@ type WrappedKey = {
   ciphertext: string
 }
 
-type BiometricMeta = {
+type LegacyWebBiometricMeta = {
   credentialId: string
   keyId: string
   wrappedVaultKey: WrappedKey
 }
 
+type WebBiometricMeta = LegacyWebBiometricMeta & {
+  provider?: 'webauthn'
+}
+
+type NativeBiometricMeta = {
+  provider: 'android-native'
+  keyAlias: string
+  wrappedVaultKey: WrappedKey
+}
+
+type BiometricMeta = WebBiometricMeta | NativeBiometricMeta
+
 const META_KEY = 'armadillo.biometric.meta'
 const DB_NAME = 'armadillo-secure-keys'
 const STORE_NAME = 'keys'
+const DEFAULT_ANDROID_KEY_ALIAS = 'armadillo_biometric_vault_key'
 
 function toBase64Url(bytes: Uint8Array) {
   let binary = ''
@@ -63,6 +78,32 @@ function fromBase64(encoded: string) {
   return bytes
 }
 
+function isNativeAndroidRuntime() {
+  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+}
+
+function isWrappedKey(value: unknown): value is WrappedKey {
+  if (!value || typeof value !== 'object') return false
+  const row = value as { nonce?: unknown; ciphertext?: unknown }
+  return typeof row.nonce === 'string' && typeof row.ciphertext === 'string'
+}
+
+function isNativeMeta(value: unknown): value is NativeBiometricMeta {
+  if (!value || typeof value !== 'object') return false
+  const row = value as { provider?: unknown; keyAlias?: unknown; wrappedVaultKey?: unknown }
+  return row.provider === 'android-native' && typeof row.keyAlias === 'string' && isWrappedKey(row.wrappedVaultKey)
+}
+
+function isWebMeta(value: unknown): value is WebBiometricMeta {
+  if (!value || typeof value !== 'object') return false
+  const row = value as { provider?: unknown; credentialId?: unknown; keyId?: unknown; wrappedVaultKey?: unknown }
+  const validProvider = row.provider === undefined || row.provider === 'webauthn'
+  return validProvider
+    && typeof row.credentialId === 'string'
+    && typeof row.keyId === 'string'
+    && isWrappedKey(row.wrappedVaultKey)
+}
+
 function loadMeta(): BiometricMeta | null {
   const raw = localStorage.getItem(META_KEY)
   if (!raw) {
@@ -70,7 +111,10 @@ function loadMeta(): BiometricMeta | null {
   }
 
   try {
-    return JSON.parse(raw) as BiometricMeta
+    const parsed = JSON.parse(raw) as unknown
+    if (isNativeMeta(parsed)) return parsed
+    if (isWebMeta(parsed)) return parsed
+    return null
   } catch {
     return null
   }
@@ -159,7 +203,7 @@ async function unwrapRawVaultKeyWithDeviceKey(deviceKey: CryptoKey, wrapped: Wra
 
 async function getOrCreateBiometricCredential() {
   const existing = loadMeta()
-  if (existing) {
+  if (existing && isWebMeta(existing)) {
     return existing.credentialId
   }
 
@@ -207,10 +251,30 @@ async function authenticateCredential(credentialId: string) {
 }
 
 export function biometricSupported() {
+  if (isNativeAndroidRuntime()) {
+    return true
+  }
   return typeof window !== 'undefined' && Boolean(window.PublicKeyCredential) && typeof indexedDB !== 'undefined'
 }
 
 export async function enrollBiometricQuickUnlock(session: VaultSession) {
+  if (isNativeAndroidRuntime()) {
+    const rawVaultKey = new Uint8Array(await crypto.subtle.exportKey('raw', session.vaultKey))
+    const wrapped = await BiometricBridge.wrapVaultKey({
+      keyAlias: DEFAULT_ANDROID_KEY_ALIAS,
+      rawVaultKeyBase64: toBase64(rawVaultKey),
+    })
+    saveMeta({
+      provider: 'android-native',
+      keyAlias: wrapped.keyAlias,
+      wrappedVaultKey: {
+        nonce: wrapped.ivBase64,
+        ciphertext: wrapped.ciphertextBase64,
+      },
+    })
+    return
+  }
+
   if (!biometricSupported()) {
     throw new Error('Biometric quick unlock is not supported on this device')
   }
@@ -229,7 +293,7 @@ export async function enrollBiometricQuickUnlock(session: VaultSession) {
   const keyId = `key_${crypto.randomUUID()}`
 
   await putDeviceKey(keyId, deviceKey)
-  saveMeta({ credentialId, keyId, wrappedVaultKey })
+  saveMeta({ provider: 'webauthn', credentialId, keyId, wrappedVaultKey })
 }
 
 export async function unlockWithBiometric(file: ArmadilloVaultFile): Promise<VaultSession> {
@@ -238,14 +302,30 @@ export async function unlockWithBiometric(file: ArmadilloVaultFile): Promise<Vau
     throw new Error('Biometric quick unlock is not enrolled for this vault')
   }
 
-  await authenticateCredential(meta.credentialId)
-  const deviceKey = await getDeviceKey(meta.keyId)
-  if (!deviceKey) {
-    throw new Error('Biometric device key is unavailable')
+  let rawVaultKey: Uint8Array
+
+  if (isNativeMeta(meta)) {
+    if (!isNativeAndroidRuntime()) {
+      throw new Error('Native biometric unlock is available in the Android app')
+    }
+
+    const unwrapped = await BiometricBridge.unwrapVaultKey({
+      keyAlias: meta.keyAlias,
+      ivBase64: meta.wrappedVaultKey.nonce,
+      ciphertextBase64: meta.wrappedVaultKey.ciphertext,
+    })
+    rawVaultKey = fromBase64(unwrapped.rawVaultKeyBase64)
+  } else {
+    await authenticateCredential(meta.credentialId)
+    const deviceKey = await getDeviceKey(meta.keyId)
+    if (!deviceKey) {
+      throw new Error('Biometric device key is unavailable')
+    }
+
+    rawVaultKey = await unwrapRawVaultKeyWithDeviceKey(deviceKey, meta.wrappedVaultKey)
   }
 
-  const rawVaultKey = await unwrapRawVaultKeyWithDeviceKey(deviceKey, meta.wrappedVaultKey)
-  const vaultKey = await crypto.subtle.importKey('raw', toArrayBuffer(rawVaultKey), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  const vaultKey = await crypto.subtle.importKey('raw', toArrayBuffer(rawVaultKey), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt'])
   const payload = await decryptJsonWithKey<VaultPayload>(vaultKey, file.vaultData)
 
   return {

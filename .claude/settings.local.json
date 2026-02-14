@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(cd:*)",
+      "Bash(dir:*)",
+      "WebFetch(domain:code.yawk.at)",
+      "WebFetch(domain:github.com)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:web:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(npx vite:*)",
+      "Bash(where:*)",
+      "Bash(npx --yes sharp-cli:*)",
+      "Bash(node -e:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(del \"C:\\\\Users\\\\Bren\\\\Desktop\\\\random shit\\\\armadillo\\\\public\\\\vite.svg\")"
+    ]
+  }
+}

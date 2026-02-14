@@ -3,8 +3,8 @@ import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function ItemListPane() {
-  const { query, selectedNode, folderFilterMode, trash, mobileStep } = useVaultAppState()
-  const { filtered, selected, folderPathById } = useVaultAppDerived()
+  const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep } = useVaultAppState()
+  const { filtered, folderPathById, effectivePlatform } = useVaultAppDerived()
   const { folderLongPressTimerRef } = useVaultAppRefs()
   const {
     setQuery,
@@ -27,7 +27,7 @@ export function ItemListPane() {
           <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
           Menu
         </button>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, URL, tag, category..." />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, URL, tag, folder..." />
         {selectedNode.startsWith('folder:') && (
           <div className="toggle-row">
             <button className={folderFilterMode === 'direct' ? 'active' : ''} onClick={() => setFolderFilterMode('direct')}>Direct</button>
@@ -66,10 +66,12 @@ export function ItemListPane() {
           {filtered.map((item) => (
             <li
               key={item.id}
-              className={item.id === selected?.id ? 'active' : ''}
+              className={item.id === selectedId ? 'active' : ''}
               onClick={() => {
                 setSelectedId(item.id)
-                setMobileStep('detail')
+                if (effectivePlatform === 'mobile') {
+                  setMobileStep('detail')
+                }
               }}
               onContextMenu={(event) => {
                 event.preventDefault()
@@ -104,62 +106,64 @@ export function ItemListPane() {
       <>
         <div className="item-info">
           <div className="item-inline-top">
-            <strong>{item.title || 'Untitled'}</strong>
-            {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
-            <div className="item-inline-actions">
-              {item.note && (
-                <button
-                  className="item-action-btn"
-                  title="Open notes"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    setSelectedId(item.id)
-                    setActivePanel('details')
-                    setMobileStep('detail')
-                  }}
-                >
-                  <NotebookPen size={14} aria-hidden="true" />
-                </button>
-              )}
-              <button
-                className="item-action-btn"
-                title="Copy username"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  void copyToClipboard(item.username || '', 'Username copied to clipboard', 'Clipboard copy failed')
-                }}
-              >
-                <UserRound size={14} aria-hidden="true" />
-              </button>
-              <button
-                className="item-action-btn"
-                title="Copy password"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  void copyToClipboard(item.passwordMasked || '', 'Password copied to clipboard', 'Clipboard copy failed')
-                }}
-              >
-                <Copy size={14} aria-hidden="true" />
-              </button>
-              <button
-                className="item-action-btn"
-                title="Autofill in previous app"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  void autofillItem(item)
-                }}
-              >
-                <Keyboard size={14} aria-hidden="true" />
-              </button>
-            </div>
+            <strong className="item-title">{item.title || 'Untitled'}</strong>
           </div>
+          {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
           <p className="item-secondary">
-            <span>{item.username || 'No username'}</span>
-            <span>&bull;</span>
+            <span className="item-username">{item.username || 'No username'}</span>
+            <span className="item-bullet" aria-hidden="true">&bull;</span>
             <span>{item.passwordMasked ? '*'.repeat(Math.min(24, Math.max(8, item.passwordMasked.length))) : 'No password'}</span>
           </p>
         </div>
         <div className="row-meta">
+          <div className="item-inline-actions">
+            {item.note && (
+              <button
+                className="item-action-btn"
+                title="Open notes"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedId(item.id)
+                  setActivePanel('details')
+                  if (effectivePlatform === 'mobile') {
+                    setMobileStep('detail')
+                  }
+                }}
+              >
+                <NotebookPen size={14} aria-hidden="true" />
+              </button>
+            )}
+            <button
+              className="item-action-btn"
+              title="Copy username"
+              onClick={(event) => {
+                event.stopPropagation()
+                void copyToClipboard(item.username || '', 'Username copied to clipboard', 'Clipboard copy failed')
+              }}
+            >
+              <UserRound size={14} aria-hidden="true" />
+            </button>
+            <button
+              className="item-action-btn"
+              title="Copy password"
+              onClick={(event) => {
+                event.stopPropagation()
+                void copyToClipboard(item.passwordMasked || '', 'Password copied to clipboard', 'Clipboard copy failed')
+              }}
+            >
+              <Copy size={14} aria-hidden="true" />
+            </button>
+            <button
+              className="item-action-btn"
+              title="Autofill in previous app"
+              onClick={(event) => {
+                event.stopPropagation()
+                void autofillItem(item)
+              }}
+            >
+              <Keyboard size={14} aria-hidden="true" />
+            </button>
+          </div>
           <span className="folder-tag">{item.folderId ? (pathById.get(item.folderId) ?? item.folder) : 'Unfiled'}</span>
         </div>
       </>

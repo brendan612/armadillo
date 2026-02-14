@@ -1,5 +1,6 @@
 import { Fingerprint } from 'lucide-react'
 import { biometricSupported } from '../../../lib/biometric'
+import { isNativeAndroid } from '../../../shared/utils/platform'
 import { CloudAuthStatusCard } from './CloudAuthStatusCard'
 import { CloudSnapshotsCard } from './CloudSnapshotsCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
@@ -8,7 +9,7 @@ import logoSrc from '../../../assets/armadillo.png'
 
 export function UnlockVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { unlockPassword, vaultError, pendingVaultExists, authMessage, localVaultPath } = useVaultAppState()
+  const { unlockPassword, isUnlocking, vaultError, pendingVaultExists, authMessage, localVaultPath, biometricEnabled, storageMode, cloudCacheExpiresAt } = useVaultAppState()
   const { importFileInputRef } = useVaultAppRefs()
   const { setUnlockPassword, unlockVault, unlockVaultBiometric, triggerImport, setPhase, chooseLocalVaultLocation, onImportFileSelected } = useVaultAppActions()
 
@@ -30,6 +31,7 @@ export function UnlockVaultScreen() {
             data-lpignore="true"
             onSubmit={(event) => {
               event.preventDefault()
+              if (isUnlocking) return
               void unlockVault()
             }}
           >
@@ -48,20 +50,36 @@ export function UnlockVaultScreen() {
                 placeholder="Enter master password"
                 value={unlockPassword}
                 onChange={(event) => setUnlockPassword(event.target.value)}
+                disabled={isUnlocking}
               />
-              <button className="solid" type="submit">Unlock</button>
-              {biometricSupported() && pendingVaultExists && (
+              <button className="solid unlock-submit-btn" type="submit" disabled={isUnlocking} aria-busy={isUnlocking}>
+                {isUnlocking ? (
+                  <span className="unlock-btn-busy">
+                    <span className="unlock-spinner" aria-hidden="true" />
+                    Unlocking
+                  </span>
+                ) : (
+                  'Unlock'
+                )}
+              </button>
+              {isNativeAndroid() && biometricSupported() && biometricEnabled && pendingVaultExists && (
                 <button
                   className="ghost biometric-inline-btn"
                   type="button"
                   aria-label="Unlock with Biometrics"
                   title="Unlock with Biometrics"
+                  disabled={isUnlocking}
                   onClick={() => void unlockVaultBiometric()}
                 >
                   <Fingerprint size={16} strokeWidth={2} aria-hidden="true" />
                 </button>
               )}
             </div>
+            {isUnlocking && (
+              <p className="auth-unlock-status" role="status" aria-live="polite">
+                Decrypting vault and preparing workspace...
+              </p>
+            )}
           </form>
 
           {vaultError && <p className="auth-error">{vaultError}</p>}
@@ -73,13 +91,20 @@ export function UnlockVaultScreen() {
           <div className="auth-divider" />
 
           <div className="auth-secondary">
-            {window.armadilloShell?.isElectron && (
+            {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
               <>
                 <p className="muted" style={{ margin: 0 }}>
                   {localVaultPath || 'No vault file selected'}
                 </p>
                 <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
               </>
+            )}
+            {storageMode === 'cloud_only' && (
+              <p className="muted" style={{ margin: 0 }}>
+                {cloudCacheExpiresAt
+                  ? `Cloud-only cache expires ${new Date(cloudCacheExpiresAt).toLocaleString()}`
+                  : 'Cloud-only mode active. No local vault file is stored permanently.'}
+              </p>
             )}
             <button className="ghost" onClick={triggerImport}>Import .armadillo File</button>
             {!pendingVaultExists && (

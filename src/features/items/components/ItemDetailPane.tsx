@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, Dices, RefreshCw, Save, X, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronLeft, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
+import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 function getExpiryStatus(expiryDate: string | null | undefined): 'expired' | 'expiring' | null {
@@ -17,23 +18,43 @@ function getExpiryStatus(expiryDate: string | null | undefined): 'expired' | 'ex
   return null
 }
 
+function snapshotItemForDirtyCheck(item: VaultItem | null) {
+  if (!item) return null
+  return {
+    id: item.id,
+    title: item.title,
+    username: item.username,
+    passwordMasked: item.passwordMasked,
+    urls: [...item.urls],
+    folder: item.folder,
+    folderId: item.folderId,
+    tags: [...item.tags],
+    risk: item.risk,
+    updatedAt: item.updatedAt,
+    note: item.note,
+    securityQuestions: item.securityQuestions.map((entry) => ({
+      question: entry.question,
+      answer: entry.answer,
+    })),
+    passwordExpiryDate: item.passwordExpiryDate,
+  }
+}
+
 export function ItemDetailPane() {
   const {
     mobileStep,
     draft,
     showPassword,
-    newCategoryValue,
     newFolderValue,
     isSaving,
     vaultSettings,
   } = useVaultAppState()
-  const { selected, categoryOptions, folderOptions } = useVaultAppDerived()
+  const { selected, folderOptions } = useVaultAppDerived()
   const {
     closeOpenItem,
     setDraftField,
     setShowPassword,
     copyPassword,
-    setNewCategoryValue,
     setNewFolderValue,
     updateSecurityQuestion,
     saveCurrentItem,
@@ -58,7 +79,7 @@ export function ItemDetailPane() {
 
   // Reset confirm when draft changes
   useEffect(() => {
-    setPasswordConfirm('')
+    setPasswordConfirm(draft?.passwordMasked ?? '')
     setSaveError('')
   }, [draft?.id])
 
@@ -128,13 +149,46 @@ export function ItemDetailPane() {
     setSaveError('')
     if (passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
       setSaveError('Passwords do not match')
-      return
+      return false
     }
-    await saveCurrentItem()
+    try {
+      await saveCurrentItem()
+      return true
+    } catch {
+      setSaveError('Failed to save item')
+      return false
+    }
   }
 
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getExpiryStatus(draft.passwordExpiryDate) : null
+  const hasUnsavedChanges = useMemo(() => {
+    if (!draft || !selected) return false
+    return JSON.stringify(snapshotItemForDirtyCheck(draft)) !== JSON.stringify(snapshotItemForDirtyCheck(selected))
+  }, [draft, selected])
+
+  async function handleCloseWithUnsavedPrompt() {
+    if (isSaving) return
+    if (!hasUnsavedChanges) {
+      closeOpenItem()
+      return
+    }
+
+    const shouldSave = window.confirm(
+      'You have unsaved changes.\nPress OK to save and close.\nPress Cancel to choose discard.',
+    )
+    if (shouldSave) {
+      const saved = await handleSave()
+      if (!saved) return
+      closeOpenItem()
+      return
+    }
+
+    const shouldDiscard = window.confirm('Discard unsaved changes and close this item?')
+    if (shouldDiscard) {
+      closeOpenItem()
+    }
+  }
 
   return (
     <section className={`pane pane-right ${mobileStep === 'detail' ? 'mobile-active' : ''}`}>
@@ -149,9 +203,17 @@ export function ItemDetailPane() {
         </div>
         <div className="detail-head-actions">
           {selected && (
-            <button className="ghost detail-close-btn" onClick={closeOpenItem} title="Close item">
-              Close
-            </button>
+            <>
+              <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving}>
+                {isSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button className="ghost detail-delete-btn" onClick={() => void removeCurrentItem()} disabled={isSaving} title="Delete item">
+                <Trash2 size={14} /> Delete
+              </button>
+              <button className="ghost detail-close-btn" onClick={() => void handleCloseWithUnsavedPrompt()} disabled={isSaving} title="Close item">
+                Close
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -176,22 +238,34 @@ export function ItemDetailPane() {
                 value={draft.passwordMasked}
                 onChange={(event) => setDraftField('passwordMasked', event.target.value)}
               />
-              <button onClick={() => setShowPassword((current) => !current)}>{showPassword ? 'Hide' : 'Reveal'}</button>
-              <button onClick={() => void copyPassword()}>Copy</button>
-              <div className="gen-popover-anchor" ref={genPopoverRef}>
+              <div className="inline-field-actions">
                 <button
-                  title="Generate password"
-                  onClick={() => {
-                    setShowGenerator((prev) => !prev)
-                    if (!showGenerator) {
-                      regenerate(genConfig)
-                      setShowGenEditor(false)
-                      setShowPresetSave(false)
-                    }
-                  }}
+                  className="inline-icon-btn"
+                  type="button"
+                  title={showPassword ? 'Hide password' : 'Reveal password'}
+                  onClick={() => setShowPassword((current) => !current)}
                 >
-                  <Dices size={15} strokeWidth={2} />
+                  {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
                 </button>
+                <button className="inline-icon-btn" type="button" title="Copy password" onClick={() => void copyPassword()}>
+                  <Copy size={15} strokeWidth={2} />
+                </button>
+                <div className="gen-popover-anchor" ref={genPopoverRef}>
+                  <button
+                    className="inline-icon-btn"
+                    type="button"
+                    title="Generate password"
+                    onClick={() => {
+                      setShowGenerator((prev) => !prev)
+                      if (!showGenerator) {
+                        regenerate(genConfig)
+                        setShowGenEditor(false)
+                        setShowPresetSave(false)
+                      }
+                    }}
+                  >
+                    <Dices size={15} strokeWidth={2} />
+                  </button>
 
                 {showGenerator && (
                   <div className="gen-popover">
@@ -296,6 +370,7 @@ export function ItemDetailPane() {
                     )}
                   </div>
                 )}
+                </div>
               </div>
             </div>
           </label>
@@ -321,33 +396,13 @@ export function ItemDetailPane() {
               onChange={(event) =>
                 setDraftField(
                   'urls',
-                  event.target.value
-                    .split('\n')
-                    .map((line) => line.trim())
-                    .filter(Boolean),
+                  event.target.value.split(/\r?\n/),
                 )
               }
               rows={3}
             />
           </label>
           <div className="compact-meta-row">
-            <label>
-              Category
-              <input
-                list="category-options"
-                value={newCategoryValue}
-                onChange={(event) => {
-                  setNewCategoryValue(event.target.value)
-                  setDraftField('category', event.target.value)
-                }}
-                placeholder="Select or create category"
-              />
-              <datalist id="category-options">
-                {categoryOptions.map((option) => (
-                  <option key={option.id} value={option.label} />
-                ))}
-              </datalist>
-            </label>
             <label>
               Folder
               <input
@@ -432,13 +487,6 @@ export function ItemDetailPane() {
           </div>
 
           {saveError && <p className="password-mismatch-msg">{saveError}</p>}
-
-          <div className="save-row">
-            <button className="solid" onClick={() => void handleSave()} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save Item'}</button>
-            <button className="ghost" onClick={() => void removeCurrentItem()} disabled={isSaving}>
-              <Trash2 size={14} /> Delete Item
-            </button>
-          </div>
         </div>
       )}
     </section>

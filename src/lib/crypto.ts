@@ -150,7 +150,8 @@ export async function wrapVaultKey(masterKey: CryptoKey, vaultKey: CryptoKey) {
 
 export async function unwrapVaultKey(masterKey: CryptoKey, wrapped: { nonce: string; ciphertext: string }) {
   const rawKey = await decryptBytesWithKey(masterKey, wrapped)
-  return requireSubtleCrypto().importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  // Keep vault keys extractable after unlock so biometric enrollment can wrap them.
+  return requireSubtleCrypto().importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt'])
 }
 
 export async function encryptJsonWithKey<T>(key: CryptoKey, value: T) {

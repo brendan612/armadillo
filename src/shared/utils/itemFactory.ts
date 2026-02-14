@@ -2,9 +2,7 @@ import type { VaultItem } from '../../types/vault'
 
 export function buildEmptyItem(
   folderName = '',
-  categoryName = '',
   folderId: string | null = null,
-  categoryId: string | null = null,
 ): VaultItem {
   return {
     id: crypto.randomUUID(),
@@ -12,9 +10,7 @@ export function buildEmptyItem(
     username: '',
     passwordMasked: '',
     urls: [],
-    category: categoryName,
     folder: folderName,
-    categoryId,
     folderId,
     tags: [],
     risk: 'safe',

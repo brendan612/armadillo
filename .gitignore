@@ -50,3 +50,6 @@ coverage/
 # Vite temp logs
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Local self-hosted sync data
+services/sync-gateway/data.json

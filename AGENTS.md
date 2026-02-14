@@ -9,6 +9,96 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-14
+  - Updated `package.json`, `electron/main.cjs`
+  - Branded Windows desktop packaging/runtime identity by forcing executable/process/app naming to Armadillo and explicitly setting NSIS installer/uninstaller/header icons to the Armadillo `.ico` asset.
+- 2026-02-14
+  - Updated `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/shared/utils/itemFactory.ts`
+  - Removed category from the vault schema/storage model and app state, and migrated any legacy item category value into tags during payload normalization to avoid losing organization metadata.
+- 2026-02-14
+  - Updated `src/features/items/components/ItemDetailPane.tsx`, `src/app/hooks/useVaultApp.ts`
+  - Removed category editing from the item detail workflow and standardized organization on folder path + tags only (while preserving legacy category data in stored items for backward compatibility).
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`
+  - Fixed detail-pane folder/category typing lock by only initializing the category/folder editor values when switching selected items (instead of reapplying folderId-derived paths while the user is editing).
+- 2026-02-14
+  - Updated `services/sync-gateway/server.mjs`, `services/sync-gateway/README.md`, `src/lib/providers/selfHostedProvider.ts`, `src/lib/syncTypes.ts`, `README.md`
+  - Hardened self-hosted SSE auth by introducing short-lived signed stream tokens (`POST /v1/events/token` -> `GET /v1/events/stream?streamToken=...`), removing raw auth token usage in SSE URLs and adding automatic client re-subscribe with fresh tokens.
+- 2026-02-14
+  - Updated `services/sync-gateway/server.mjs`, `services/sync-gateway/README.md`, `src/lib/syncTypes.ts`, `src/lib/syncClient.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/lib/providers/convexProvider.ts`, `src/app/hooks/useVaultApp.ts`, `README.md`
+  - Added server-push sync updates via SSE for self-hosted mode (`/v1/events/stream`) and wired client subscriptions to trigger silent refresh on remote vault updates, with slower polling retained as fallback.
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`
+  - Reduced desktop topbar sync-status churn by making auto-sync bootstrap checks silent and increasing background polling intervals (desktop/web/mobile differentiated) so routine cloud checks no longer spam “checking for updates.”
+- 2026-02-14
+  - Updated `electron/main.cjs`
+  - Fixed splash interference with auth interactions by making the splash click-through (`setIgnoreMouseEvents`), dropping always-on-top during close, destroying it reliably after fade, and forcing focus to the main window on reveal.
+- 2026-02-14
+  - Updated `electron/main.cjs`
+  - Wired desktop splash/main-window colors to parse theme tokens from `src/index.css` (with built `dist/assets/index-*.css` fallback), so startup branding automatically stays in sync with app theme changes.
+- 2026-02-14
+  - Updated `electron/main.cjs`
+  - Restyled the desktop splash to match the auth-screen aesthetic (centered hero card, Armadillo logo, breathing glow, and refined loading bar) for a more branded startup experience.
+- 2026-02-14
+  - Updated `electron/main.cjs`
+  - Added a branded desktop splash window with a short fade-out transition that displays during startup and closes automatically when the main renderer is ready, eliminating blank launch visuals.
+- 2026-02-14
+  - Updated `electron/main.cjs`
+  - Prevented desktop startup white-screen flash by creating the BrowserWindow hidden and revealing it only after renderer readiness (`ready-to-show`/`did-finish-load`) with a fallback timer.
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/lib/vaultFile.ts`, `src/lib/syncClient.ts`, `src/lib/syncTypes.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/types/vault.ts`, `src/features/settings/components/SettingsModal.tsx`, `src/features/auth/components/CloudAuthStatusCard.tsx`, `src/features/auth/components/CreateVaultScreen.tsx`, `src/features/auth/components/UnlockVaultScreen.tsx`, `src/main.tsx`, `services/sync-gateway/server.mjs`, `services/sync-gateway/README.md`, `README.md`, `.env.example`, `.gitignore`, `package.json`
+  - Added cloud-only storage mode with encrypted TTL cache (no permanent local vault file), introduced pluggable sync providers (Convex/self-hosted), and shipped a runnable self-hosted sync gateway baseline with org/member/rekey endpoints for enterprise-style deployments.
+- 2026-02-13
+  - Updated `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Moved item Save/Delete actions into the detail header alongside Close (desktop+mobile), and made Close prompt to save or discard when unsaved edits exist.
+- 2026-02-13
+  - Updated `src/app/hooks/useVaultApp.ts`
+  - Made unlock loading feedback consistent by forcing one render frame + a short minimum spinner visibility before successful unlock transitions, so correct-password unlocks visibly show progress.
+- 2026-02-13
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemListPane.tsx`, `electron/main.cjs`
+  - Reduced item-to-detail selection lag by making draft selection synchronous and optimized desktop auto-type latency by switching to clipboard-based paste with shorter handoff timing.
+- 2026-02-13
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/layout/components/Topbar.tsx`, `src/app/AppShell.tsx`, `src/index.css`
+  - Added near-real-time cloud refresh polling for auto-sync, plus manual refresh on desktop/web and mobile swipe-down-to-refresh so connected devices pull remote updates quickly after changes.
+- 2026-02-13
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/auth/components/UnlockVaultScreen.tsx`, `src/index.css`
+  - Added an explicit unlock-in-progress state with a spinner/status message on the unlock screen and disabled repeat unlock/biometric clicks while decryption is running.
+- 2026-02-13
+  - Updated `vite.config.ts`
+  - Fixed Windows installer white-screen startup by switching Vite build asset URLs to relative paths (`base: './'`) so Electron `file://` can load bundled JS/CSS.
+- 2026-02-13
+  - Updated `android/app/src/main/java/com/armadillo/vault/biometric/BiometricBridgePlugin.java`
+  - Fixed Android biometric prompt threading by dispatching BiometricPrompt creation/authentication onto the host activity UI thread, resolving the fragment-host main-thread runtime error.
+- 2026-02-13
+  - Updated `android/app/src/main/java/com/armadillo/vault/biometric/BiometricBridgePlugin.java`
+  - Fixed Android biometric prompt initialization by setting explicit negative button text, resolving enrollment failure on devices requiring non-empty cancel text.
+- 2026-02-13
+  - Updated `src/lib/crypto.ts`, `src/lib/biometric.ts`, `src/app/hooks/useVaultApp.ts`
+  - Fixed biometric enrollment failure for unlocked vaults by keeping unwrapped vault keys extractable (so mobile biometric wrapping can export raw key material) and added a targeted legacy-session retry message.
+- 2026-02-13
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`
+  - Fixed silent biometric button behavior by surfacing explicit enrollment feedback/errors in Settings on Android and adding clear failure text (including rebuild guidance when the native plugin is missing from the installed build).
+- 2026-02-13
+  - Updated `src/lib/biometric.ts`, `src/plugins/biometricBridge.ts`, `src/features/settings/components/SettingsModal.tsx`, `android/app/src/main/java/com/armadillo/vault/MainActivity.java`, `android/app/src/main/java/com/armadillo/vault/biometric/BiometricBridgePlugin.java`, `android/app/build.gradle`
+  - Added a native Android biometric bridge (Keystore + BiometricPrompt) for quick unlock, switched mobile biometric flow to native encryption/decryption, and made the Settings Security section always show a clear biometric control/message instead of rendering blank.
+- 2026-02-13
+  - Updated `src/features/items/components/ItemDetailPane.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/auth/components/UnlockVaultScreen.tsx`, `src/features/settings/components/SettingsModal.tsx`
+  - Fixed multi-line URL entry by preserving textarea newlines during editing (then sanitizing on save), and made biometric unlock Android-app-only so mobile flow is explicit while hiding the unlock icon on desktop.
+- 2026-02-13
+  - Updated `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/shared/utils/autoFoldering.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`, `src/index.css`
+  - Upgraded auto-foldering to a richer deterministic taxonomy with explainable assignments, editable preview actions (reassign/exclude/lock), and persisted auto-folder preferences in vault settings.
+- 2026-02-13
+  - Updated `src/shared/utils/autoFoldering.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`, `src/index.css`, `README.md`
+  - Added an auto-folder workflow for unfiled credentials with preview-then-apply, capped smart top-level grouping, threshold-based subfolders, and bulk folder assignment from Settings.
+- 2026-02-13
+  - Updated `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/index.css`
+  - Improved credential editing/list UX by pre-filling confirm-password for saved items, switching password actions to inline icon controls (including generator), and fixing middle-pane item text truncation/alignment so titles/usernames remain fully visible.
+- 2026-02-13
+  - Updated `src/index.css`
+  - Fixed desktop layout so the right detail pane no longer stretches with long item lists; it now stays sticky with a fixed viewport-based height and its own internal scroll.
+- 2026-02-13
+  - Updated `src/shared/utils/googlePasswordCsv.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`, `src/app/AppShell.tsx`, `README.md`
+  - Added Google Password Manager CSV import support with a dedicated import button, robust CSV parsing, and direct credential ingestion into the unlocked vault.
 - 2026-02-13
   - Updated `src/features/auth/components/UnlockVaultScreen.tsx`, `src/features/auth/components/CreateVaultScreen.tsx`, `src/index.css`
   - Redesigned auth screens (unlock/create) with a centered card layout, shield icon hero with breathing glow, unified password input group, staggered entrance animations, and full responsive support across web/desktop/mobile.

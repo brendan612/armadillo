@@ -1,30 +1,47 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { ConvexHttpClient } from 'convex/browser'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
 import { App as CapacitorApp } from '@capacitor/app'
 import { Browser } from '@capacitor/browser'
-import { convexConfigured, getCloudAuthStatus, listRemoteVaultsByOwner, pullRemoteSnapshot, pushRemoteSnapshot, setConvexAuthToken } from '../../lib/convexApi'
+import { getCloudAuthStatus, listRemoteVaultsByOwner, pullRemoteSnapshot, pushRemoteSnapshot, setSyncAuthToken, subscribeToVaultUpdates, syncConfigured, syncProvider } from '../../lib/syncClient'
 import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
 import { biometricEnrollmentExists, enrollBiometricQuickUnlock, unlockWithBiometric } from '../../lib/biometric'
 import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
+import { parseGooglePasswordCsv, type GooglePasswordCsvEntry } from '../../shared/utils/googlePasswordCsv'
+import {
+  buildAutoFolderPlan,
+  normalizeAutoFolderPath,
+  summarizeAutoFolderPlanDraft,
+  type AutoFolderAssignment,
+  type AutoFolderPlan,
+} from '../../shared/utils/autoFoldering'
 import { LocalNotifications } from '@capacitor/local-notifications'
 import AutofillBridge from '../../plugins/autofillBridge'
 import {
+  clearCachedVaultSnapshot,
   clearLocalVaultFile,
   createVaultFile,
+  getCachedVaultExpiresAt,
+  getCachedVaultStatus,
+  getCloudCacheTtlHours,
   getLocalVaultPath,
+  getVaultStorageMode,
+  loadCachedVaultSnapshot,
   loadLocalVaultFile,
   parseVaultFileFromText,
   readPayloadWithSessionKey,
   rewriteVaultFile,
+  saveCachedVaultSnapshot,
   saveLocalVaultFile,
+  setCloudCacheTtlHours as setStoredCloudCacheTtlHours,
   setLocalVaultPath as setStoredLocalVaultPath,
+  setVaultStorageMode as setStoredVaultStorageMode,
   serializeVaultFile,
   unlockVaultFile,
 } from '../../lib/vaultFile'
-import type { ArmadilloVaultFile, SecurityQuestion, VaultCategory, VaultFolder, VaultItem, VaultPayload, VaultSession, VaultSettings, VaultTrashEntry } from '../../types/vault'
+import type { ArmadilloVaultFile, SecurityQuestion, VaultFolder, VaultItem, VaultPayload, VaultSession, VaultSettings, VaultStorageMode, VaultTrashEntry } from '../../types/vault'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details'
@@ -40,6 +57,11 @@ type FolderInlineEditorState =
   | { mode: 'rename'; folderId: string; parentId: string | null; value: string }
 
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
+const CLOUD_LIVE_REFRESH_INTERVAL_MS_MOBILE = 4000
+const CLOUD_LIVE_REFRESH_INTERVAL_MS_WEB = 10000
+const CLOUD_LIVE_REFRESH_INTERVAL_MS_DESKTOP = 15000
+const CLOUD_LIVE_REFRESH_INTERVAL_MS_SELF_HOSTED_FALLBACK = 60000
+const UNLOCK_SPINNER_MIN_VISIBLE_MS = 240
 const DEFAULT_FOLDER_COLOR = '#7f9cff'
 const DEFAULT_FOLDER_ICON = 'folder'
 const OAUTH_VERIFIER_STORAGE_KEY = '__convexAuthOAuthVerifier'
@@ -47,16 +69,14 @@ const ANDROID_OAUTH_REDIRECT_URL = 'armadillo://oauth-callback'
 
 /* shell sections moved inline into sidebar nav */
 
-function buildEmptyItem(folderName = '', categoryName = '', folderId: string | null = null, categoryId: string | null = null): VaultItem {
+function buildEmptyItem(folderName = '', folderId: string | null = null): VaultItem {
   return {
     id: crypto.randomUUID(),
     title: 'New Credential',
     username: '',
     passwordMasked: '',
     urls: [],
-    category: categoryName,
     folder: folderName,
-    categoryId,
     folderId,
     tags: [],
     risk: 'safe',
@@ -143,21 +163,124 @@ function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
   return alerts
 }
 
+function inferImportedItemTitle(entry: GooglePasswordCsvEntry, rowNumber: number) {
+  const name = entry.name.trim()
+  if (name) return name
+  const url = entry.url.trim()
+  if (url) {
+    try {
+      const host = new URL(url).hostname.trim().replace(/^www\./i, '')
+      if (host) return host
+    } catch {
+      // Keep fallback order if URL is not valid.
+    }
+  }
+  const username = entry.username.trim()
+  if (username) return username
+  return `Imported Credential ${rowNumber}`
+}
+
+function uniqueNonEmptyStrings(values: string[] | undefined) {
+  if (!Array.isArray(values)) return []
+  const deduped = new Set<string>()
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    deduped.add(trimmed)
+  }
+  return Array.from(deduped)
+}
+
+function normalizeAutoFolderMappings(mappings: VaultSettings['autoFolderCustomMappings']) {
+  if (!Array.isArray(mappings)) return []
+  const rows: Exclude<VaultSettings['autoFolderCustomMappings'], undefined> = []
+  const deduped = new Set<string>()
+  for (const mapping of mappings) {
+    if (!mapping) continue
+    if (mapping.matchType !== 'domain' && mapping.matchType !== 'titleToken' && mapping.matchType !== 'tag') continue
+    const matchValue = mapping.matchValue.trim()
+    const targetPath = normalizeAutoFolderPath(mapping.targetPath)
+    if (!matchValue || !targetPath) continue
+    const key = `${mapping.matchType}:${matchValue.toLowerCase()}=>${targetPath.toLowerCase()}`
+    if (deduped.has(key)) continue
+    deduped.add(key)
+    rows.push({
+      id: mapping.id || crypto.randomUUID(),
+      matchType: mapping.matchType,
+      matchValue,
+      targetPath,
+    })
+  }
+  return rows
+}
+
+function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
+  return {
+    ...settings,
+    autoFolderExcludedItemIds: uniqueNonEmptyStrings(settings.autoFolderExcludedItemIds),
+    autoFolderLockedFolderPaths: uniqueNonEmptyStrings(settings.autoFolderLockedFolderPaths).map((path) => normalizeAutoFolderPath(path)).filter(Boolean),
+    autoFolderCustomMappings: normalizeAutoFolderMappings(settings.autoFolderCustomMappings),
+  }
+}
+
+function hasUnlockableVault(mode: VaultStorageMode) {
+  if (mode === 'cloud_only') {
+    return Boolean(loadCachedVaultSnapshot())
+  }
+  return Boolean(loadLocalVaultFile() || loadCachedVaultSnapshot())
+}
+
+function useSafeConvexAuth() {
+  try {
+    return useConvexAuth()
+  } catch {
+    return { isAuthenticated: false } as ReturnType<typeof useConvexAuth>
+  }
+}
+
+function useSafeAuthActions() {
+  try {
+    return useAuthActions()
+  } catch {
+    return {
+      signIn: async () => {
+        throw new Error('Convex auth provider is not configured')
+      },
+      signOut: async () => {},
+    } as unknown as ReturnType<typeof useAuthActions>
+  }
+}
+
+function useSafeAuthToken() {
+  try {
+    return useAuthToken()
+  } catch {
+    return null
+  }
+}
+
 export function useVaultApp() {
-  const hasExistingVault = Boolean(loadLocalVaultFile())
+  const initialStorageMode = getVaultStorageMode()
+  const hasExistingVault = hasUnlockableVault(initialStorageMode)
   const [phase, setPhase] = useState<AppPhase>(hasExistingVault ? 'unlock' : 'create')
   const [vaultSession, setVaultSession] = useState<VaultSession | null>(null)
   const [unlockPassword, setUnlockPassword] = useState('')
   const [createPassword, setCreatePassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [isUnlocking, setIsUnlocking] = useState(false)
   const [vaultError, setVaultError] = useState('')
   const [pendingVaultExists] = useState(hasExistingVault)
 
   const [items, setItems] = useState<VaultItem[]>([])
   const [folders, setFolders] = useState<VaultFolder[]>([])
-  const [categories, setCategories] = useState<VaultCategory[]>([])
   const [trash, setTrash] = useState<VaultTrashEntry[]>([])
-  const [vaultSettings, setVaultSettings] = useState<VaultSettings>({ trashRetentionDays: 30, generatorPresets: [] })
+  const [vaultSettings, setVaultSettings] = useState<VaultSettings>({
+    trashRetentionDays: 30,
+    generatorPresets: [],
+    autoFolderExcludedItemIds: [],
+    autoFolderLockedFolderPaths: [],
+    autoFolderCustomMappings: [],
+  })
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [activePanel, setActivePanel] = useState<Panel>('details')
@@ -169,12 +292,15 @@ export function useVaultApp() {
   const [showSettings, setShowSettings] = useState(false)
   const [selectedNode, setSelectedNode] = useState<SidebarNode>('all')
   const [folderFilterMode, setFolderFilterMode] = useState<FolderFilterMode>('direct')
+  const [storageMode, setStorageMode] = useState<VaultStorageMode>(initialStorageMode)
+  const [cloudCacheTtlHours, setCloudCacheTtlHours] = useState(() => getCloudCacheTtlHours())
+  const [cloudCacheExpiresAt, setCloudCacheExpiresAt] = useState(() => getCachedVaultExpiresAt())
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState(localStorage.getItem(CLOUD_SYNC_PREF_KEY) === 'true')
   const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
   const [authMessage, setAuthMessage] = useState('')
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
   const [cloudIdentity, setCloudIdentity] = useState('')
-  const [localVaultPath, setLocalVaultPath] = useState(() => getLocalVaultPath())
+  const [localVaultPath, setLocalVaultPath] = useState(() => (initialStorageMode === 'cloud_only' ? '' : getLocalVaultPath()))
   const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
   const [cloudVaultCandidates, setCloudVaultCandidates] = useState<ArmadilloVaultFile[]>([])
   const [showAllCloudSnapshots, setShowAllCloudSnapshots] = useState(false)
@@ -184,37 +310,54 @@ export function useVaultApp() {
   const [folderEditor, setFolderEditor] = useState<VaultFolder | null>(null)
   const [folderEditorOpen, setFolderEditorOpen] = useState(false)
   const [folderInlineEditor, setFolderInlineEditor] = useState<FolderInlineEditorState | null>(null)
-  const [newCategoryValue, setNewCategoryValue] = useState('')
   const [newFolderValue, setNewFolderValue] = useState('')
 
   const [treeContextMenu, setTreeContextMenu] = useState<TreeContextMenuState>(null)
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryAlert[]>([])
   const [expiryAlertsDismissed, setExpiryAlertsDismissed] = useState(false)
+  const [autoFolderPreview, setAutoFolderPreview] = useState<AutoFolderPlan | null>(null)
+  const [autoFolderPreviewDraft, setAutoFolderPreviewDraft] = useState<AutoFolderPlan | null>(null)
+  const [showAutoFolderPreview, setShowAutoFolderPreview] = useState(false)
+  const [autoFolderBusy, setAutoFolderBusy] = useState(false)
+  const [autoFolderError, setAutoFolderError] = useState('')
+  const [autoFolderPreferencesDirty, setAutoFolderPreferencesDirty] = useState(false)
+  const [autoFolderWarnings, setAutoFolderWarnings] = useState<string[]>([])
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const googlePasswordImportInputRef = useRef<HTMLInputElement | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
   const previousCloudAuthStateRef = useRef<CloudAuthState>('unknown')
-  const { isAuthenticated } = useConvexAuth()
-  const { signIn, signOut } = useAuthActions()
-  const authToken = useAuthToken()
+  const cloudRefreshInFlightRef = useRef(false)
+  const { isAuthenticated } = useSafeConvexAuth()
+  const { signIn, signOut } = useSafeAuthActions()
+  const authToken = useSafeAuthToken()
   const cloudConnected = cloudAuthState === 'connected'
   const authStatus = useMemo(() => {
-    if (!convexConfigured()) return 'Convex URL not configured'
+    if (!syncConfigured()) {
+      return syncProvider === 'self_hosted' ? 'Self-hosted sync URL not configured' : 'Convex URL not configured'
+    }
     if (cloudConnected) return cloudIdentity ? `Connected as ${cloudIdentity}` : 'Google account connected'
-    if (cloudAuthState === 'checking') return 'Google sign-in detected. Verifying cloud session...'
+    if (cloudAuthState === 'checking') {
+      return syncProvider === 'self_hosted'
+        ? 'Checking self-hosted sync authentication...'
+        : 'Google sign-in detected. Verifying cloud session...'
+    }
     if (isAuthenticated && !authToken) return 'Google authenticated, token pending'
     if (cloudAuthState === 'error') return 'Cloud auth check failed. Local vault is still available.'
-    return 'Google account not connected'
+    return syncProvider === 'self_hosted' ? 'Self-hosted sync is not authenticated' : 'Google account not connected'
   }, [cloudConnected, cloudIdentity, cloudAuthState, isAuthenticated, authToken])
   const vaultTitle = useMemo(() => {
+    if (storageMode === 'cloud_only') {
+      return 'cloud-vault'
+    }
     const rawPath = localVaultPath?.trim()
     if (!rawPath) {
       return 'vault.armadillo'
     }
     const parts = rawPath.split(/[\\/]/).filter(Boolean)
     return parts[parts.length - 1] || 'vault.armadillo'
-  }, [localVaultPath])
+  }, [localVaultPath, storageMode])
 
   const completeGoogleSignInFromCallback = useCallback(async (callbackUrl: string, source: 'desktop' | 'android') => {
     try {
@@ -285,15 +428,18 @@ export function useVaultApp() {
     setVaultSession(session)
     setItems(session.payload.items)
     setFolders(session.payload.folders)
-    setCategories(session.payload.categories)
     setTrash(purgeExpiredTrash(session.payload.trash))
-    const settings = session.payload.settings
-    setVaultSettings({
-      trashRetentionDays: getSafeRetentionDays(settings.trashRetentionDays),
-      generatorPresets: (settings as Record<string, unknown>).generatorPresets
-        ? (settings.generatorPresets ?? [])
-        : [],
+    const settings = normalizeAutoFolderSettings({
+      ...session.payload.settings,
+      trashRetentionDays: getSafeRetentionDays(session.payload.settings.trashRetentionDays),
+      generatorPresets: session.payload.settings.generatorPresets ?? [],
     })
+    setVaultSettings(settings)
+    setAutoFolderPreview(null)
+    setAutoFolderPreviewDraft(null)
+    setShowAutoFolderPreview(false)
+    setAutoFolderPreferencesDirty(false)
+    setAutoFolderWarnings([])
     const alerts = computeExpiryAlerts(session.payload.items)
     setExpiryAlerts(alerts)
     setExpiryAlertsDismissed(false)
@@ -327,6 +473,68 @@ export function useVaultApp() {
     })
   }
 
+  const persistVaultSnapshot = useCallback((file: ArmadilloVaultFile) => {
+    saveCachedVaultSnapshot(file, cloudCacheTtlHours)
+    setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+
+    if (storageMode === 'cloud_only') {
+      clearLocalVaultFile()
+      setLocalVaultPath('')
+      return
+    }
+
+    saveLocalVaultFile(file)
+    setLocalVaultPath(getLocalVaultPath())
+  }, [cloudCacheTtlHours, storageMode])
+
+  const getUnlockSourceFile = useCallback(() => {
+    if (storageMode === 'cloud_only') {
+      return loadCachedVaultSnapshot()
+    }
+    return loadLocalVaultFile() || loadCachedVaultSnapshot()
+  }, [storageMode])
+
+  function updateCloudSyncEnabled(value: boolean | ((value: boolean) => boolean)) {
+    const nextValue = typeof value === 'function' ? value(cloudSyncEnabled) : value
+    if (storageMode === 'cloud_only' && !nextValue) {
+      setSyncMessage('Cloud-only mode requires cloud sync to stay enabled')
+      return
+    }
+    setCloudSyncEnabled(nextValue)
+  }
+
+  function updateStorageMode(nextMode: VaultStorageMode) {
+    if (nextMode === storageMode) return
+
+    if (nextMode === 'cloud_only') {
+      if (!syncConfigured()) {
+        setSyncMessage('Configure cloud sync before enabling cloud-only mode')
+        return
+      }
+      const activeFile = vaultSession?.file || loadLocalVaultFile() || loadCachedVaultSnapshot(true)
+      if (activeFile) {
+        saveCachedVaultSnapshot(activeFile, cloudCacheTtlHours)
+        setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+      }
+      clearLocalVaultFile()
+      setLocalVaultPath('')
+      setCloudSyncEnabled(true)
+      setSyncMessage('Cloud-only mode enabled. Local vault file removed from this device.')
+    } else {
+      const activeFile = vaultSession?.file || loadCachedVaultSnapshot(true)
+      if (activeFile) {
+        saveLocalVaultFile(activeFile)
+        setSyncMessage('Local file mode enabled. Encrypted vault file restored locally.')
+      } else {
+        setSyncMessage('Local file mode enabled.')
+      }
+      setLocalVaultPath(getLocalVaultPath())
+    }
+
+    setStorageMode(nextMode)
+    setStoredVaultStorageMode(nextMode)
+  }
+
   function scheduleExpiryNotifications(alerts: ExpiryAlert[]) {
     if (!isNativeAndroid() || alerts.length === 0) return
     LocalNotifications.requestPermissions().then((perm) => {
@@ -348,28 +556,44 @@ export function useVaultApp() {
   }, [cloudSyncEnabled])
 
   useEffect(() => {
-    setConvexAuthToken(authToken ?? null)
+    setStoredCloudCacheTtlHours(cloudCacheTtlHours)
+    const cached = loadCachedVaultSnapshot(true)
+    if (!cached) return
+    saveCachedVaultSnapshot(cached, cloudCacheTtlHours)
+    setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+  }, [cloudCacheTtlHours])
+
+  useEffect(() => {
+    if (storageMode === 'cloud_only' && !cloudSyncEnabled) {
+      setCloudSyncEnabled(true)
+    }
+  }, [storageMode, cloudSyncEnabled])
+
+  useEffect(() => {
+    setSyncAuthToken(authToken ?? null)
   }, [authToken])
 
   useEffect(() => {
     let cancelled = false
 
     async function refreshCloudIdentity() {
-      if (!convexConfigured()) {
+      if (!syncConfigured()) {
         setCloudAuthState('unknown')
         setCloudIdentity('')
         return
       }
 
-      if (!isAuthenticated) {
-        setCloudAuthState('disconnected')
-        setCloudIdentity('')
-        return
-      }
+      if (syncProvider === 'convex') {
+        if (!isAuthenticated) {
+          setCloudAuthState('disconnected')
+          setCloudIdentity('')
+          return
+        }
 
-      if (!authToken) {
-        setCloudAuthState('checking')
-        return
+        if (!authToken) {
+          setCloudAuthState('checking')
+          return
+        }
       }
 
       setCloudAuthState('checking')
@@ -377,8 +601,10 @@ export function useVaultApp() {
         const status = await getCloudAuthStatus()
         if (cancelled) return
 
-        if (status?.authenticated) {
-          const identityLabel = status.email || status.name || 'Google account'
+        if (status?.authenticated || syncProvider === 'self_hosted') {
+          const identityLabel = status?.authenticated
+            ? (status.email || status.name || status.subject || (syncProvider === 'convex' ? 'Google account' : 'Authenticated account'))
+            : 'Anonymous owner'
           setCloudAuthState('connected')
           setCloudIdentity(identityLabel)
         } else {
@@ -405,11 +631,11 @@ export function useVaultApp() {
     }
 
     if (cloudAuthState === 'connected') {
-      setAuthMessage(cloudIdentity ? `Google connected as ${cloudIdentity}` : 'Google account connected')
+      setAuthMessage(cloudIdentity ? `Cloud connected as ${cloudIdentity}` : 'Cloud account connected')
     } else if (cloudAuthState === 'disconnected' && (previous === 'connected' || previous === 'checking')) {
-      setAuthMessage('No active Google cloud session')
+      setAuthMessage(syncProvider === 'self_hosted' ? 'No active self-hosted sync session' : 'No active Google cloud session')
     } else if (cloudAuthState === 'error') {
-      setAuthMessage('Could not verify Google cloud session')
+      setAuthMessage(syncProvider === 'self_hosted' ? 'Could not verify self-hosted sync session' : 'Could not verify Google cloud session')
     }
 
     previousCloudAuthStateRef.current = cloudAuthState
@@ -431,20 +657,20 @@ export function useVaultApp() {
     let cancelled = false
 
     async function checkCloudVault() {
-      if (!authToken) {
+      if (syncProvider === 'convex' && !authToken) {
         setCloudVaultSnapshot(null)
         setCloudVaultCandidates([])
         setAuthMessage('Google session token pending. Retrying cloud check...')
         return
       }
 
-      setConvexAuthToken(authToken)
+      setSyncAuthToken(authToken ?? null)
       setAuthMessage('Checking cloud for existing vault...')
       try {
         const remote = await listRemoteVaultsByOwner()
         if (cancelled) return
 
-        if (remote?.ownerSource === 'anonymous') {
+        if (syncProvider === 'convex' && remote?.ownerSource === 'anonymous') {
           setCloudVaultSnapshot(null)
           setCloudVaultCandidates([])
           setAuthMessage('Cloud request resolved as anonymous owner. Sign out and sign in with Google again.')
@@ -459,7 +685,7 @@ export function useVaultApp() {
 
           // On the create screen (no local vault), auto-restore immediately
           if (phase === 'create') {
-            saveLocalVaultFile(latest)
+            persistVaultSnapshot(latest)
             setAuthMessage('Found your cloud vault! Enter your master password to unlock it.')
             setPhase('unlock')
           } else {
@@ -485,7 +711,7 @@ export function useVaultApp() {
     return () => {
       cancelled = true
     }
-  }, [phase, cloudAuthState, authToken])
+  }, [phase, cloudAuthState, authToken, persistVaultSnapshot])
 
   useEffect(() => {
     const shell = window.armadilloShell
@@ -593,65 +819,200 @@ export function useVaultApp() {
     }
   }
 
+  const refreshVaultFromCloud = useCallback(async (opts?: {
+    silent?: boolean
+    pushLocalWhenCurrent?: boolean
+    requireAutoSync?: boolean
+  }) => {
+    const silent = opts?.silent ?? false
+    const pushLocalWhenCurrent = opts?.pushLocalWhenCurrent ?? false
+    const requireAutoSync = opts?.requireAutoSync ?? false
+
+    if (!vaultSession) {
+      if (!silent) {
+        setSyncMessage('Unlock vault before refreshing cloud data')
+      }
+      return false
+    }
+    if (requireAutoSync && !cloudSyncEnabled) {
+      if (!silent) {
+        setSyncState('local')
+        setSyncMessage('Offline mode')
+      }
+      return false
+    }
+    if (!syncConfigured()) {
+      if (!silent) {
+        setSyncState('error')
+        setSyncMessage(syncProvider === 'self_hosted' ? 'Self-hosted sync is not configured' : 'Convex is not configured')
+      }
+      return false
+    }
+    if (cloudRefreshInFlightRef.current) {
+      if (!silent) {
+        setSyncMessage('Cloud refresh already in progress')
+      }
+      return false
+    }
+
+    const activeSession = vaultSession
+    cloudRefreshInFlightRef.current = true
+    if (!silent) {
+      setSyncState('syncing')
+      setSyncMessage('Checking cloud for encrypted updates...')
+    }
+
+    try {
+      const remote = await pullRemoteSnapshot(activeSession.file.vaultId)
+      if (!remote) {
+        if (!silent) {
+          setSyncState('error')
+          setSyncMessage(storageMode === 'cloud_only'
+            ? 'Cloud sync unavailable; using encrypted cache until reconnect'
+            : 'Cloud sync unavailable, local encrypted file remains canonical')
+        }
+        return false
+      }
+
+      const remoteSnapshot = remote.snapshot
+      if (remoteSnapshot && remoteSnapshot.revision > activeSession.file.revision) {
+        try {
+          const remotePayload = await readPayloadWithSessionKey(activeSession, remoteSnapshot)
+          const nextSession: VaultSession = {
+            file: remoteSnapshot,
+            payload: remotePayload,
+            vaultKey: activeSession.vaultKey,
+          }
+          persistVaultSnapshot(nextSession.file)
+          applySession(nextSession)
+          setSyncState('live')
+          setSyncMessage(`Pulled remote encrypted update (${remote.ownerSource})`)
+          return true
+        } catch {
+          setSyncState('error')
+          setSyncMessage('Remote save cannot be decrypted with current unlocked vault')
+          return false
+        }
+      }
+
+      if (pushLocalWhenCurrent) {
+        const pushResult = await pushRemoteSnapshot(activeSession.file)
+        if (pushResult?.ok) {
+          setSyncState('live')
+          if (!silent) {
+            setSyncMessage(pushResult.accepted ? `Encrypted sync active (${pushResult.ownerSource})` : 'Cloud vault already up to date')
+          }
+          return false
+        }
+      }
+
+      if (!silent) {
+        setSyncState('live')
+        setSyncMessage(remoteSnapshot ? `Cloud vault already up to date (${remote.ownerSource})` : 'Cloud vault is empty for this owner')
+      }
+      return false
+    } catch (error) {
+      console.error('[armadillo] cloud refresh failed:', error)
+      if (!silent) {
+        setSyncState('error')
+        setSyncMessage(storageMode === 'cloud_only'
+          ? 'Cloud refresh failed; cached encrypted vault remains available'
+          : 'Cloud refresh failed; local encrypted file remains canonical')
+      }
+      return false
+    } finally {
+      cloudRefreshInFlightRef.current = false
+    }
+  }, [vaultSession, cloudSyncEnabled, storageMode, applySession, persistVaultSnapshot])
+
+  async function refreshVaultFromCloudNow() {
+    await refreshVaultFromCloud({ silent: false, pushLocalWhenCurrent: false, requireAutoSync: false })
+  }
 
   useEffect(() => {
-    let cancelled = false
-
-    async function reconcileCloud() {
-      if (!vaultSession || !cloudSyncEnabled || !convexConfigured()) {
-        if (!cloudSyncEnabled) {
-          setSyncState('local')
-          setSyncMessage('Offline mode')
-        }
-        return
+    if (!vaultSession || !cloudSyncEnabled) {
+      if (!cloudSyncEnabled) {
+        setSyncState('local')
+        setSyncMessage('Offline mode')
       }
+      return
+    }
 
-      setSyncState('syncing')
-      setSyncMessage('Syncing encrypted vault...')
+    void refreshVaultFromCloud({
+      // Keep the auto-sync bootstrap quiet so topbar status doesn't flicker.
+      silent: true,
+      pushLocalWhenCurrent: true,
+      requireAutoSync: true,
+    })
+  }, [vaultSession, cloudSyncEnabled, refreshVaultFromCloud])
 
-      try {
-        const remote = await pullRemoteSnapshot(vaultSession.file.vaultId)
-        if (cancelled || !remote) {
+  useEffect(() => {
+    if (syncProvider !== 'self_hosted' || !vaultSession || !cloudSyncEnabled || !syncConfigured()) {
+      return
+    }
+
+    const unsubscribe = subscribeToVaultUpdates(vaultSession.file.vaultId, {
+      onEvent: (event) => {
+        if (event.revision <= vaultSession.file.revision) {
           return
         }
+        void refreshVaultFromCloud({
+          silent: true,
+          pushLocalWhenCurrent: false,
+          requireAutoSync: true,
+        })
+      },
+      onError: () => {
+        // Keep polling fallback active; no extra UI churn here.
+      },
+    })
 
-        if (remote.snapshot && remote.snapshot.revision > vaultSession.file.revision) {
-          try {
-            const remotePayload = await readPayloadWithSessionKey(vaultSession, remote.snapshot)
-            const nextSession: VaultSession = {
-              file: remote.snapshot,
-              payload: remotePayload,
-              vaultKey: vaultSession.vaultKey,
-            }
-            saveLocalVaultFile(nextSession.file)
-            applySession(nextSession)
-            setSyncState('live')
-            setSyncMessage(`Pulled remote encrypted update (${remote.ownerSource})`)
-            return
-          } catch {
-            setSyncState('error')
-            setSyncMessage('Remote save cannot be decrypted with current unlocked vault')
-            return
-          }
-        }
+    return () => {
+      unsubscribe()
+    }
+  }, [vaultSession, cloudSyncEnabled, refreshVaultFromCloud])
 
-        await pushRemoteSnapshot(vaultSession.file)
-        setSyncState('live')
-        setSyncMessage(`Encrypted sync active (${remote.ownerSource})`)
-      } catch {
-        if (!cancelled) {
-          setSyncState('error')
-          setSyncMessage('Cloud sync unavailable, local encrypted file remains canonical')
-        }
+  useEffect(() => {
+    if (!vaultSession || !cloudSyncEnabled || !syncConfigured()) {
+      return
+    }
+
+    const autoPlatform = getAutoPlatform()
+    const intervalMs = syncProvider === 'self_hosted'
+      ? CLOUD_LIVE_REFRESH_INTERVAL_MS_SELF_HOSTED_FALLBACK
+      : autoPlatform === 'desktop'
+        ? CLOUD_LIVE_REFRESH_INTERVAL_MS_DESKTOP
+        : autoPlatform === 'web'
+          ? CLOUD_LIVE_REFRESH_INTERVAL_MS_WEB
+          : CLOUD_LIVE_REFRESH_INTERVAL_MS_MOBILE
+
+    const refreshSilently = () => {
+      void refreshVaultFromCloud({
+        silent: true,
+        pushLocalWhenCurrent: false,
+        requireAutoSync: true,
+      })
+    }
+
+    const intervalId = window.setInterval(refreshSilently, intervalMs)
+    const handleFocus = () => {
+      refreshSilently()
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshSilently()
       }
     }
 
-    void reconcileCloud()
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
-      cancelled = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [vaultSession, cloudSyncEnabled])
+  }, [vaultSession, cloudSyncEnabled, refreshVaultFromCloud])
 
   const effectivePlatform = getAutoPlatform()
   const folderMap = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders])
@@ -689,7 +1050,6 @@ export function useVaultApp() {
             item.title.toLowerCase().includes(value) ||
             item.username.toLowerCase().includes(value) ||
             item.urls.some((url) => url.toLowerCase().includes(value)) ||
-            item.category.toLowerCase().includes(value) ||
             item.folder.toLowerCase().includes(value) ||
             item.tags.some((tag) => tag.toLowerCase().includes(value)),
         )
@@ -697,7 +1057,8 @@ export function useVaultApp() {
     return [...base]
   }, [scopedItems, query])
 
-  const selected = items.find((item) => item.id === selectedId) ?? null
+  const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
+  const selected = itemById.get(selectedId) ?? null
 
   const folderOptions = useMemo(() => {
     return folders
@@ -705,21 +1066,17 @@ export function useVaultApp() {
       .sort((a, b) => a.label.localeCompare(b.label))
   }, [folders, folderPathById])
 
-  const categoryOptions = useMemo(() => {
-    return [...categories]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((category) => ({ id: category.id, label: category.name }))
-  }, [categories])
-
   useEffect(() => {
-    setNewCategoryValue(draft?.category ?? '')
+    // Seed folder editor when the selected draft changes.
+    // Do not keep syncing while the user is typing, otherwise folder text
+    // gets overwritten by the currently linked folderId path.
     setNewFolderValue(draft?.folderId ? (folderPathById.get(draft.folderId) ?? draft.folder) : (draft?.folder ?? ''))
-  }, [draft?.id, draft?.category, draft?.folder, draft?.folderId, folderPathById])
+  }, [draft?.id, folderPathById])
 
-  useEffect(() => {
-    const nextSelected = items.find((item) => item.id === selectedId) ?? null
+  useLayoutEffect(() => {
+    const nextSelected = itemById.get(selectedId) ?? null
     setDraft(nextSelected)
-  }, [selectedId, items])
+  }, [selectedId, itemById])
 
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
@@ -758,11 +1115,11 @@ export function useVaultApp() {
 
     try {
       const session = await createVaultFile(createPassword)
-      saveLocalVaultFile(session.file)
+      persistVaultSnapshot(session.file)
       applySession(session)
       setPhase('ready')
       setSyncState('local')
-      setSyncMessage('Encrypted local vault created (.armadillo)')
+      setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted cloud-only vault created (cached locally)' : 'Encrypted local vault created (.armadillo)')
       setCreatePassword('')
       setConfirmPassword('')
     } catch {
@@ -771,89 +1128,119 @@ export function useVaultApp() {
   }
 
   async function unlockVault() {
-    setVaultError('')
-    const file = loadLocalVaultFile()
-    if (!file) {
-      setVaultError('No local vault file found.')
-      setPhase('create')
-      return
+    if (isUnlocking) return
+    const unlockStartedAt = Date.now()
+    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+    const ensureUnlockVisualFeedback = async () => {
+      const elapsed = Date.now() - unlockStartedAt
+      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
+        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
+      }
     }
-    const passwordCandidates = buildPasswordCandidates(unlockPassword)
-
-    try {
-      let session: VaultSession | null = null
-      for (const passwordCandidate of passwordCandidates) {
-        try {
-          session = await unlockVaultFile(file, passwordCandidate)
-          break
-        } catch {
-          // Try next password candidate.
-        }
-      }
-      if (!session) {
-        throw new Error('Local unlock failed for all password variants')
-      }
-      applySession(session)
-      setPhase('ready')
-      setSyncMessage('Vault unlocked locally')
-      setUnlockPassword('')
-    } catch (initialError) {
-      if (cloudConnected && convexConfigured()) {
-        try {
-          setConvexAuthToken(authToken ?? null)
-          const remote = await listRemoteVaultsByOwner()
-          if (remote?.ownerSource === 'anonymous') {
-            setAuthMessage('Cloud recovery resolved as anonymous owner. Sign out and sign in with Google again.')
-            throw new Error('Cloud owner resolved to anonymous during signed-in recovery')
-          }
-          const candidates = (remote?.snapshots || []).filter(
-            (candidate) => candidate.vaultId !== file.vaultId || candidate.revision !== file.revision,
-          )
-
-          for (const candidate of candidates) {
-            try {
-              let recovered: VaultSession | null = null
-              for (const passwordCandidate of passwordCandidates) {
-                try {
-                  recovered = await unlockVaultFile(candidate, passwordCandidate)
-                  break
-                } catch {
-                  // Try next password candidate.
-                }
-              }
-              if (!recovered) {
-                throw new Error('Candidate failed for all password variants')
-              }
-              saveLocalVaultFile(candidate)
-              applySession(recovered)
-              setPhase('ready')
-              setSyncMessage('Vault unlocked from cloud save')
-              setAuthMessage('Recovered using a matching cloud vault save')
-              setUnlockPassword('')
-              return
-            } catch {
-              // Try next candidate.
-            }
-          }
-        } catch (recoveryError) {
-          console.error('[armadillo] cloud unlock recovery failed:', recoveryError)
-        }
-      }
-
-      console.error('[armadillo] unlock failed:', initialError)
-      const detail = initialError instanceof Error ? `${initialError.name}: ${initialError.message}` : String(initialError)
-      if (detail.includes('crypto.subtle is unavailable') || detail.includes('Web Crypto API is unavailable')) {
-        setVaultError('This browser cannot decrypt vault data in the current context. Open the app over HTTPS/localhost or use the desktop app.')
+    setIsUnlocking(true)
+    setVaultError('')
+    await new Promise<void>((resolve) => {
+      if (typeof window.requestAnimationFrame !== 'function') {
+        resolve()
         return
       }
-      setVaultError('Invalid master password or corrupted vault file.')
+      window.requestAnimationFrame(() => resolve())
+    })
+    try {
+      const file = getUnlockSourceFile()
+      if (!file) {
+        const cacheStatus = getCachedVaultStatus()
+        if (storageMode === 'cloud_only' && cacheStatus === 'expired') {
+          setVaultError('Cloud-only cache expired. Connect to the internet and refresh from cloud.')
+        } else if (storageMode === 'cloud_only') {
+          setVaultError('No cached cloud vault found on this device.')
+        } else {
+          setVaultError('No local vault file found.')
+        }
+        setPhase('create')
+        return
+      }
+      const passwordCandidates = buildPasswordCandidates(unlockPassword)
+
+      try {
+        let session: VaultSession | null = null
+        for (const passwordCandidate of passwordCandidates) {
+          try {
+            session = await unlockVaultFile(file, passwordCandidate)
+            break
+          } catch {
+            // Try next password candidate.
+          }
+        }
+        if (!session) {
+          throw new Error('Local unlock failed for all password variants')
+        }
+        applySession(session)
+        await ensureUnlockVisualFeedback()
+        setPhase('ready')
+        setSyncMessage(storageMode === 'cloud_only' ? 'Vault unlocked from encrypted cloud cache' : 'Vault unlocked locally')
+        setUnlockPassword('')
+      } catch (initialError) {
+        if (cloudConnected && syncConfigured()) {
+          try {
+            setSyncAuthToken(authToken ?? null)
+            const remote = await listRemoteVaultsByOwner()
+            if (syncProvider === 'convex' && remote?.ownerSource === 'anonymous') {
+              setAuthMessage('Cloud recovery resolved as anonymous owner. Sign out and sign in with Google again.')
+              throw new Error('Cloud owner resolved to anonymous during signed-in recovery')
+            }
+            const candidates = (remote?.snapshots || []).filter(
+              (candidate) => candidate.vaultId !== file.vaultId || candidate.revision !== file.revision,
+            )
+
+            for (const candidate of candidates) {
+              try {
+                let recovered: VaultSession | null = null
+                for (const passwordCandidate of passwordCandidates) {
+                  try {
+                    recovered = await unlockVaultFile(candidate, passwordCandidate)
+                    break
+                  } catch {
+                    // Try next password candidate.
+                  }
+                }
+                if (!recovered) {
+                  throw new Error('Candidate failed for all password variants')
+                }
+                persistVaultSnapshot(candidate)
+                applySession(recovered)
+                await ensureUnlockVisualFeedback()
+                setPhase('ready')
+                setSyncMessage('Vault unlocked from cloud save')
+                setAuthMessage('Recovered using a matching cloud vault save')
+                setUnlockPassword('')
+                return
+              } catch {
+                // Try next candidate.
+              }
+            }
+          } catch (recoveryError) {
+            console.error('[armadillo] cloud unlock recovery failed:', recoveryError)
+          }
+        }
+
+        console.error('[armadillo] unlock failed:', initialError)
+        const detail = initialError instanceof Error ? `${initialError.name}: ${initialError.message}` : String(initialError)
+        if (detail.includes('crypto.subtle is unavailable') || detail.includes('Web Crypto API is unavailable')) {
+          setVaultError('This browser cannot decrypt vault data in the current context. Open the app over HTTPS/localhost or use the desktop app.')
+          return
+        }
+        setVaultError('Invalid master password or corrupted vault file.')
+      }
+    } finally {
+      setIsUnlocking(false)
     }
   }
 
   function loadVaultFromCloud(snapshot?: ArmadilloVaultFile) {
     const chosen = snapshot || cloudVaultSnapshot
     if (!chosen) return
-    saveLocalVaultFile(chosen)
+    persistVaultSnapshot(chosen)
     setCloudVaultSnapshot(null)
     setCloudVaultCandidates([])
     setAuthMessage('Cloud vault loaded. Enter your master password to unlock it.')
@@ -1073,15 +1460,14 @@ export function useVaultApp() {
       schemaVersion: vaultSession.payload.schemaVersion,
       items: next.items ?? items,
       folders: next.folders ?? folders,
-      categories: next.categories ?? categories,
       trash: purgeExpiredTrash(next.trash ?? trash),
       settings: next.settings ?? vaultSettings,
     }
     const nextSession = await rewriteVaultFile(vaultSession, payload)
     applySession(nextSession)
-    saveLocalVaultFile(nextSession.file)
+    persistVaultSnapshot(nextSession.file)
 
-    if (cloudSyncEnabled && convexConfigured()) {
+    if (cloudSyncEnabled && syncConfigured()) {
       try {
         setSyncState('syncing')
         const result = await pushRemoteSnapshot(nextSession.file)
@@ -1091,11 +1477,13 @@ export function useVaultApp() {
         }
       } catch {
         setSyncState('error')
-        setSyncMessage('Encrypted change saved locally; cloud sync failed')
+        setSyncMessage(storageMode === 'cloud_only'
+          ? 'Encrypted change cached locally; cloud sync failed'
+          : 'Encrypted change saved locally; cloud sync failed')
       }
     } else {
       setSyncState('local')
-      setSyncMessage('Encrypted change saved locally')
+      setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted change cached locally' : 'Encrypted change saved locally')
     }
   }
 
@@ -1115,22 +1503,6 @@ export function useVaultApp() {
 
   function dismissExpiryAlerts() {
     setExpiryAlertsDismissed(true)
-  }
-
-  function ensureCategoryByName(nameRaw: string, source = categories) {
-    const name = nameRaw.trim()
-    if (!name) return { category: null, nextCategories: source }
-    const existing = source.find((category) => category.name.trim().toLowerCase() === name.toLowerCase())
-    if (existing) return { category: existing, nextCategories: source }
-    const now = new Date().toISOString()
-    const created: VaultCategory = {
-      id: crypto.randomUUID(),
-      name,
-      createdAt: now,
-      updatedAt: now,
-    }
-    const nextCategories = [...source, created].sort((a, b) => a.name.localeCompare(b.name))
-    return { category: created, nextCategories }
   }
 
   function ensureFolderByPath(pathRaw: string, source = folders, parentId: string | null = null) {
@@ -1170,13 +1542,11 @@ export function useVaultApp() {
   }
 
   function createItem() {
-    const ensuredCategory = categories[0] ? { category: categories[0], nextCategories: categories } : ensureCategoryByName('General', categories)
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
-    const item = buildEmptyItem(selectedFolderPath, ensuredCategory.category?.name ?? '', selectedFolderId, ensuredCategory.category?.id ?? null)
+    const item = buildEmptyItem(selectedFolderPath, selectedFolderId)
     const next = [item, ...items]
-    setCategories(ensuredCategory.nextCategories)
-    void persistPayload({ items: next, categories: ensuredCategory.nextCategories })
+    void persistPayload({ items: next })
     setSelectedId(item.id)
     setDraft(item)
     setMobileStep('detail')
@@ -1186,29 +1556,25 @@ export function useVaultApp() {
   async function saveCurrentItem() {
     if (!draft) return
     setIsSaving(true)
-    const categoryInput = newCategoryValue.trim() || draft.category || ''
     const folderInput = newFolderValue.trim() || draft.folder || ''
-    const ensuredCategory = ensureCategoryByName(categoryInput, categories)
     const ensuredFolder = ensureFolderByPath(folderInput, folders)
     const nextItem: VaultItem = {
       ...draft,
-      category: ensuredCategory.category?.name ?? categoryInput,
+      urls: draft.urls
+        .map((url) => url.trim())
+        .filter(Boolean),
       folder: folderInput,
-      categoryId: ensuredCategory.category?.id ?? null,
       folderId: ensuredFolder.folder?.id ?? null,
       updatedAt: new Date().toLocaleString(),
     }
     const nextItems = items.map((item) => (item.id === nextItem.id ? nextItem : item))
     setFolders(ensuredFolder.nextFolders)
-    setCategories(ensuredCategory.nextCategories)
     await persistPayload({
       items: nextItems,
       folders: ensuredFolder.nextFolders,
-      categories: ensuredCategory.nextCategories,
     })
 
     setIsSaving(false)
-    setNewCategoryValue('')
     setNewFolderValue('')
   }
 
@@ -1254,6 +1620,7 @@ export function useVaultApp() {
       setSyncMessage('Autofill is available in the desktop app')
       return
     }
+    setSyncMessage('Sending autofill to previous app...')
     const result = await window.armadilloShell.autofillCredentials(item.username || '', item.passwordMasked || '')
     if (result?.ok) {
       setSyncMessage('Autofill sent to previous app')
@@ -1289,6 +1656,10 @@ export function useVaultApp() {
     importFileInputRef.current?.click()
   }
 
+  function triggerGooglePasswordImport() {
+    googlePasswordImportInputRef.current?.click()
+  }
+
   async function onImportFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) {
@@ -1298,11 +1669,10 @@ export function useVaultApp() {
     try {
       const text = await file.text()
       const parsed = parseVaultFileFromText(text)
-      saveLocalVaultFile(parsed)
+      persistVaultSnapshot(parsed)
       setVaultSession(null)
       setItems([])
       setFolders([])
-      setCategories([])
       setTrash([])
       setDraft(null)
       setSelectedId('')
@@ -1315,6 +1685,330 @@ export function useVaultApp() {
     event.currentTarget.value = ''
   }
 
+  async function onGooglePasswordCsvSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before importing Google passwords')
+      event.currentTarget.value = ''
+      return
+    }
+
+    try {
+      const text = await file.text()
+      const parsed = parseGooglePasswordCsv(text)
+      if (parsed.entries.length === 0) {
+        setSyncMessage('No importable credentials found in Google CSV')
+        return
+      }
+
+      const now = new Date().toLocaleString()
+      const importedItems: VaultItem[] = parsed.entries.map((entry, index) => {
+        const url = entry.url.trim()
+        const username = entry.username
+        const password = entry.password
+        const note = entry.note
+        return {
+          id: crypto.randomUUID(),
+          title: inferImportedItemTitle(entry, index + 1),
+          username,
+          passwordMasked: password,
+          urls: url ? [url] : [],
+          folder: '',
+          folderId: null,
+          tags: ['imported', 'google-password-manager'],
+          risk: 'safe',
+          updatedAt: now,
+          note,
+          securityQuestions: [],
+          passwordExpiryDate: null,
+        }
+      })
+
+      const nextItems = [...importedItems, ...items]
+      await persistPayload({
+        items: nextItems,
+      })
+
+      setSelectedNode('all')
+      setSelectedId(importedItems[0].id)
+      setDraft(importedItems[0])
+      setMobileStep('detail')
+      setActivePanel('details')
+
+      const skippedSuffix = parsed.skippedRows > 0 ? `, skipped ${parsed.skippedRows}` : ''
+      setSyncMessage(`Imported ${importedItems.length} credential(s) from Google CSV${skippedSuffix}`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to import Google CSV: ${detail}`)
+    } finally {
+      event.currentTarget.value = ''
+    }
+  }
+
+  function getPathKey(path: string) {
+    return normalizeAutoFolderPath(path).toLowerCase()
+  }
+
+  function splitPath(pathRaw: string) {
+    const normalized = normalizeAutoFolderPath(pathRaw)
+    const segments = normalized.split('/').map((segment) => segment.trim()).filter(Boolean)
+    return {
+      normalized,
+      topLevel: segments[0] ?? 'Other',
+      subfolder: segments.length > 1 ? segments.slice(1).join('/') : null,
+    }
+  }
+
+  function deriveAutoFolderWarnings(plan: AutoFolderPlan) {
+    const warnings: string[] = []
+    if (plan.lowConfidenceCount > 0) {
+      warnings.push(`${plan.lowConfidenceCount} assignment(s) are low confidence`)
+    }
+    if (plan.newFolderPaths.length > 0) {
+      warnings.push(`${plan.newFolderPaths.length} new folder path(s) will be created`)
+    }
+    if (plan.excludedCount > 0) {
+      warnings.push(`${plan.excludedCount} item(s) are excluded`)
+    }
+    return warnings
+  }
+
+  function rebuildAutoFolderDraft(assignments: AutoFolderAssignment[], lockedFolderPaths: string[]) {
+    const consideredCount = autoFolderPreview?.consideredCount ?? items.filter((item) => !item.folderId).length
+    const skippedCount = items.length - consideredCount
+    return summarizeAutoFolderPlanDraft({
+      consideredCount,
+      skippedCount,
+      assignments,
+      existingFolderPaths: Array.from(folderPathById.values()),
+      lockedFolderPaths,
+    })
+  }
+
+  async function previewAutoFolderingV2() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before auto-foldering')
+      return
+    }
+
+    setAutoFolderBusy(true)
+    setAutoFolderError('')
+    try {
+      const plan = buildAutoFolderPlan(items, {
+        targetMaxTopLevel: 20,
+        subfolderMinItems: 4,
+        maxSubfoldersPerTopLevel: 8,
+        existingFolderPaths: Array.from(folderPathById.values()),
+        preferences: {
+          excludedItemIds: vaultSettings.autoFolderExcludedItemIds,
+          lockedFolderPaths: vaultSettings.autoFolderLockedFolderPaths,
+          customMappings: vaultSettings.autoFolderCustomMappings,
+        },
+      })
+      setAutoFolderPreview(plan)
+      setAutoFolderPreviewDraft(plan)
+      setShowAutoFolderPreview(true)
+      setAutoFolderWarnings(deriveAutoFolderWarnings(plan))
+      setAutoFolderPreferencesDirty(false)
+      if (plan.moveCount === 0) {
+        setSyncMessage('No unfiled items available for auto-foldering')
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setAutoFolderError(`Preview failed: ${detail}`)
+      setSyncMessage('Auto-folder preview failed')
+    } finally {
+      setAutoFolderBusy(false)
+    }
+  }
+
+  function updateAutoFolderPreviewAssignment(itemId: string, targetPathRaw: string) {
+    if (!autoFolderPreviewDraft) return
+    const { normalized, topLevel, subfolder } = splitPath(targetPathRaw)
+    if (!normalized) return
+    const lockedFolderPaths = autoFolderPreviewDraft.lockedFolderPaths
+    const nextAssignments = autoFolderPreviewDraft.assignments.map((assignment) => {
+      if (assignment.itemId !== itemId) return assignment
+      const baseReasons = assignment.reasons.includes('manual override') ? assignment.reasons : [...assignment.reasons, 'manual override']
+      return {
+        ...assignment,
+        targetPath: normalized,
+        topLevel,
+        subfolder,
+        overridden: true,
+        reasons: baseReasons,
+        excluded: false,
+        lockedPathApplied: lockedFolderPaths.some((path) => getPathKey(path) === getPathKey(normalized)),
+      }
+    })
+    const nextDraft = rebuildAutoFolderDraft(nextAssignments, lockedFolderPaths)
+    setAutoFolderPreviewDraft(nextDraft)
+    setAutoFolderWarnings(deriveAutoFolderWarnings(nextDraft))
+    setAutoFolderPreferencesDirty(true)
+  }
+
+  function excludeItemFromAutoFoldering(itemId: string, excluded: boolean) {
+    if (!autoFolderPreviewDraft) return
+    const nextAssignments = autoFolderPreviewDraft.assignments.map((assignment) =>
+      assignment.itemId === itemId ? { ...assignment, excluded } : assignment)
+    const nextDraft = rebuildAutoFolderDraft(nextAssignments, autoFolderPreviewDraft.lockedFolderPaths)
+    setAutoFolderPreviewDraft(nextDraft)
+    setAutoFolderWarnings(deriveAutoFolderWarnings(nextDraft))
+    setAutoFolderPreferencesDirty(true)
+  }
+
+  function lockAutoFolderPath(pathRaw: string, locked: boolean) {
+    if (!autoFolderPreviewDraft) return
+    const normalizedPath = normalizeAutoFolderPath(pathRaw)
+    if (!normalizedPath) return
+    const baseSet = new Set(autoFolderPreviewDraft.lockedFolderPaths.map((path) => normalizeAutoFolderPath(path)).filter(Boolean))
+    if (locked) {
+      baseSet.add(normalizedPath)
+    } else {
+      baseSet.delete(normalizedPath)
+    }
+    const nextLocked = Array.from(baseSet).sort((a, b) => a.localeCompare(b))
+    const nextAssignments = autoFolderPreviewDraft.assignments.map((assignment) => ({
+      ...assignment,
+      lockedPathApplied: nextLocked.some((path) => getPathKey(path) === getPathKey(assignment.targetPath)),
+    }))
+    const nextDraft = rebuildAutoFolderDraft(nextAssignments, nextLocked)
+    setAutoFolderPreviewDraft(nextDraft)
+    setAutoFolderWarnings(deriveAutoFolderWarnings(nextDraft))
+    setAutoFolderPreferencesDirty(true)
+  }
+
+  async function saveAutoFolderPreferences() {
+    const draft = autoFolderPreviewDraft ?? autoFolderPreview
+    if (!draft) return
+
+    const nextSettings = normalizeAutoFolderSettings({
+      ...vaultSettings,
+      autoFolderExcludedItemIds: draft.excludedItemIds,
+      autoFolderLockedFolderPaths: draft.lockedFolderPaths,
+      autoFolderCustomMappings: vaultSettings.autoFolderCustomMappings ?? [],
+    })
+
+    setVaultSettings(nextSettings)
+    await persistPayload({ settings: nextSettings })
+    setAutoFolderPreferencesDirty(false)
+    setSyncMessage('Auto-folder preferences saved')
+  }
+
+  function cancelAutoFolderingPreview() {
+    setShowAutoFolderPreview(false)
+    setAutoFolderPreview(null)
+    setAutoFolderPreviewDraft(null)
+    setAutoFolderError('')
+    setAutoFolderWarnings([])
+    setAutoFolderPreferencesDirty(false)
+  }
+
+  async function applyAutoFolderingV2() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before auto-foldering')
+      return
+    }
+
+    const draft = autoFolderPreviewDraft ?? autoFolderPreview
+    if (!draft || draft.assignments.length === 0) {
+      setSyncMessage('No auto-folder plan to apply')
+      setShowAutoFolderPreview(false)
+      return
+    }
+
+    const activeAssignments = draft.assignments.filter((assignment) => !assignment.excluded && normalizeAutoFolderPath(assignment.targetPath))
+    if (activeAssignments.length === 0) {
+      setSyncMessage('No unfiled items were selected for auto-foldering')
+      setShowAutoFolderPreview(false)
+      return
+    }
+
+    setAutoFolderBusy(true)
+    setAutoFolderError('')
+    try {
+      let nextFolders = folders
+      const pathToFolderId = new Map<string, string>()
+      for (const [folderId, path] of folderPathById.entries()) {
+        pathToFolderId.set(getPathKey(path), folderId)
+      }
+
+      const assignmentByItemId = new Map(activeAssignments.map((assignment) => [assignment.itemId, assignment]))
+      const targetPaths = Array.from(new Set(activeAssignments.map((assignment) => normalizeAutoFolderPath(assignment.targetPath))))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+
+      for (const targetPath of targetPaths) {
+        const lookupKey = getPathKey(targetPath)
+        if (pathToFolderId.has(lookupKey)) continue
+        const ensured = ensureFolderByPath(targetPath, nextFolders)
+        nextFolders = ensured.nextFolders
+        if (ensured.folder) {
+          pathToFolderId.set(lookupKey, ensured.folder.id)
+        }
+      }
+
+      const now = new Date().toLocaleString()
+      let movedCount = 0
+      const nextItems = items.map((item) => {
+        const assignment = assignmentByItemId.get(item.id)
+        if (!assignment || item.folderId) return item
+        const normalizedTargetPath = normalizeAutoFolderPath(assignment.targetPath)
+        const targetFolderId = pathToFolderId.get(getPathKey(normalizedTargetPath))
+        if (!targetFolderId) return item
+        movedCount += 1
+        return {
+          ...item,
+          folderId: targetFolderId,
+          folder: normalizedTargetPath,
+          updatedAt: now,
+        }
+      })
+
+      if (movedCount === 0) {
+        setSyncMessage('No unfiled items were moved')
+        setShowAutoFolderPreview(false)
+        setAutoFolderPreview(null)
+        setAutoFolderPreviewDraft(null)
+        return
+      }
+
+      const nextSettings = normalizeAutoFolderSettings({
+        ...vaultSettings,
+        autoFolderExcludedItemIds: draft.excludedItemIds,
+        autoFolderLockedFolderPaths: draft.lockedFolderPaths,
+        autoFolderCustomMappings: vaultSettings.autoFolderCustomMappings ?? [],
+      })
+
+      const createdFolderCount = Math.max(0, nextFolders.length - folders.length)
+      await persistPayload({ items: nextItems, folders: nextFolders, settings: nextSettings })
+      setSelectedNode('all')
+      setShowAutoFolderPreview(false)
+      setAutoFolderPreview(null)
+      setAutoFolderPreviewDraft(null)
+      setAutoFolderPreferencesDirty(false)
+      setAutoFolderWarnings([])
+      setSyncMessage(
+        `Auto-foldered ${movedCount} item(s) into ${draft.topLevelCount} folder(s)` +
+        (createdFolderCount > 0 ? `, created ${createdFolderCount} new folder(s)` : ''),
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setAutoFolderError(`Apply failed: ${detail}`)
+      setSyncMessage('Auto-foldering failed')
+    } finally {
+      setAutoFolderBusy(false)
+    }
+  }
+
+  // Backward-compatible aliases for existing UI wiring.
+  const previewAutoFoldering = previewAutoFolderingV2
+  const applyAutoFoldering = applyAutoFolderingV2
+
   async function createPasskeyIdentity() {
     try {
       await bindPasskeyOwner()
@@ -1325,20 +2019,41 @@ export function useVaultApp() {
   }
 
   async function enableBiometricUnlock() {
-    if (!vaultSession) return
+    if (!isNativeAndroid()) {
+      setSyncMessage('Biometric quick unlock is available in the Android app')
+      return
+    }
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before enabling biometrics')
+      return
+    }
     try {
       await enrollBiometricQuickUnlock(vaultSession)
       setBiometricEnabled(true)
       setSyncMessage('Biometric quick unlock enabled on this device')
-    } catch {
-      setSyncMessage('Biometric enrollment failed on this device')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : ''
+      const normalized = detail.toLowerCase()
+      if (normalized.includes('not extractable')) {
+        setSyncMessage('Vault key was loaded in a legacy session. Lock and unlock once, then try enabling biometrics again.')
+        return
+      }
+      if (normalized.includes('not implemented')) {
+        setSyncMessage('Biometric plugin is unavailable in this app build. Rebuild/reinstall the Android app.')
+        return
+      }
+      setSyncMessage(detail ? `Biometric enrollment failed: ${detail}` : 'Biometric enrollment failed on this device')
     }
   }
 
   async function unlockVaultBiometric() {
-    const file = loadLocalVaultFile()
+    if (!isNativeAndroid()) {
+      setVaultError('Biometric unlock is available in the Android app')
+      return
+    }
+    const file = getUnlockSourceFile()
     if (!file) {
-      setVaultError('No local vault file found.')
+      setVaultError(storageMode === 'cloud_only' ? 'No cached cloud vault found.' : 'No local vault file found.')
       return
     }
 
@@ -1347,12 +2062,17 @@ export function useVaultApp() {
       applySession(session)
       setPhase('ready')
       setSyncMessage('Vault unlocked with biometrics')
-    } catch {
-      setVaultError('Biometric unlock failed. Use master password.')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : ''
+      setVaultError(detail ? `Biometric unlock failed: ${detail}` : 'Biometric unlock failed. Use master password.')
     }
   }
 
   async function chooseLocalVaultLocation() {
+    if (storageMode === 'cloud_only') {
+      setSyncMessage('Switch to Local File mode before choosing a vault path')
+      return
+    }
     const shell = window.armadilloShell
     if (!shell?.isElectron || !shell.chooseVaultSavePath) {
       setSyncMessage('Choose location is available in Electron desktop app')
@@ -1369,7 +2089,7 @@ export function useVaultApp() {
       setLocalVaultPath(selectedPath)
 
       if (vaultSession) {
-        saveLocalVaultFile(vaultSession.file)
+        persistVaultSnapshot(vaultSession.file)
       }
 
       setSyncMessage(`Local vault path set: ${selectedPath}`)
@@ -1379,6 +2099,11 @@ export function useVaultApp() {
   }
 
   async function signInWithGoogle() {
+    if (syncProvider === 'self_hosted') {
+      setAuthMessage('Self-hosted mode does not use built-in Google sign-in. Authenticate through your self-hosted sync deployment.')
+      return
+    }
+
     const shell = window.armadilloShell
 
     if (shell?.isElectron) {
@@ -1420,8 +2145,24 @@ export function useVaultApp() {
   }
 
   async function signOutCloud() {
+    if (syncProvider === 'self_hosted') {
+      setSyncAuthToken(null)
+      if (storageMode === 'cloud_only') {
+        clearCachedVaultSnapshot()
+        setCloudCacheExpiresAt('')
+      }
+      setAuthMessage('Self-hosted token cleared for this session')
+      setCloudAuthState('disconnected')
+      setCloudIdentity('')
+      return
+    }
+
     try {
       await signOut()
+      if (storageMode === 'cloud_only') {
+        clearCachedVaultSnapshot()
+        setCloudCacheExpiresAt('')
+      }
       setAuthMessage('Signed out')
       setCloudAuthState('disconnected')
       setCloudIdentity('')
@@ -1435,17 +2176,21 @@ export function useVaultApp() {
       setSyncMessage('Unlock vault before pushing to cloud')
       return
     }
-    if (!convexConfigured()) {
-      setSyncMessage('Convex is not configured')
+    if (!syncConfigured()) {
+      setSyncMessage(syncProvider === 'self_hosted' ? 'Self-hosted sync is not configured' : 'Convex is not configured')
       return
     }
-    if (!cloudConnected || !authToken) {
+    if (syncProvider === 'convex' && (!cloudConnected || !authToken)) {
       setSyncMessage('Sign in with Google before pushing to cloud')
+      return
+    }
+    if (syncProvider === 'self_hosted' && !cloudConnected) {
+      setSyncMessage('Authenticate with your self-hosted sync service before pushing')
       return
     }
 
     try {
-      setConvexAuthToken(authToken)
+      setSyncAuthToken(authToken ?? null)
       setSyncState('syncing')
       setSyncMessage('Pushing vault save to cloud...')
       const result = await pushRemoteSnapshot(vaultSession.file)
@@ -1469,11 +2214,11 @@ export function useVaultApp() {
       unlockPassword,
       createPassword,
       confirmPassword,
+      isUnlocking,
       vaultError,
       pendingVaultExists,
       items,
       folders,
-      categories,
       trash,
       vaultSettings,
       query,
@@ -1487,6 +2232,10 @@ export function useVaultApp() {
       showSettings,
       selectedNode,
       folderFilterMode,
+      storageMode,
+      cloudCacheTtlHours,
+      cloudCacheExpiresAt,
+      syncProvider,
       cloudSyncEnabled,
       biometricEnabled,
       authMessage,
@@ -1501,11 +2250,17 @@ export function useVaultApp() {
       folderEditor,
       folderEditorOpen,
       folderInlineEditor,
-      newCategoryValue,
       newFolderValue,
       treeContextMenu,
       expiryAlerts,
       expiryAlertsDismissed,
+      autoFolderPreview,
+      autoFolderPreviewDraft,
+      showAutoFolderPreview,
+      autoFolderBusy,
+      autoFolderError,
+      autoFolderPreferencesDirty,
+      autoFolderWarnings,
       draft,
     },
     derived: {
@@ -1517,7 +2272,6 @@ export function useVaultApp() {
       filtered,
       selected,
       folderOptions,
-      categoryOptions,
     },
     actions: {
       setPhase,
@@ -1532,14 +2286,15 @@ export function useVaultApp() {
       setShowSettings,
       setSelectedNode,
       setFolderFilterMode,
-      setCloudSyncEnabled,
+      setCloudSyncEnabled: updateCloudSyncEnabled,
+      setStorageMode: updateStorageMode,
+      setCloudCacheTtlHours,
       setVaultSettings,
       setItemContextMenu,
       setContextMenu,
       setFolderEditor,
       setFolderEditorOpen,
       setFolderInlineEditor,
-      setNewCategoryValue,
       setNewFolderValue,
       setTreeContextMenu,
       setShowAllCloudSnapshots,
@@ -1578,12 +2333,25 @@ export function useVaultApp() {
       updateSecurityQuestion,
       exportVaultFile,
       triggerImport,
+      triggerGooglePasswordImport,
       onImportFileSelected,
+      onGooglePasswordCsvSelected,
+      previewAutoFoldering,
+      cancelAutoFolderingPreview,
+      applyAutoFoldering,
+      previewAutoFolderingV2,
+      updateAutoFolderPreviewAssignment,
+      excludeItemFromAutoFoldering,
+      lockAutoFolderPath,
+      saveAutoFolderPreferences,
+      applyAutoFolderingV2,
       createPasskeyIdentity,
       enableBiometricUnlock,
+      refreshVaultFromCloudNow,
       pushVaultToCloudNow,
       persistPayload,
       clearLocalVaultFile,
+      clearCachedVaultSnapshot,
       getChildrenFolders,
       addGeneratorPreset,
       removeGeneratorPreset,
@@ -1591,9 +2359,11 @@ export function useVaultApp() {
     },
     refs: {
       importFileInputRef,
+      googlePasswordImportInputRef,
       folderLongPressTimerRef,
     },
   }
 }
 
 export type VaultAppModel = ReturnType<typeof useVaultApp>
+

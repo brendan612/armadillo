@@ -1,5 +1,5 @@
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
-export const VAULT_SCHEMA_VERSION = 2 as const
+export const VAULT_SCHEMA_VERSION = 3 as const
 
 export type SecurityQuestion = {
   question: string
@@ -12,9 +12,7 @@ export type VaultItem = {
   username: string
   passwordMasked: string
   urls: string[]
-  category: string
   folder: string
-  categoryId?: string | null
   folderId?: string | null
   tags: string[]
   risk: RiskState
@@ -31,13 +29,6 @@ export type VaultFolder = {
   color: string
   icon: string
   notes: string
-  createdAt: string
-  updatedAt: string
-}
-
-export type VaultCategory = {
-  id: string
-  name: string
   createdAt: string
   updatedAt: string
 }
@@ -62,16 +53,27 @@ export type GeneratorPreset = {
   symbols: boolean
 }
 
+export type AutoFolderMatchType = 'domain' | 'titleToken' | 'tag'
+
+export type AutoFolderCustomMapping = {
+  id: string
+  matchType: AutoFolderMatchType
+  matchValue: string
+  targetPath: string
+}
+
 export type VaultSettings = {
   trashRetentionDays: number
   generatorPresets: GeneratorPreset[]
+  autoFolderExcludedItemIds?: string[]
+  autoFolderLockedFolderPaths?: string[]
+  autoFolderCustomMappings?: AutoFolderCustomMapping[]
 }
 
 export type VaultPayload = {
   schemaVersion: number
   items: VaultItem[]
   folders: VaultFolder[]
-  categories: VaultCategory[]
   trash: VaultTrashEntry[]
   settings: VaultSettings
 }
@@ -110,3 +112,26 @@ export type VaultSession = {
 }
 
 export type SyncIdentitySource = 'auth' | 'anonymous'
+
+export type VaultStorageMode = 'local_file' | 'cloud_only'
+export type SyncProvider = 'convex' | 'self_hosted'
+
+export type WorkspaceScope = {
+  orgId: string
+  vaultId: string
+}
+
+export type MembershipRole = 'owner' | 'admin' | 'editor' | 'viewer'
+
+export type WrappedVaultKeyForMember = {
+  memberId: string
+  alg: string
+  wrappedKey: string
+  createdAt: string
+  revokedAt?: string
+}
+
+export type OrgRecoveryPolicy = {
+  enabled: boolean
+  wrappedKeyForOrg?: string
+}

@@ -1,10 +1,12 @@
-import { Plus } from 'lucide-react'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { Plus, RefreshCw } from 'lucide-react'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import logoSrc from '../../../assets/armadillo.png'
 
 export function Topbar() {
+  const { effectivePlatform } = useVaultAppDerived()
   const { syncState, syncMessage, authMessage } = useVaultAppState()
-  const { createItem, lockVault, setShowSettings } = useVaultAppActions()
+  const { createItem, lockVault, setShowSettings, refreshVaultFromCloudNow } = useVaultAppActions()
+  const showRefreshButton = effectivePlatform === 'desktop' || effectivePlatform === 'web'
 
   return (
     <header className="topbar">
@@ -15,6 +17,16 @@ export function Topbar() {
       </div>
 
       <div className="topbar-actions">
+        {showRefreshButton && (
+          <button
+            className={`icon-btn topbar-refresh-btn${syncState === 'syncing' ? ' spinning' : ''}`}
+            onClick={() => void refreshVaultFromCloudNow()}
+            title="Refresh from cloud"
+            disabled={syncState === 'syncing'}
+          >
+            <RefreshCw size={16} strokeWidth={2.1} />
+          </button>
+        )}
         <button className="solid" onClick={createItem}>
           <span className="topbar-new-btn-text">+ New Credential</span>
           <span className="topbar-new-btn-icon"><Plus size={18} strokeWidth={2.2} /></span>

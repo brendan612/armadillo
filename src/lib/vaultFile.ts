@@ -7,17 +7,31 @@ import {
   unwrapVaultKey,
   wrapVaultKey,
 } from './crypto'
-import { VAULT_SCHEMA_VERSION, type ArmadilloVaultFile, type VaultCategory, type VaultFolder, type VaultPayload, type VaultSettings, type VaultSession, type VaultTrashEntry } from '../types/vault'
+import {
+  VAULT_SCHEMA_VERSION,
+  type ArmadilloVaultFile,
+  type AutoFolderCustomMapping,
+  type VaultFolder,
+  type VaultPayload,
+  type VaultSettings,
+  type VaultStorageMode,
+  type VaultSession,
+  type VaultTrashEntry,
+} from '../types/vault'
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
 const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
+const VAULT_STORAGE_MODE_KEY = 'armadillo.vault.storage_mode'
+const CLOUD_CACHE_FILE_KEY = 'armadillo.cloud.cache.file'
+const CLOUD_CACHE_EXPIRES_AT_KEY = 'armadillo.cloud.cache.expires_at'
+const CLOUD_CACHE_TTL_HOURS_KEY = 'armadillo.cloud.cache.ttl_hours'
+const DEFAULT_CLOUD_CACHE_TTL_HOURS = 72
 
 export function defaultVaultPayload(): VaultPayload {
   return {
     schemaVersion: VAULT_SCHEMA_VERSION,
     items: [],
     folders: [],
-    categories: [],
     trash: [],
     settings: defaultVaultSettings(),
   }
@@ -27,6 +41,9 @@ export function defaultVaultSettings(): VaultSettings {
   return {
     trashRetentionDays: 30,
     generatorPresets: [],
+    autoFolderExcludedItemIds: [],
+    autoFolderLockedFolderPaths: [],
+    autoFolderCustomMappings: [],
   }
 }
 
@@ -49,6 +66,71 @@ function safeRetentionDays(input: unknown) {
   if (!Number.isFinite(numeric)) return 30
   const rounded = Math.round(numeric)
   return Math.min(3650, Math.max(1, rounded))
+}
+
+function safeCacheTtlHours(input: unknown) {
+  const numeric = Number(input)
+  if (!Number.isFinite(numeric)) return DEFAULT_CLOUD_CACHE_TTL_HOURS
+  const rounded = Math.round(numeric)
+  return Math.min(24 * 30, Math.max(1, rounded))
+}
+
+function normalizeStringArray(input: unknown) {
+  if (!Array.isArray(input)) return []
+  const deduped = new Set<string>()
+  for (const value of input) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    deduped.add(trimmed)
+  }
+  return Array.from(deduped)
+}
+
+function normalizeTagValues(tagsInput: unknown, legacyCategoryInput: unknown) {
+  const deduped = new Map<string, string>()
+  const push = (value: unknown) => {
+    if (typeof value !== 'string') return
+    const trimmed = value.trim()
+    if (!trimmed) return
+    const key = trimmed.toLowerCase()
+    if (deduped.has(key)) return
+    deduped.set(key, trimmed)
+  }
+
+  if (Array.isArray(tagsInput)) {
+    for (const tag of tagsInput) {
+      push(tag)
+    }
+  }
+  push(legacyCategoryInput)
+
+  return Array.from(deduped.values())
+}
+
+function normalizeAutoFolderCustomMappings(input: unknown): AutoFolderCustomMapping[] {
+  if (!Array.isArray(input)) return []
+  const deduped = new Set<string>()
+  const rows: AutoFolderCustomMapping[] = []
+  for (const entry of input) {
+    const source = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    const matchType = source.matchType === 'domain' || source.matchType === 'titleToken' || source.matchType === 'tag'
+      ? source.matchType
+      : null
+    const matchValue = typeof source.matchValue === 'string' ? source.matchValue.trim() : ''
+    const targetPath = typeof source.targetPath === 'string' ? source.targetPath.trim() : ''
+    if (!matchType || !matchValue || !targetPath) continue
+    const key = `${matchType}:${matchValue.toLowerCase()}=>${targetPath.toLowerCase()}`
+    if (deduped.has(key)) continue
+    deduped.add(key)
+    rows.push({
+      id: typeof source.id === 'string' && source.id ? source.id : crypto.randomUUID(),
+      matchType,
+      matchValue,
+      targetPath,
+    })
+  }
+  return rows
 }
 
 function ensureTrashRetention(payload: VaultPayload) {
@@ -75,11 +157,9 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
       username: typeof source.username === 'string' ? source.username : '',
       passwordMasked: typeof source.passwordMasked === 'string' ? source.passwordMasked : '',
       urls: Array.isArray(source.urls) ? source.urls.filter((v): v is string => typeof v === 'string') : [],
-      category: typeof source.category === 'string' ? source.category : '',
       folder: typeof source.folder === 'string' ? source.folder : '',
-      categoryId: typeof source.categoryId === 'string' ? source.categoryId : null,
       folderId: typeof source.folderId === 'string' ? source.folderId : null,
-      tags: Array.isArray(source.tags) ? source.tags.filter((v): v is string => typeof v === 'string') : [],
+      tags: normalizeTagValues(source.tags, source.category),
       risk: source.risk === 'weak' || source.risk === 'reused' || source.risk === 'exposed' || source.risk === 'stale' ? source.risk : 'safe',
       updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : new Date().toLocaleString(),
       note: typeof source.note === 'string' ? source.note : '',
@@ -98,7 +178,6 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   })
 
   const rawFolders = Array.isArray(base.folders) ? base.folders : []
-  const rawCategories = Array.isArray(base.categories) ? base.categories : []
 
   let folders: VaultFolder[] = rawFolders
     .map((folder) => {
@@ -119,21 +198,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     })
     .filter((entry): entry is VaultFolder => Boolean(entry))
 
-  let categories: VaultCategory[] = rawCategories
-    .map((category) => {
-      const source = (category && typeof category === 'object' ? category : {}) as Record<string, unknown>
-      const name = typeof source.name === 'string' ? source.name.trim() : ''
-      if (!name) return null
-      return {
-        id: typeof source.id === 'string' && source.id ? source.id : crypto.randomUUID(),
-        name,
-        createdAt: toIso(source.createdAt, now),
-        updatedAt: toIso(source.updatedAt, now),
-      }
-    })
-    .filter((entry): entry is VaultCategory => Boolean(entry))
-
-  // Migrate legacy folder/category strings into structured records.
+  // Migrate legacy folder strings into structured records.
   if (folders.length === 0) {
     const legacyFolders = uniqueByName(
       migratedItems
@@ -153,41 +218,18 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     folders = legacyFolders
   }
 
-  if (categories.length === 0) {
-    const legacyCategories = uniqueByName(
-      migratedItems
-        .map((item) => item.category.trim())
-        .filter(Boolean)
-        .map((name) => ({
-          id: crypto.randomUUID(),
-          name,
-          createdAt: now,
-          updatedAt: now,
-        })),
-    )
-    categories = legacyCategories
-  }
-
   const folderByName = new Map(folders.map((folder) => [folder.name.trim().toLowerCase(), folder.id]))
-  const categoryByName = new Map(categories.map((category) => [category.name.trim().toLowerCase(), category.id]))
   const validFolderIds = new Set(folders.map((folder) => folder.id))
-  const validCategoryIds = new Set(categories.map((category) => category.id))
 
   const items = migratedItems.map((item) => {
     const nextFolderId = item.folderId && validFolderIds.has(item.folderId)
       ? item.folderId
       : folderByName.get(item.folder.trim().toLowerCase()) ?? null
-    const nextCategoryId = item.categoryId && validCategoryIds.has(item.categoryId)
-      ? item.categoryId
-      : categoryByName.get(item.category.trim().toLowerCase()) ?? null
     const folderName = nextFolderId ? (folders.find((folder) => folder.id === nextFolderId)?.name ?? item.folder) : item.folder
-    const categoryName = nextCategoryId ? (categories.find((category) => category.id === nextCategoryId)?.name ?? item.category) : item.category
     return {
       ...item,
       folderId: nextFolderId,
-      categoryId: nextCategoryId,
       folder: folderName || '',
-      category: categoryName || '',
     }
   })
 
@@ -195,6 +237,9 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const settings: VaultSettings = {
     trashRetentionDays: safeRetentionDays(settingsSource.trashRetentionDays),
     generatorPresets: Array.isArray(settingsSource.generatorPresets) ? settingsSource.generatorPresets : [],
+    autoFolderExcludedItemIds: normalizeStringArray(settingsSource.autoFolderExcludedItemIds),
+    autoFolderLockedFolderPaths: normalizeStringArray(settingsSource.autoFolderLockedFolderPaths),
+    autoFolderCustomMappings: normalizeAutoFolderCustomMappings(settingsSource.autoFolderCustomMappings),
   }
 
   const trashSource = Array.isArray(base.trash) ? base.trash : []
@@ -220,12 +265,79 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     schemaVersion: VAULT_SCHEMA_VERSION,
     items,
     folders,
-    categories,
     trash,
     settings,
   }
   ensureTrashRetention(normalized)
   return normalized
+}
+
+function parseVaultFileJson(raw: string | null): ArmadilloVaultFile | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as ArmadilloVaultFile
+  } catch {
+    return null
+  }
+}
+
+export function getVaultStorageMode(): VaultStorageMode {
+  const raw = localStorage.getItem(VAULT_STORAGE_MODE_KEY)
+  return raw === 'cloud_only' ? 'cloud_only' : 'local_file'
+}
+
+export function setVaultStorageMode(mode: VaultStorageMode) {
+  localStorage.setItem(VAULT_STORAGE_MODE_KEY, mode)
+}
+
+export function getCloudCacheTtlHours() {
+  return safeCacheTtlHours(localStorage.getItem(CLOUD_CACHE_TTL_HOURS_KEY))
+}
+
+export function setCloudCacheTtlHours(hours: number) {
+  localStorage.setItem(CLOUD_CACHE_TTL_HOURS_KEY, String(safeCacheTtlHours(hours)))
+}
+
+export function getCachedVaultStatus(): 'missing' | 'expired' | 'valid' {
+  const raw = localStorage.getItem(CLOUD_CACHE_FILE_KEY)
+  if (!raw) return 'missing'
+
+  const expiresAt = localStorage.getItem(CLOUD_CACHE_EXPIRES_AT_KEY)
+  if (!expiresAt) return 'valid'
+
+  const expiresAtMs = Date.parse(expiresAt)
+  if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
+    return 'expired'
+  }
+  return 'valid'
+}
+
+export function getCachedVaultExpiresAt() {
+  return localStorage.getItem(CLOUD_CACHE_EXPIRES_AT_KEY) || ''
+}
+
+export function loadCachedVaultSnapshot(includeExpired = false): ArmadilloVaultFile | null {
+  const status = getCachedVaultStatus()
+  if (status === 'missing') {
+    return null
+  }
+  if (status === 'expired' && !includeExpired) {
+    return null
+  }
+
+  return parseVaultFileJson(localStorage.getItem(CLOUD_CACHE_FILE_KEY))
+}
+
+export function saveCachedVaultSnapshot(file: ArmadilloVaultFile, ttlHours = getCloudCacheTtlHours()) {
+  const safeTtlHours = safeCacheTtlHours(ttlHours)
+  localStorage.setItem(CLOUD_CACHE_FILE_KEY, JSON.stringify(file))
+  localStorage.setItem(CLOUD_CACHE_TTL_HOURS_KEY, String(safeTtlHours))
+  localStorage.setItem(CLOUD_CACHE_EXPIRES_AT_KEY, new Date(Date.now() + safeTtlHours * 60 * 60 * 1000).toISOString())
+}
+
+export function clearCachedVaultSnapshot() {
+  localStorage.removeItem(CLOUD_CACHE_FILE_KEY)
+  localStorage.removeItem(CLOUD_CACHE_EXPIRES_AT_KEY)
 }
 
 export function loadLocalVaultFile(): ArmadilloVaultFile | null {
@@ -247,16 +359,7 @@ export function loadLocalVaultFile(): ArmadilloVaultFile | null {
     }
   }
 
-  const raw = localStorage.getItem(LOCAL_VAULT_FILE_KEY)
-  if (!raw) {
-    return null
-  }
-
-  try {
-    return JSON.parse(raw) as ArmadilloVaultFile
-  } catch {
-    return null
-  }
+  return parseVaultFileJson(localStorage.getItem(LOCAL_VAULT_FILE_KEY))
 }
 
 export function getLocalVaultPath() {

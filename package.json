@@ -19,7 +19,8 @@
         "lint": "eslint .",
         "preview": "vite preview",
         "convex:dev": "convex dev",
-        "convex:deploy": "convex deploy"
+        "convex:deploy": "convex deploy",
+        "sync:selfhost:dev": "node services/sync-gateway/server.mjs"
     },
     "dependencies": {
         "@auth/core": "^0.37.0",
@@ -59,6 +60,7 @@
     "build": {
         "appId": "com.armadillo.desktop",
         "productName": "Armadillo",
+        "executableName": "Armadillo",
         "asar": true,
         "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
         "directories": {
@@ -83,6 +85,9 @@
             ]
         },
         "nsis": {
+            "installerIcon": "electron/icon.ico",
+            "uninstallerIcon": "electron/icon.ico",
+            "installerHeaderIcon": "electron/icon.ico",
             "oneClick": false,
             "allowToChangeInstallationDirectory": true
         }

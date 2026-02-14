@@ -505,6 +505,10 @@ kbd {
   flex-shrink: 0;
 }
 
+.topbar-refresh-btn.spinning svg {
+  animation: unlock-spin 0.85s linear infinite;
+}
+
 .topbar-new-btn-icon { display: none; }
 
 /* ============================================
@@ -987,8 +991,9 @@ body.folder-dragging * {
 }
 
 .item-list li {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
   gap: 0.55rem;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -1022,33 +1027,29 @@ body.folder-dragging * {
 }
 
 .item-info {
-  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 0.16rem;
   min-width: 0;
 }
 
 .item-inline-top {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
+  display: block;
 }
 
-.item-info strong {
-  display: inline-block;
+.item-title {
+  display: block;
   font-size: 0.86rem;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 220px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .item-info p {
   margin: 0.04rem 0 0;
   font-size: 0.74rem;
   color: var(--ink-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .item-info .item-url {
@@ -1056,19 +1057,34 @@ body.folder-dragging * {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.68rem;
   color: color-mix(in srgb, var(--ink-muted) 84%, var(--accent) 16%);
-  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .item-secondary {
   display: flex;
   align-items: center;
   gap: 0.32rem;
+  flex-wrap: wrap;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.item-secondary .item-username {
+  overflow-wrap: anywhere;
+}
+
+.item-secondary .item-bullet {
+  color: var(--ink-muted);
 }
 
 .item-inline-actions {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.18rem;
 }
 
@@ -1095,13 +1111,18 @@ body.folder-dragging * {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.18rem;
+  justify-content: space-between;
+  gap: 0.35rem;
+  align-self: stretch;
   flex-shrink: 0;
 }
 
 .row-meta .folder-tag {
   font-size: 0.68rem;
   color: var(--ink-muted);
+  text-align: right;
+  max-width: 190px;
+  overflow-wrap: anywhere;
 }
 
 /* ============================================
@@ -1163,11 +1184,21 @@ body.folder-dragging * {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
+.detail-save-btn,
+.detail-delete-btn,
 .detail-close-btn {
   font-size: 0.74rem;
   padding: 0.28rem 0.5rem;
+}
+
+.detail-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
 }
 
 .detail-head h2 {
@@ -1416,10 +1447,40 @@ body.folder-dragging * {
   display: block;
 }
 
+.unlock-submit-btn {
+  min-width: 106px;
+}
+
+.unlock-btn-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+}
+
+.unlock-spinner {
+  width: 0.82rem;
+  height: 0.82rem;
+  border: 2px solid color-mix(in srgb, var(--accent-contrast, #000) 28%, transparent);
+  border-top-color: var(--accent-contrast, #000);
+  border-radius: 999px;
+  animation: unlock-spin 0.75s linear infinite;
+}
+
+.auth-unlock-status {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  letter-spacing: 0.01em;
+  text-align: center;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
 /* ---- Retained: inline field (used outside auth) ---- */
 .inline-field {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 0.3rem;
 }
 
@@ -1427,6 +1488,35 @@ body.folder-dragging * {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.82rem;
   letter-spacing: 0.05em;
+}
+
+.inline-field-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+}
+
+.inline-icon-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
+  color: var(--ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.inline-icon-btn:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--bg-2);
+}
+
+.inline-icon-btn svg {
+  display: block;
 }
 
 .auth-message {
@@ -2382,6 +2472,192 @@ body.folder-dragging * {
   width: auto;
 }
 
+.auto-folder-preview-card {
+  margin-top: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.auto-folder-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+}
+
+.auto-folder-preview-head strong {
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 0.84rem;
+}
+
+.auto-folder-preview-head span {
+  color: var(--ink-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+}
+
+.auto-folder-preview-stats {
+  display: grid;
+  gap: 0.22rem;
+  font-size: 0.74rem;
+  color: var(--ink-secondary);
+}
+
+.auto-folder-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.38rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.auto-folder-preview-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.4rem 0.5rem;
+}
+
+.auto-folder-preview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+}
+
+.auto-folder-preview-subfolders {
+  margin: 0.25rem 0 0;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.auto-folder-warning-list {
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--weak);
+  font-size: 0.72rem;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.auto-folder-review {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.auto-folder-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.auto-folder-review-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.45rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.auto-folder-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.auto-folder-review-head strong {
+  font-size: 0.78rem;
+}
+
+.auto-folder-review-url {
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auto-folder-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.auto-folder-review-actions button {
+  width: auto;
+  min-height: 32px;
+  font-size: 0.74rem;
+  padding: 0.28rem 0.45rem;
+}
+
+.auto-folder-exclude-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--ink-secondary);
+}
+
+.auto-folder-exclude-toggle input {
+  width: auto;
+}
+
+.auto-folder-reason-text {
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.auto-folder-confidence {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.08rem 0.42rem;
+  font-size: 0.64rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+}
+
+.auto-folder-confidence-high {
+  color: var(--safe);
+  background: color-mix(in srgb, var(--safe) 16%, transparent);
+  border-color: color-mix(in srgb, var(--safe) 26%, transparent);
+}
+
+.auto-folder-confidence-medium {
+  color: var(--weak);
+  background: color-mix(in srgb, var(--weak) 16%, transparent);
+  border-color: color-mix(in srgb, var(--weak) 26%, transparent);
+}
+
+.auto-folder-confidence-low {
+  color: var(--reused);
+  background: color-mix(in srgb, var(--reused) 16%, transparent);
+  border-color: color-mix(in srgb, var(--reused) 26%, transparent);
+}
+
 .settings-identity {
   display: flex;
   align-items: center;
@@ -2426,12 +2702,19 @@ body.folder-dragging * {
 
 .platform-desktop.app-shell {
   padding: 0;
+  --desktop-titlebar-height: 38px;
+  --desktop-topbar-height: 52px;
+  --desktop-workspace-top-pad: 0.4rem;
+  --desktop-workspace-bottom-pad: 0.55rem;
+  --desktop-sticky-pane-top: calc(var(--desktop-titlebar-height) + var(--desktop-topbar-height) + var(--desktop-workspace-top-pad));
 }
 
 .platform-desktop .topbar {
   top: 38px;
   padding-left: 0.75rem;
   padding-right: 0.75rem;
+  min-height: var(--desktop-topbar-height);
+  box-sizing: border-box;
 }
 
 .platform-desktop .topbar-actions {
@@ -2442,6 +2725,20 @@ body.folder-dragging * {
   border-top: 1px solid var(--line);
   padding: 0.4rem 0.55rem 0.55rem;
   background: rgba(0, 0, 0, 0.1);
+  align-items: start;
+}
+
+.platform-desktop .pane-left,
+.platform-desktop .pane-middle,
+.platform-desktop .pane-right {
+  min-height: 0;
+}
+
+.platform-desktop .pane-right {
+  position: sticky;
+  top: var(--desktop-sticky-pane-top);
+  height: calc(100vh - var(--desktop-sticky-pane-top) - var(--desktop-workspace-bottom-pad));
+  max-height: calc(100vh - var(--desktop-sticky-pane-top) - var(--desktop-workspace-bottom-pad));
 }
 
 /* platform-mobile topbar hiding removed — topbar now has only essential buttons */
@@ -2501,6 +2798,12 @@ body.folder-dragging * {
     box-shadow:
       0 0 0 8px color-mix(in srgb, var(--accent) 3%, transparent),
       0 0 60px color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+}
+
+@keyframes unlock-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -2684,12 +2987,12 @@ body.folder-dragging * {
     gap: 0.12rem;
   }
 
-  .item-info strong {
-    max-width: 160px;
+  .item-title {
+    max-width: none;
   }
 
   .item-info .item-url {
-    max-width: 160px;
+    max-width: none;
   }
 
   /* ---- Detail pane ---- */
@@ -2701,7 +3004,15 @@ body.folder-dragging * {
 
   .detail-head-actions {
     width: 100%;
-    justify-content: space-between;
+    justify-content: stretch;
+    gap: 0.3rem;
+  }
+
+  .detail-head-actions .detail-save-btn,
+  .detail-head-actions .detail-delete-btn,
+  .detail-head-actions .detail-close-btn {
+    flex: 1;
+    justify-content: center;
   }
 
   .detail-grid {
@@ -2718,8 +3029,14 @@ body.folder-dragging * {
     gap: 0.35rem;
   }
 
-  .inline-field button {
-    width: 100%;
+  .inline-field-actions {
+    justify-content: flex-start;
+  }
+
+  .inline-icon-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
   }
 
   .save-row {

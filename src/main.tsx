@@ -12,10 +12,7 @@ createRoot(document.getElementById('root')!).render(
         <App />
       </ConvexAuthProvider>
     ) : (
-      <div style={{ padding: '2rem', fontFamily: 'sans-serif' }}>
-        <h1>Armadillo</h1>
-        <p>Set <code>VITE_CONVEX_URL</code> in your environment to run the app.</p>
-      </div>
+      <App />
     )}
   </StrictMode>,
 )
