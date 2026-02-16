@@ -5,7 +5,8 @@ import AutofillBridge from '../../../plugins/autofillBridge'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import { BUILT_IN_THEME_PRESETS, THEME_COLOR_TOKEN_KEYS, resolveThemeTokens } from '../../../shared/utils/theme'
 import type { ThemeEditableTokenKey, VaultThemeSettings } from '../../../types/vault'
-import type { DevFlagOverride } from '../../../types/entitlements'
+import type { CapabilityKey, DevFlagOverride, PlanTier } from '../../../types/entitlements'
+import { ALL_CAPABILITIES, DEFAULT_ROLLOUT_FLAGS } from '../../../features/flags/registry'
 
 const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
   accent: 'Accent',
@@ -27,11 +28,27 @@ const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
   'noise-opacity': 'Noise',
 }
 
+const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
+  'cloud.sync': 'Cloud Sync',
+  'cloud.cloud_only': 'Cloud-Only Storage',
+  'enterprise.self_hosted': 'Self-Hosted Sync',
+  'enterprise.org_admin': 'Org Admin',
+}
+
+const FLAG_LABELS: Record<string, string> = {
+  'billing.plans_section': 'Plans Section',
+  'billing.manual_token_entry': 'Manual Token Entry',
+  'experiments.enterprise_team_ui': 'Enterprise Team UI',
+}
+
+const TIER_OPTIONS: PlanTier[] = ['free', 'premium', 'enterprise']
+
 const SETTINGS_CATEGORIES = [
-  { id: 'general', label: 'General', description: 'Appearance, account, updates, and billing' },
+  { id: 'general', label: 'General', description: 'Appearance, account, and updates' },
   { id: 'cloud', label: 'Cloud', description: 'Storage and sync options' },
   { id: 'security', label: 'Security', description: 'Biometric and autofill controls' },
   { id: 'vault', label: 'Vault', description: 'Import, export, and trash settings' },
+  { id: 'billing', label: 'Plans & Billing', description: 'Manage your subscription and entitlements' },
   { id: 'danger', label: 'Danger Zone', description: 'Testing and reset actions' },
 ] as const
 
@@ -99,7 +116,6 @@ export function SettingsPage() {
     entitlementState,
     effectiveTier,
     entitlementStatusMessage,
-    capabilityLockReasons,
     billingUrl,
     appBuildInfo,
     updateCheckResult,
@@ -112,6 +128,7 @@ export function SettingsPage() {
     autoFolderError,
     autoFolderPreferencesDirty,
     autoFolderWarnings,
+    isOrgMember,
   } = useVaultAppState()
   const { cloudConnected, hasCapability } = useVaultAppDerived()
   const {
@@ -165,8 +182,9 @@ export function SettingsPage() {
   const [showThemeCustomizer, setShowThemeCustomizer] = useState(false)
   const [manualTokenInput, setManualTokenInput] = useState('')
   const [manualTokenBusy, setManualTokenBusy] = useState(false)
-  const [devOverrideDraft, setDevOverrideDraft] = useState(() => (devFlagOverrideState ? JSON.stringify(devFlagOverrideState, null, 2) : ''))
-  const [devOverrideError, setDevOverrideError] = useState('')
+  const [devTier, setDevTier] = useState<PlanTier | ''>(devFlagOverrideState?.tier ?? '')
+  const [devCapabilities, setDevCapabilities] = useState<Set<CapabilityKey>>(new Set(devFlagOverrideState?.capabilities ?? []))
+  const [devFlags, setDevFlags] = useState<Record<string, boolean>>(() => ({ ...DEFAULT_ROLLOUT_FLAGS, ...(devFlagOverrideState?.flags ?? {}) }))
 
   function closeSettingsView() {
     setShowThemeCustomizer(false)
@@ -195,24 +213,29 @@ export function SettingsPage() {
 
   const handleApplyDevOverride = useCallback(() => {
     if (!import.meta.env.DEV) return
-    const raw = devOverrideDraft.trim()
-    if (!raw) {
-      applyDevFlagOverrides(null)
-      setDevOverrideError('')
-      return
+    const override: DevFlagOverride = {}
+    if (devTier) override.tier = devTier
+    if (devCapabilities.size > 0) override.capabilities = [...devCapabilities]
+    const changedFlags: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(devFlags)) {
+      if (DEFAULT_ROLLOUT_FLAGS[key] !== value) changedFlags[key] = value
     }
-    try {
-      const parsed = JSON.parse(raw) as unknown
-      if (!parsed || typeof parsed !== 'object') {
-        setDevOverrideError('Dev override JSON must be an object')
-        return
-      }
-      applyDevFlagOverrides(parsed as DevFlagOverride)
-      setDevOverrideError('')
-    } catch {
-      setDevOverrideError('Invalid JSON')
-    }
-  }, [applyDevFlagOverrides, devOverrideDraft])
+    if (Object.keys(changedFlags).length > 0) override.flags = changedFlags
+    applyDevFlagOverrides(Object.keys(override).length > 0 ? override : null)
+  }, [applyDevFlagOverrides, devTier, devCapabilities, devFlags])
+
+  const toggleDevCapability = useCallback((cap: CapabilityKey) => {
+    setDevCapabilities((prev) => {
+      const next = new Set(prev)
+      if (next.has(cap)) next.delete(cap)
+      else next.add(cap)
+      return next
+    })
+  }, [])
+
+  const toggleDevFlag = useCallback((flag: string) => {
+    setDevFlags((prev) => ({ ...prev, [flag]: !prev[flag] }))
+  }, [])
 
   const checkAutofillStatus = useCallback(() => {
     if (!isNativeAndroid()) return
@@ -235,7 +258,9 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
-    setDevOverrideDraft(devFlagOverrideState ? JSON.stringify(devFlagOverrideState, null, 2) : '')
+    setDevTier(devFlagOverrideState?.tier ?? '')
+    setDevCapabilities(new Set(devFlagOverrideState?.capabilities ?? []))
+    setDevFlags({ ...DEFAULT_ROLLOUT_FLAGS, ...(devFlagOverrideState?.flags ?? {}) })
   }, [devFlagOverrideState])
 
   const closeSettingsRef = useRef(closeSettings)
@@ -276,12 +301,6 @@ export function SettingsPage() {
   const cloudSyncLocked = !hasCapability('cloud.sync')
   const cloudOnlyLocked = !hasCapability('cloud.cloud_only')
   const selfHostedLocked = syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')
-  const cloudLockReason = selfHostedLocked
-    ? (capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
-    : (capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
-  const cloudOnlyLockReason = selfHostedLocked
-    ? (capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
-    : (capabilityLockReasons['cloud.cloud_only'] ?? 'Requires Premium plan')
   const upgradeDisabled = !billingUrl
   const resolvedThemeTokens = useMemo(() => resolveThemeTokens(themeSettings), [themeSettings])
   const selectedCustomPreset = themeSettings.customPresets.find((preset) => preset.id === themeSettings.selectedPresetId) ?? null
@@ -299,11 +318,15 @@ export function SettingsPage() {
     )
   })
   const previewLockedPathSet = new Set((previewPlan?.lockedFolderPaths ?? []).map((path) => path.trim().toLowerCase()).filter(Boolean))
-  const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === settingsCategory) ?? SETTINGS_CATEGORIES[0]
+  const visibleCategories = isOrgMember
+    ? SETTINGS_CATEGORIES.filter((c) => c.id !== 'billing')
+    : SETTINGS_CATEGORIES
+  const activeCategory = visibleCategories.find((category) => category.id === settingsCategory) ?? visibleCategories[0]
   const isGeneral = settingsCategory === 'general'
   const isCloud = settingsCategory === 'cloud'
   const isSecurity = settingsCategory === 'security'
   const isVault = settingsCategory === 'vault'
+  const isBilling = settingsCategory === 'billing'
   const isDanger = settingsCategory === 'danger'
   const showManualTokenEntry = import.meta.env.DEV || hasCapability('enterprise.org_admin')
   const updateStatusLabel = updateCheckResult.status === 'required'
@@ -327,7 +350,7 @@ export function SettingsPage() {
         </div>
 
         <nav className="settings-page-nav-list" aria-label="Settings categories">
-          {SETTINGS_CATEGORIES.map((category) => (
+          {visibleCategories.map((category) => (
             <button
               key={category.id}
               className={`settings-page-nav-item${settingsCategory === category.id ? ' active' : ''}`}
@@ -353,7 +376,7 @@ export function SettingsPage() {
                   value={settingsCategory}
                   onChange={(event) => setSettingsCategory(event.target.value as typeof settingsCategory)}
                 >
-                  {SETTINGS_CATEGORIES.map((category) => (
+                  {visibleCategories.map((category) => (
                     <option key={category.id} value={category.id}>{category.label}</option>
                   ))}
                 </select>
@@ -589,8 +612,8 @@ export function SettingsPage() {
               )}
             </div>
             {syncProvider === 'self_hosted' && selfHostedLocked && (
-              <p className="muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
-                {capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan'}
+              <p className="settings-plan-hint muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
+                Available on Enterprise
               </p>
             )}
           </section>
@@ -641,90 +664,6 @@ export function SettingsPage() {
             </div>
           </section>
 
-          <div className="settings-divider" hidden={!isGeneral} />
-
-          <section className="settings-section" hidden={!isGeneral}>
-            <h3>Plans & Billing</h3>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Current tier: {effectiveTier}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Entitlement status: {entitlementState.status} ({entitlementState.source})
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Expires: {formatDateTime(entitlementState.expiresAt)}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Last refresh: {formatDateTime(entitlementState.lastRefreshAt)}
-            </p>
-            <p className="muted" style={{ marginTop: 0 }}>
-              {entitlementStatusMessage}
-            </p>
-            <div className="settings-action-list">
-              <button className={upgradeDisabled ? 'ghost' : 'solid'} onClick={openBillingUrl} disabled={upgradeDisabled}>
-                {upgradeDisabled ? 'Upgrade URL Not Configured' : 'Upgrade Plan'}
-              </button>
-              <button className="ghost" onClick={() => void refreshEntitlements()}>
-                Refresh Entitlements
-              </button>
-            </div>
-            {showManualTokenEntry ? (
-              <>
-                <p className="muted" style={{ marginBottom: '0.35rem' }}>
-                  Break-glass admin override.
-                </p>
-                <label>
-                  Manual Signed Entitlement Token
-                  <textarea
-                    value={manualTokenInput}
-                    onChange={(event) => setManualTokenInput(event.target.value)}
-                    placeholder="Paste signed JWT entitlement token"
-                    rows={4}
-                  />
-                </label>
-                <div className="settings-action-list">
-                  <button className="ghost" onClick={() => void handleApplyManualToken()} disabled={manualTokenBusy}>
-                    {manualTokenBusy ? 'Validating...' : 'Apply Signed Token'}
-                  </button>
-                  <button className="ghost" onClick={clearManualEntitlementToken}>
-                    Clear Manual Token
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="muted" style={{ marginTop: 0 }}>
-                Entitlements are managed by your organization administrator.
-              </p>
-            )}
-            {import.meta.env.DEV && (
-              <>
-                <div className="settings-divider" />
-                <h3 style={{ marginTop: 0 }}>Dev Overrides</h3>
-                <p className="muted" style={{ marginTop: 0 }}>
-                  Development builds can override tier/capabilities/flags for QA.
-                </p>
-                <label>
-                  Override JSON
-                  <textarea
-                    value={devOverrideDraft}
-                    onChange={(event) => setDevOverrideDraft(event.target.value)}
-                    placeholder='{"tier":"enterprise","capabilities":["cloud.sync"],"flags":{"billing.plans_section":true}}'
-                    rows={6}
-                  />
-                </label>
-                {devOverrideError && (
-                  <p className="password-mismatch-msg" style={{ marginTop: '0.4rem' }}>
-                    {devOverrideError}
-                  </p>
-                )}
-                <div className="settings-action-list">
-                  <button className="ghost" onClick={handleApplyDevOverride}>Apply Dev Override</button>
-                  <button className="ghost" onClick={clearDevFlagOverrides}>Clear Dev Override</button>
-                </div>
-              </>
-            )}
-          </section>
-
           <section className="settings-section" hidden={!isCloud}>
             <h3>Storage Mode</h3>
             <div className="settings-toggle-row">
@@ -741,13 +680,13 @@ export function SettingsPage() {
                   disabled={cloudOnlyLocked || selfHostedLocked}
                   onClick={() => setStorageMode('cloud_only')}
                 >
-                  {cloudOnlyLocked || selfHostedLocked ? 'Cloud Only (Locked)' : 'Cloud Only'}
+                  Cloud Only
                 </button>
               </div>
             </div>
             {(cloudOnlyLocked || selfHostedLocked) && (
-              <p className="muted" style={{ marginTop: '0.45rem' }}>
-                {cloudOnlyLockReason}
+              <p className="settings-plan-hint muted" style={{ marginTop: '0.45rem' }}>
+                Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}
               </p>
             )}
             <label>
@@ -775,8 +714,8 @@ export function SettingsPage() {
               Provider: {syncProvider === 'self_hosted' ? 'Self-hosted' : 'Convex'}
             </p>
             {(cloudSyncLocked || selfHostedLocked) && (
-              <p className="muted" style={{ marginTop: 0 }}>
-                {cloudLockReason}
+              <p className="settings-plan-hint muted" style={{ marginTop: 0 }}>
+                Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}
               </p>
             )}
             <div className="settings-toggle-row">
@@ -1010,6 +949,174 @@ export function SettingsPage() {
               </button>
             </div>
           </section>
+
+          {isBilling && isOrgMember && (
+            <section className="settings-section">
+              <p className="muted">Your plan is managed by your organization.</p>
+            </section>
+          )}
+
+          {isBilling && !isOrgMember && (
+            <>
+              <section className="settings-section">
+                {effectiveTier === 'free' ? (
+                  <div className="settings-plan-card settings-plan-card--upgrade">
+                    <div className="settings-plan-card-badge">Free</div>
+                    <h3 className="settings-plan-card-title">Get Premium</h3>
+                    <p className="muted" style={{ marginTop: 0, marginBottom: '0.6rem' }}>
+                      Unlock the full power of Armadillo with a Premium plan.
+                    </p>
+                    <ul className="settings-plan-card-features">
+                      <li>Cloud sync across all your devices</li>
+                      <li>Cloud-only encrypted storage</li>
+                      <li>Priority support</li>
+                    </ul>
+                    <div className="settings-action-list">
+                      <button className={upgradeDisabled ? 'ghost' : 'solid'} onClick={openBillingUrl} disabled={upgradeDisabled}>
+                        {upgradeDisabled ? 'Upgrade URL Not Configured' : 'Upgrade to Premium'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="settings-plan-card">
+                    <div className="settings-plan-card-badge settings-plan-card-badge--active">
+                      {effectiveTier === 'enterprise' ? 'Enterprise' : 'Premium'}
+                    </div>
+                    <h3 className="settings-plan-card-title">Current Plan</h3>
+                    <div className="settings-plan-card-details">
+                      <p className="muted" style={{ margin: 0 }}>
+                        Status: {entitlementState.status}
+                      </p>
+                      {entitlementState.expiresAt && (
+                        <p className="muted" style={{ margin: 0 }}>
+                          Expires: {formatDateTime(entitlementState.expiresAt)}
+                        </p>
+                      )}
+                      {entitlementState.lastRefreshAt && (
+                        <p className="muted" style={{ margin: 0 }}>
+                          Last refresh: {formatDateTime(entitlementState.lastRefreshAt)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="settings-action-list">
+                      <button className="ghost" onClick={() => void refreshEntitlements()}>
+                        Refresh Entitlements
+                      </button>
+                      {billingUrl && (
+                        <button className="ghost" onClick={openBillingUrl}>
+                          Manage Subscription
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <div className="settings-divider" />
+
+              <section className="settings-section">
+                <h3>Entitlement Details</h3>
+                <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+                  {entitlementStatusMessage}
+                </p>
+                <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+                  Source: {entitlementState.source}
+                </p>
+                {showManualTokenEntry ? (
+                  <>
+                    <div className="settings-divider" />
+                    <p className="muted" style={{ marginBottom: '0.35rem' }}>
+                      Break-glass admin override.
+                    </p>
+                    <label>
+                      Manual Signed Entitlement Token
+                      <textarea
+                        value={manualTokenInput}
+                        onChange={(event) => setManualTokenInput(event.target.value)}
+                        placeholder="Paste signed JWT entitlement token"
+                        rows={4}
+                      />
+                    </label>
+                    <div className="settings-action-list">
+                      <button className="ghost" onClick={() => void handleApplyManualToken()} disabled={manualTokenBusy}>
+                        {manualTokenBusy ? 'Validating...' : 'Apply Signed Token'}
+                      </button>
+                      <button className="ghost" onClick={clearManualEntitlementToken}>
+                        Clear Manual Token
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    Entitlements are managed by your organization administrator.
+                  </p>
+                )}
+                {import.meta.env.DEV && (
+                  <>
+                    <div className="settings-divider" />
+                    <h3 style={{ marginTop: 0 }}>Dev Overrides</h3>
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      Override tier, capabilities, and flags for local QA testing.
+                    </p>
+
+                    <div className="dev-override-group">
+                      <span className="dev-override-label">Tier</span>
+                      <div className="dev-override-tier-row">
+                        <button
+                          className={devTier === '' ? 'solid' : 'ghost'}
+                          onClick={() => setDevTier('')}
+                        >
+                          Default
+                        </button>
+                        {TIER_OPTIONS.map((t) => (
+                          <button
+                            key={t}
+                            className={devTier === t ? 'solid' : 'ghost'}
+                            onClick={() => setDevTier(t)}
+                          >
+                            {t.charAt(0).toUpperCase() + t.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="dev-override-group">
+                      <span className="dev-override-label">Capabilities</span>
+                      {ALL_CAPABILITIES.map((cap) => (
+                        <label key={cap} className="dev-override-toggle">
+                          <input
+                            type="checkbox"
+                            checked={devCapabilities.has(cap)}
+                            onChange={() => toggleDevCapability(cap)}
+                          />
+                          <span>{CAPABILITY_LABELS[cap] || cap}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="dev-override-group">
+                      <span className="dev-override-label">Flags</span>
+                      {Object.keys(DEFAULT_ROLLOUT_FLAGS).map((flag) => (
+                        <label key={flag} className="dev-override-toggle">
+                          <input
+                            type="checkbox"
+                            checked={devFlags[flag] ?? false}
+                            onChange={() => toggleDevFlag(flag)}
+                          />
+                          <span>{FLAG_LABELS[flag] || flag}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="settings-action-list">
+                      <button className="ghost" onClick={handleApplyDevOverride}>Apply Overrides</button>
+                      <button className="ghost" onClick={clearDevFlagOverrides}>Clear All</button>
+                    </div>
+                  </>
+                )}
+              </section>
+            </>
+          )}
 
           <section className="settings-section" hidden={!isDanger}>
             <h3>Danger Zone</h3>

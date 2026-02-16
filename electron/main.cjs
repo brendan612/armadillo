@@ -508,7 +508,7 @@ function createWindow() {
   };
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://localhost:4000');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
@@ -524,7 +524,7 @@ function createWindow() {
   const isAppPage = (url) => {
     if (!url) return false;
     if (url.startsWith('file://')) return true;
-    if (isDev && url.startsWith('http://localhost:5173')) return true;
+    if (isDev && url.startsWith('http://localhost:4000')) return true;
     return false;
   };
 

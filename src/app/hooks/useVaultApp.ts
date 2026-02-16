@@ -116,7 +116,7 @@ type MobileStep = 'home' | 'nav' | 'list' | 'detail'
 type SyncState = 'local' | 'syncing' | 'live' | 'error'
 type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
 type FolderFilterMode = 'direct' | 'recursive'
-type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'danger'
+type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'billing' | 'danger'
 type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'unfiled' | 'trash' | `folder:${string}`
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
@@ -453,6 +453,7 @@ export function useVaultApp() {
   const [authMessage, setAuthMessage] = useState('')
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
   const [cloudIdentity, setCloudIdentity] = useState('')
+  const [isOrgMember, setIsOrgMember] = useState(false)
   const [localVaultPath, setLocalVaultPath] = useState(() => (initialStorageMode === 'cloud_only' ? '' : getLocalVaultPath()))
   const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
   const [cloudVaultCandidates, setCloudVaultCandidates] = useState<ArmadilloVaultFile[]>([])
@@ -1162,6 +1163,7 @@ export function useVaultApp() {
         const status = await getCloudAuthStatus()
         if (cancelled) return
         setSyncAuthContext(status?.authContext ?? null)
+        setIsOrgMember(Boolean(status?.authContext?.orgId))
 
         if (status?.authenticated || syncProvider === 'self_hosted') {
           const identityLabel = status?.authenticated
@@ -1215,16 +1217,9 @@ export function useVaultApp() {
       setCloudVaultCandidates([])
       return
     }
-    if (!hasCapability('cloud.sync')) {
+    if (!hasCapability('cloud.sync') || (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted'))) {
       setCloudVaultSnapshot(null)
       setCloudVaultCandidates([])
-      setAuthMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
-      return
-    }
-    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) {
-      setCloudVaultSnapshot(null)
-      setCloudVaultCandidates([])
-      setAuthMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
       return
     }
 
@@ -3095,6 +3090,7 @@ export function useVaultApp() {
     if (syncProvider === 'self_hosted') {
       setSyncAuthToken(null)
       setSyncAuthContext(null)
+      setIsOrgMember(false)
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
         setCloudCacheExpiresAt('')
@@ -3115,6 +3111,7 @@ export function useVaultApp() {
       setAuthMessage('Signed out')
       setCloudAuthState('disconnected')
       setCloudIdentity('')
+      setIsOrgMember(false)
       void refreshEntitlements()
     } catch {
       setAuthMessage('Sign out failed')
@@ -3214,6 +3211,7 @@ export function useVaultApp() {
       authMessage,
       cloudAuthState,
       cloudIdentity,
+      isOrgMember,
       localVaultPath,
       cloudVaultCandidates,
       showAllCloudSnapshots,

@@ -2541,7 +2541,7 @@ body.folder-dragging * {
 }
 
 .settings-body {
-  padding: 0.8rem 0.9rem 1.2rem;
+  padding: 0.8rem 0.9rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 1.15rem;
@@ -2571,6 +2571,8 @@ body.folder-dragging * {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-page-nav-head h2 {
@@ -2631,6 +2633,8 @@ body.folder-dragging * {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-page-detail-head {
@@ -2654,7 +2658,8 @@ body.folder-dragging * {
 }
 
 .settings-page-content {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -2879,6 +2884,147 @@ body.folder-dragging * {
   font-size: 0.74rem;
   min-height: auto;
   width: auto;
+}
+
+/* ---- Plan card ---- */
+
+.settings-plan-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-2);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings-plan-card--upgrade {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-2));
+  box-shadow: 0 0 18px -6px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.settings-plan-card-badge {
+  display: inline-block;
+  width: fit-content;
+  padding: 0.15rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-3);
+  color: var(--ink-muted);
+}
+
+.settings-plan-card-badge--active {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+.settings-plan-card-title {
+  margin: 0.25rem 0 0;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.settings-plan-card--upgrade .settings-plan-card-title {
+  color: var(--accent);
+}
+
+.settings-plan-card-features {
+  list-style: none;
+  padding: 0;
+  margin: 0.2rem 0 0.45rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.settings-plan-card-features li {
+  font-size: 0.78rem;
+  color: var(--ink-secondary);
+  padding-left: 1.15rem;
+  position: relative;
+}
+
+.settings-plan-card-features li::before {
+  content: '\2713';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+
+.settings-plan-card-details {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0.15rem 0 0.35rem;
+}
+
+.settings-plan-card .settings-action-list {
+  margin-top: 0.25rem;
+}
+
+/* ---- Plan hint (soft lock label) ---- */
+
+.settings-plan-hint {
+  font-size: 0.72rem;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* ---- Dev override controls ---- */
+
+.dev-override-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.dev-override-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.1rem;
+}
+
+.dev-override-tier-row {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.dev-override-tier-row button {
+  padding: 0.22rem 0.6rem;
+  font-size: 0.74rem;
+  min-height: auto;
+  width: auto;
+}
+
+.dev-override-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  padding: 0.22rem 0;
+}
+
+.dev-override-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.dev-override-toggle span {
+  font-size: 0.78rem;
+  color: var(--ink-secondary);
 }
 
 .auto-folder-preview-card {
@@ -3145,7 +3291,7 @@ body.folder-dragging * {
   border-top: 1px solid var(--line);
   padding: 0.4rem 0.55rem 0.55rem;
   background: rgba(0, 0, 0, 0.1);
-  align-items: start;
+  align-items: stretch;
   height: calc(100dvh - var(--desktop-titlebar-height) - var(--desktop-topbar-height));
   min-height: 0;
   overflow: hidden;
@@ -3155,7 +3301,7 @@ body.folder-dragging * {
   border-top: 1px solid var(--line);
   padding: 0.4rem 0.55rem 0.55rem;
   background: rgba(0, 0, 0, 0.1);
-  align-items: start;
+  align-items: stretch;
   height: calc(100dvh - var(--desktop-titlebar-height) - var(--desktop-topbar-height));
   min-height: 0;
   overflow: hidden;
@@ -3286,7 +3432,9 @@ body.folder-dragging * {
   .settings-page-workspace {
     grid-template-columns: 1fr;
     gap: 0;
-    min-height: calc(100dvh - 6rem);
+    height: calc(100dvh - 6rem);
+    min-height: 0;
+    overflow: hidden;
   }
 
   .settings-page-nav {
@@ -3294,7 +3442,8 @@ body.folder-dragging * {
   }
 
   .settings-page-detail {
-    min-height: calc(100dvh - 8rem);
+    min-height: 0;
+    height: 100%;
   }
 
   .settings-page-detail-head {

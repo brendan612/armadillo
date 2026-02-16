@@ -19,7 +19,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.SYNC_RATE_LIMIT_WINDOW_MS || 60_
 const RATE_LIMIT_MAX = Number(process.env.SYNC_RATE_LIMIT_MAX || 300)
 const ENTITLEMENT_TOKEN = (process.env.SYNC_ENTITLEMENT_TOKEN || '').trim()
 
-const defaultCorsOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4000', 'http://127.0.0.1:4000']
+const defaultCorsOrigins = ['http://localhost:4000', 'http://127.0.0.1:4000']
 const corsOrigins = (process.env.SYNC_CORS_ORIGINS || defaultCorsOrigins.join(',')).split(',').map((v) => v.trim()).filter(Boolean)
 const roleRank = { viewer: 1, editor: 2, admin: 3, owner: 4 }
 const metrics = { requestsTotal: 0, authFailuresTotal: 0, pushConflictsTotal: 0, sseDisconnectsTotal: 0, rateLimitedTotal: 0 }
