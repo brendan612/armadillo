@@ -134,6 +134,13 @@ jobs:
           VITE_UPDATE_MANIFEST_URL: ./update-manifest.json
         run: npm run sync:android
 
+      - name: Prepare Gradle wrapper for Linux runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/\r$//' android/gradlew
+          chmod +x android/gradlew
+
       - name: Build signed dev flavor APK
         shell: bash
         env:

@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed Linux CI Gradle wrapper execution in fast-lane Android workflow by normalizing `android/gradlew` line endings and setting execute permission before running `assembleDevRelease`.
+- 2026-02-16
   - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
   - Added a dual-track device update implementation with update-manifest types/checking, Settings channel/build/update visibility, production-only minimum-version enforcement gate, Android `dev` flavor + CI-injected version/signing properties, and a Firebase App Distribution fast-lane workflow for non-store Android tester pushes.
 - 2026-02-16
