@@ -40,9 +40,9 @@ function findScrollableAncestor(target: EventTarget | null): HTMLElement | null 
 
 export function AppShell() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, showSettings } = useVaultAppState()
+  const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, showSettings, appBuildInfo, updateCheckResult } = useVaultAppState()
   const { importFileInputRef, googlePasswordImportInputRef, keepassImportInputRef } = useVaultAppRefs()
-  const { onImportFileSelected, onGooglePasswordCsvSelected, onKeePassCsvSelected, dismissExpiryAlerts, refreshVaultFromCloudNow } = useVaultAppActions()
+  const { onImportFileSelected, onGooglePasswordCsvSelected, onKeePassCsvSelected, dismissExpiryAlerts, refreshVaultFromCloudNow, openSettings } = useVaultAppActions()
   const pullRefreshRef = useRef<PullRefreshGesture | null>(null)
 
   const expiredCount = expiryAlerts.filter((a) => a.status === 'expired').length
@@ -50,6 +50,7 @@ export function AppShell() {
   const showExpiryBar = expiryAlerts.length > 0 && !expiryAlertsDismissed
   const showHomePane = selectedNode === 'home'
   const showDetailPane = !showHomePane
+  const updateRequired = appBuildInfo.channel === 'production' && updateCheckResult.status === 'required'
 
   function resetPullRefreshGesture() {
     pullRefreshRef.current = null
@@ -118,7 +119,18 @@ export function AppShell() {
         </div>
       )}
 
-      {!showSettings && (
+      {updateRequired ? (
+        <section className="update-required-gate" aria-live="assertive">
+          <div className="update-required-card">
+            <AlertTriangle size={22} className="alert-icon" />
+            <h2>Update required</h2>
+            <p>{updateCheckResult.message}</p>
+            <button className="solid" onClick={() => openSettings('general')}>
+              Open Update Details
+            </button>
+          </div>
+        </section>
+      ) : !showSettings && (
         <main
           className={`workspace density-compact ${showHomePane ? 'workspace-home' : ''}`}
           onTouchStart={effectivePlatform === 'mobile' ? handleWorkspaceTouchStart : undefined}
@@ -138,7 +150,7 @@ export function AppShell() {
       <ItemContextMenu />
       <EditFolderModal />
 
-      {!showSettings && <MobileNav />}
+      {!showSettings && !updateRequired && <MobileNav />}
 
       <input
         ref={importFileInputRef}

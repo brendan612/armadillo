@@ -1,6 +1,18 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_UPDATE_MANIFEST_URL?: string
+  readonly VITE_UPDATE_CHANNEL?: string
+}
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
 declare global {
+const __APP_VERSION__: string
+const __APP_BUILD_SHA__: string
+const __APP_BUILD_TIME__: string
 interface Window {
   armadilloShell?: {
     isElectron: boolean

@@ -1,4 +1,4 @@
-﻿import { argon2id } from '@noble/hashes/argon2.js'
+import { argon2id } from '@noble/hashes/argon2.js'
 import { utf8ToBytes } from '@noble/hashes/utils.js'
 
 const encoder = new TextEncoder()

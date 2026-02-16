@@ -83,6 +83,13 @@ import {
 } from '../../features/flags/entitlementCache'
 import { resolveFlags } from '../../features/flags/resolveFlags'
 import { verifyEntitlementJwt } from '../../features/flags/verifyEntitlementJwt'
+import {
+  defaultUpdateCheckResult,
+  evaluateUpdateStatus,
+  fetchUpdateManifest,
+  getAppBuildInfo,
+  type UpdateCheckResult,
+} from '../../lib/updateManifest'
 import type {
   ArmadilloVaultFile,
   SecurityQuestion,
@@ -134,6 +141,7 @@ const PASSWORD_EXPIRING_SOON_DAYS = 7
 const HOME_SEARCH_RESULTS_LIMIT = 8
 const HOME_RECENT_ITEMS_LIMIT = 8
 const BILLING_URL = (import.meta.env.VITE_BILLING_URL || '').trim()
+const APP_BUILD_INFO = getAppBuildInfo()
 
 function defaultEntitlementState(reason = 'Free plan active'): EntitlementState {
   return {
@@ -467,6 +475,8 @@ export function useVaultApp() {
   const [autoFolderError, setAutoFolderError] = useState('')
   const [autoFolderPreferencesDirty, setAutoFolderPreferencesDirty] = useState(false)
   const [autoFolderWarnings, setAutoFolderWarnings] = useState<string[]>([])
+  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult>(() => defaultUpdateCheckResult(APP_BUILD_INFO))
+  const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false)
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -2282,11 +2292,30 @@ export function useVaultApp() {
     setActivePanel('details')
   }
 
+  const checkForAppUpdates = useCallback(async () => {
+    setIsCheckingForUpdates(true)
+    try {
+      const manifest = await fetchUpdateManifest(APP_BUILD_INFO.manifestUrl)
+      setUpdateCheckResult(evaluateUpdateStatus(manifest, APP_BUILD_INFO))
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setUpdateCheckResult({
+        ...defaultUpdateCheckResult(APP_BUILD_INFO),
+        checkedAt: new Date().toISOString(),
+        message: `Update check failed: ${detail}`,
+        error: detail,
+      })
+    } finally {
+      setIsCheckingForUpdates(false)
+    }
+  }, [])
+
   function openSettings(category?: SettingsCategoryId) {
     if (category) {
       setSettingsCategory(category)
     }
     setShowSettings(true)
+    void checkForAppUpdates()
   }
 
   function closeSettings() {
@@ -3177,6 +3206,9 @@ export function useVaultApp() {
       entitlementStatusMessage,
       capabilityLockReasons,
       billingUrl: BILLING_URL,
+      appBuildInfo: APP_BUILD_INFO,
+      updateCheckResult,
+      isCheckingForUpdates,
       devFlagOverrideState,
       biometricEnabled,
       authMessage,
@@ -3240,6 +3272,7 @@ export function useVaultApp() {
       setCloudCacheTtlHours,
       setVaultSettings,
       refreshEntitlements,
+      checkForAppUpdates,
       applyManualEntitlementToken,
       clearManualEntitlementToken: clearManualEntitlementTokenAction,
       applyDevFlagOverrides,

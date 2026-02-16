@@ -1,4 +1,4 @@
-﻿# Key Management Notes
+# Key Management Notes
 
 ## Current model
 - Vault encryption keys are generated client-side.

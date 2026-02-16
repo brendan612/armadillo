@@ -1,0 +1,203 @@
+name: Fastlane Android
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*-beta*'
+      - 'v*-rc*'
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: 'Branch, tag, or commit to build'
+        required: false
+        default: 'main'
+        type: string
+      release_notes:
+        description: 'Optional extra release notes'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fastlane-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_distribute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve checkout ref
+        id: ref
+        shell: bash
+        env:
+          INPUT_GIT_REF: ${{ github.event.inputs.git_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_GIT_REF}" ]]; then
+            echo "value=${INPUT_GIT_REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.value }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate fast-lane secrets
+        env:
+          FIREBASE_APP_ID_ANDROID: ${{ secrets.FIREBASE_APP_ID_ANDROID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_TESTER_GROUPS: ${{ secrets.FIREBASE_TESTER_GROUPS }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for key in \
+            FIREBASE_APP_ID_ANDROID \
+            FIREBASE_SERVICE_ACCOUNT_JSON \
+            FIREBASE_TESTER_GROUPS \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_PASSWORD; do
+            if [ -z "${!key}" ]; then
+              echo "Missing required secret: ${key}"
+              exit 1
+            fi
+          done
+
+      - name: Quality gate
+        env:
+          VITE_UPDATE_CHANNEL: fastlane-android
+          VITE_UPDATE_MANIFEST_URL: ./update-manifest.json
+        run: npm run ci:check
+
+      - name: Compute fast-lane version metadata
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")"
+          base_version="$(echo "${package_version}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          if [[ -z "${base_version}" ]]; then
+            echo "Could not derive base semver from package version: ${package_version}"
+            exit 1
+          fi
+
+          version_name="${base_version}-dev.${GITHUB_RUN_NUMBER}"
+          version_code="${GITHUB_RUN_NUMBER}"
+          short_sha="$(echo "${GITHUB_SHA}" | cut -c1-8)"
+
+          {
+            echo "base_version=${base_version}"
+            echo "version_name=${version_name}"
+            echo "version_code=${version_code}"
+            echo "short_sha=${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Android keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "$RUNNER_TEMP/armadillo-upload.jks"
+          ls -l "$RUNNER_TEMP/armadillo-upload.jks"
+
+      - name: Build and sync web assets for Android
+        env:
+          VITE_UPDATE_CHANNEL: fastlane-android
+          VITE_UPDATE_MANIFEST_URL: ./update-manifest.json
+        run: npm run sync:android
+
+      - name: Build signed dev flavor APK
+        shell: bash
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew --no-daemon assembleDevRelease \
+            -ParmadilloVersionName="${{ steps.version.outputs.version_name }}" \
+            -ParmadilloVersionCode="${{ steps.version.outputs.version_code }}" \
+            -ParmadilloKeystoreFile="$RUNNER_TEMP/armadillo-upload.jks" \
+            -ParmadilloKeystorePassword="${ANDROID_KEYSTORE_PASSWORD}" \
+            -ParmadilloKeyAlias="${ANDROID_KEY_ALIAS}" \
+            -ParmadilloKeyPassword="${ANDROID_KEY_PASSWORD}"
+
+      - name: Locate release APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk_path="$(find android/app/build/outputs/apk -type f -name '*dev-release*.apk' | head -n 1)"
+          if [[ -z "${apk_path}" ]]; then
+            echo "Could not locate dev release APK output"
+            exit 1
+          fi
+          echo "apk_path=${apk_path}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$(basename "${apk_path}")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-fastlane-${{ steps.version.outputs.version_name }}
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Distribute to Firebase App Distribution
+        id: firebase
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID_ANDROID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          groups: ${{ secrets.FIREBASE_TESTER_GROUPS }}
+          file: ${{ steps.apk.outputs.apk_path }}
+          releaseNotes: |
+            Armadillo Android fast-lane build
+            Version: ${{ steps.version.outputs.version_name }} (code ${{ steps.version.outputs.version_code }})
+            Commit: ${{ github.sha }}
+            Ref: ${{ github.ref_name }}
+            Notes: ${{ github.event.inputs.release_notes || 'n/a' }}
+
+      - name: Publish summary
+        shell: bash
+        run: |
+          {
+            echo "## Android Fast-Lane Distribution"
+            echo ""
+            echo "- Build version: \`${{ steps.version.outputs.version_name }}\`"
+            echo "- Version code: \`${{ steps.version.outputs.version_code }}\`"
+            echo "- Commit: \`${{ steps.version.outputs.short_sha }}\`"
+            echo "- Ref: \`${{ github.ref_name }}\`"
+            echo "- APK: \`${{ steps.apk.outputs.apk_name }}\`"
+            echo "- Firebase console: ${{ steps.firebase.outputs.FIREBASE_CONSOLE_URI }}"
+            echo "- Tester install page: ${{ steps.firebase.outputs.TESTING_URI }}"
+            echo "- Direct binary link: ${{ steps.firebase.outputs.BINARY_DOWNLOAD_URI }}"
+          } >> "$GITHUB_STEP_SUMMARY"

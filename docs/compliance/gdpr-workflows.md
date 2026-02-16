@@ -1,4 +1,4 @@
-﻿# GDPR Workflow Notes (Draft)
+# GDPR Workflow Notes (Draft)
 
 ## Scope
 This app stores encrypted vault snapshots in sync backends. Decryption is client-side.

@@ -67,15 +67,15 @@ export function ItemDetailPane() {
   // Close popover on outside click
   useEffect(() => {
     if (!showGenerator) return
-    function handleClick(event: MouseEvent) {
+    function handlePointerDown(event: PointerEvent) {
       if (genPopoverRef.current && !genPopoverRef.current.contains(event.target as Node)) {
         setShowGenerator(false)
         setShowGenEditor(false)
         setShowPresetSave(false)
       }
     }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [showGenerator])
 
   function regenerate(config: GeneratorConfig) {
@@ -149,6 +149,7 @@ export function ItemDetailPane() {
   const saveError = draft ? (saveErrorById[draft.id] ?? '') : ''
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
+  const passwordInputId = draft ? `item-password-${draft.id}` : 'item-password'
   const hasUnsavedChanges = useMemo(() => {
     if (!draft || !selected) return false
     return JSON.stringify(snapshotItemForDirtyCheck(draft)) !== JSON.stringify(snapshotItemForDirtyCheck(selected))
@@ -217,10 +218,11 @@ export function ItemDetailPane() {
           </label>
 
           {/* Password + Generator */}
-          <label>
-            Password
+          <div className="detail-field">
+            <label htmlFor={passwordInputId}>Password</label>
             <div className="inline-field">
               <input
+                id={passwordInputId}
                 type={showPassword ? 'text' : 'password'}
                 value={draft.passwordMasked}
                 onChange={(event) => setDraftField('passwordMasked', event.target.value)}
@@ -360,7 +362,7 @@ export function ItemDetailPane() {
                 </div>
               </div>
             </div>
-          </label>
+          </div>
 
           {/* Password Confirm */}
           <div className={`password-confirm-row ${passwordMismatch ? 'password-mismatch' : ''}`}>
