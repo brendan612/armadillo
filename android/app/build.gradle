@@ -1,14 +1,39 @@
-﻿apply plugin: 'com.android.application'
+apply plugin: 'com.android.application'
+
+def resolvedVersionCodeRaw = (project.findProperty('armadilloVersionCode') ?: System.getenv('ARMADILLO_VERSION_CODE') ?: '1').toString().trim()
+if (!(resolvedVersionCodeRaw ==~ /^[0-9]+$/)) {
+    throw new GradleException("Invalid armadilloVersionCode: ${resolvedVersionCodeRaw}")
+}
+def resolvedVersionCode = Integer.parseInt(resolvedVersionCodeRaw)
+def resolvedVersionName = (project.findProperty('armadilloVersionName') ?: System.getenv('ARMADILLO_VERSION_NAME') ?: '1.0.0-beta.1').toString().trim()
+
+def releaseKeystoreFile = (project.findProperty('armadilloKeystoreFile') ?: System.getenv('ANDROID_KEYSTORE_FILE') ?: '').toString().trim()
+def releaseKeystorePassword = (project.findProperty('armadilloKeystorePassword') ?: System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: '').toString().trim()
+def releaseKeyAlias = (project.findProperty('armadilloKeyAlias') ?: System.getenv('ANDROID_KEY_ALIAS') ?: '').toString().trim()
+def releaseKeyPassword = (project.findProperty('armadilloKeyPassword') ?: System.getenv('ANDROID_KEY_PASSWORD') ?: '').toString().trim()
+def hasReleaseSigning = releaseKeystoreFile && releaseKeystorePassword && releaseKeyAlias && releaseKeyPassword
 
 android {
     namespace = "com.armadillo.vault"
     compileSdk = rootProject.ext.compileSdkVersion
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystoreFile)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     defaultConfig {
         applicationId "com.armadillo.vault"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0-beta.1"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,11 +41,26 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    flavorDimensions "channel"
+    productFlavors {
+        production {
+            dimension "channel"
+            resValue "string", "app_name", "Armadillo"
+        }
+        dev {
+            dimension "channel"
+            applicationIdSuffix ".dev"
+            resValue "string", "app_name", "Armadillo Dev"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

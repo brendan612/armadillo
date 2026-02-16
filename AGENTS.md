@@ -10,6 +10,15 @@
 
 ## Recent Changes
 - 2026-02-16
+  - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
+  - Added a dual-track device update implementation with update-manifest types/checking, Settings channel/build/update visibility, production-only minimum-version enforcement gate, Android `dev` flavor + CI-injected version/signing properties, and a Firebase App Distribution fast-lane workflow for non-store Android tester pushes.
+- 2026-02-16
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Fixed mobile password-generator opening by removing invalid nested label/control markup in the password row and switching generator outside-click handling to pointer events for reliable touch behavior.
+- 2026-02-16
+  - Updated `AGENTS.md`, `README.md`, `.github/workflows/deploy.yml`
+  - Added a tag-driven GitHub deployment workflow for web + Convex with staging-first progression, stable-only production promotion, environment-gated approvals, rollback-capable manual dispatch inputs, and consumer-facing setup docs.
+- 2026-02-16
   - Updated `AGENTS.md`, `README.md`, `CHANGELOG.md`, `docs/assets/readme/hero-placeholder.svg`, `docs/assets/readme/desktop-placeholder.svg`, `docs/assets/readme/mobile-placeholder.svg`, `android/app/build.gradle`
   - Reworked the root README into a consumer-friendly product page with renderable screenshot/art placeholders and aligned visible release version metadata for launch communication.
 - 2026-02-16

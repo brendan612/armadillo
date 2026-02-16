@@ -1,4 +1,4 @@
-﻿# Backup and Restore Drill (Draft)
+# Backup and Restore Drill (Draft)
 
 ## Backup scope
 - Sync gateway data store (`services/sync-gateway/data.json` in file mode)

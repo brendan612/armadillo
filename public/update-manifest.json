@@ -1,0 +1,17 @@
+{
+  "generatedAt": "2026-02-16T00:00:00.000Z",
+  "policy": "n-1",
+  "production": {
+    "latestVersion": "1.0.0-beta.1",
+    "minimumSupportedVersion": "1.0.0-beta.1"
+  },
+  "android": {
+    "fastlane": {
+      "latestBuild": "1.0.0-beta.1-dev.0",
+      "releaseNotesUrl": null,
+      "installUrl": null
+    }
+  },
+  "critical": false,
+  "forceBy": null
+}

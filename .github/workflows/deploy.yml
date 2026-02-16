@@ -1,0 +1,358 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to deploy (example: v1.0.0-beta.2)'
+        required: false
+        type: string
+      rollback_tag:
+        description: 'Stable tag to roll back production to (example: v1.0.0)'
+        required: false
+        type: string
+      promote_to_production:
+        description: 'Allow production deploy (stable tags only)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+
+jobs:
+  classify_release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.classify.outputs.tag_name }}
+      is_tag: ${{ steps.classify.outputs.is_tag }}
+      is_stable: ${{ steps.classify.outputs.is_stable }}
+      is_prerelease: ${{ steps.classify.outputs.is_prerelease }}
+      is_rollback: ${{ steps.classify.outputs.is_rollback }}
+      should_promote: ${{ steps.classify.outputs.should_promote }}
+      pages_base_url: ${{ steps.classify.outputs.pages_base_url }}
+    steps:
+      - name: Classify release trigger
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_name=""
+          is_rollback="false"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
+          else
+            manual_release_tag='${{ github.event.inputs.release_tag }}'
+            manual_rollback_tag='${{ github.event.inputs.rollback_tag }}'
+            manual_release_tag="$(echo "${manual_release_tag}" | xargs)"
+            manual_rollback_tag="$(echo "${manual_rollback_tag}" | xargs)"
+
+            if [[ -n "${manual_rollback_tag}" ]]; then
+              tag_name="${manual_rollback_tag}"
+              is_rollback="true"
+            elif [[ -n "${manual_release_tag}" ]]; then
+              tag_name="${manual_release_tag}"
+            else
+              echo "workflow_dispatch requires release_tag or rollback_tag"
+              exit 1
+            fi
+          fi
+
+          if [[ ! "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid tag format: ${tag_name}"
+            echo "Expected: vX.Y.Z or vX.Y.Z-suffix"
+            exit 1
+          fi
+
+          is_stable="false"
+          is_prerelease="true"
+          if [[ "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            is_stable="true"
+            is_prerelease="false"
+          fi
+
+          should_promote="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            if [[ "${is_stable}" == "true" ]]; then
+              should_promote="true"
+            fi
+          else
+            manual_promote='${{ github.event.inputs.promote_to_production }}'
+            if [[ "${manual_promote}" == "true" && "${is_stable}" == "true" ]]; then
+              should_promote="true"
+            fi
+          fi
+
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          pages_base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}"
+
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+          echo "is_tag=true" >> "$GITHUB_OUTPUT"
+          echo "is_stable=${is_stable}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+          echo "is_rollback=${is_rollback}" >> "$GITHUB_OUTPUT"
+          echo "should_promote=${should_promote}" >> "$GITHUB_OUTPUT"
+          echo "pages_base_url=${pages_base_url}" >> "$GITHUB_OUTPUT"
+
+  gate_quality:
+    runs-on: ubuntu-latest
+    needs: classify_release
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify_release.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run quality gate
+        run: npm run ci:check
+
+  deploy_staging_convex:
+    runs-on: ubuntu-latest
+    needs:
+      - classify_release
+      - gate_quality
+    environment: staging
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify_release.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Convex deploy key
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: |
+          if [ -z "${CONVEX_DEPLOY_KEY}" ]; then
+            echo "Missing CONVEX_DEPLOY_KEY in staging environment secrets"
+            exit 1
+          fi
+
+      - name: Deploy Convex (staging)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: npm run convex:deploy
+
+  deploy_staging_web:
+    runs-on: ubuntu-latest
+    needs:
+      - classify_release
+      - deploy_staging_convex
+    environment: staging
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify_release.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle (staging)
+        env:
+          VITE_CONVEX_URL: ${{ secrets.VITE_CONVEX_URL }}
+          VITE_CONVEX_HTTP_URL: ${{ secrets.VITE_CONVEX_HTTP_URL }}
+          VITE_SYNC_PROVIDER: ${{ secrets.VITE_SYNC_PROVIDER }}
+          VITE_BILLING_URL: ${{ secrets.VITE_BILLING_URL }}
+          VITE_ENTITLEMENT_JWKS: ${{ secrets.VITE_ENTITLEMENT_JWKS }}
+          VITE_SYNC_BASE_URL: ${{ secrets.VITE_SYNC_BASE_URL }}
+          VITE_SYNC_AUTH_TOKEN: ${{ secrets.VITE_SYNC_AUTH_TOKEN }}
+        run: npm run build:web
+
+      - name: Deploy staging latest to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          destination_dir: staging/latest
+          keep_files: true
+          force_orphan: false
+
+      - name: Deploy staging tag snapshot to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          destination_dir: staging/${{ needs.classify_release.outputs.tag_name }}
+          keep_files: true
+          force_orphan: false
+
+  deploy_production_convex:
+    runs-on: ubuntu-latest
+    needs:
+      - classify_release
+      - deploy_staging_web
+    if: needs.classify_release.outputs.should_promote == 'true'
+    environment: production
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify_release.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Convex deploy key
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: |
+          if [ -z "${CONVEX_DEPLOY_KEY}" ]; then
+            echo "Missing CONVEX_DEPLOY_KEY in production environment secrets"
+            exit 1
+          fi
+
+      - name: Deploy Convex (production)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: npm run convex:deploy
+
+  deploy_production_web:
+    runs-on: ubuntu-latest
+    needs:
+      - classify_release
+      - deploy_production_convex
+    if: needs.classify_release.outputs.should_promote == 'true'
+    environment: production
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify_release.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle (production)
+        env:
+          VITE_CONVEX_URL: ${{ secrets.VITE_CONVEX_URL }}
+          VITE_CONVEX_HTTP_URL: ${{ secrets.VITE_CONVEX_HTTP_URL }}
+          VITE_SYNC_PROVIDER: ${{ secrets.VITE_SYNC_PROVIDER }}
+          VITE_BILLING_URL: ${{ secrets.VITE_BILLING_URL }}
+          VITE_ENTITLEMENT_JWKS: ${{ secrets.VITE_ENTITLEMENT_JWKS }}
+          VITE_SYNC_BASE_URL: ${{ secrets.VITE_SYNC_BASE_URL }}
+          VITE_SYNC_AUTH_TOKEN: ${{ secrets.VITE_SYNC_AUTH_TOKEN }}
+        run: npm run build:web
+
+      - name: Deploy production latest to GitHub Pages root
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          keep_files: true
+          force_orphan: false
+
+      - name: Deploy production tag snapshot to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          destination_dir: releases/${{ needs.classify_release.outputs.tag_name }}
+          keep_files: true
+          force_orphan: false
+
+  post_deploy_summary:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - classify_release
+      - gate_quality
+      - deploy_staging_convex
+      - deploy_staging_web
+      - deploy_production_convex
+      - deploy_production_web
+    steps:
+      - name: Publish deployment summary
+        shell: bash
+        run: |
+          tag='${{ needs.classify_release.outputs.tag_name }}'
+          pages_base='${{ needs.classify_release.outputs.pages_base_url }}'
+          is_stable='${{ needs.classify_release.outputs.is_stable }}'
+          is_prerelease='${{ needs.classify_release.outputs.is_prerelease }}'
+          should_promote='${{ needs.classify_release.outputs.should_promote }}'
+          is_rollback='${{ needs.classify_release.outputs.is_rollback }}'
+
+          {
+            echo "## Deployment Summary"
+            echo ""
+            echo "- Tag: \`${tag}\`"
+            echo "- Stable: \`${is_stable}\`"
+            echo "- Prerelease: \`${is_prerelease}\`"
+            echo "- Rollback run: \`${is_rollback}\`"
+            echo "- Production eligible this run: \`${should_promote}\`"
+            echo ""
+            echo "### Job Results"
+            echo "- classify_release: \`${{ needs.classify_release.result }}\`"
+            echo "- gate_quality: \`${{ needs.gate_quality.result }}\`"
+            echo "- deploy_staging_convex: \`${{ needs.deploy_staging_convex.result }}\`"
+            echo "- deploy_staging_web: \`${{ needs.deploy_staging_web.result }}\`"
+            echo "- deploy_production_convex: \`${{ needs.deploy_production_convex.result }}\`"
+            echo "- deploy_production_web: \`${{ needs.deploy_production_web.result }}\`"
+            echo ""
+            echo "### Expected URLs"
+            echo "- Staging latest: ${pages_base}/staging/latest/"
+            echo "- Staging tag: ${pages_base}/staging/${tag}/"
+            if [[ "${should_promote}" == "true" ]]; then
+              echo "- Production latest: ${pages_base}/"
+              echo "- Production release snapshot: ${pages_base}/releases/${tag}/"
+            else
+              echo "- Production latest: skipped in this run"
+              echo "- Production release snapshot: skipped in this run"
+            fi
+            echo ""
+            echo "### Notes"
+            echo "- Configure GitHub Environments \`staging\` and \`production\` with required secrets."
+            echo "- Configure \`production\` environment approval rules for gated promotion."
+            echo "- Set GitHub Pages source to GitHub Actions."
+          } >> "$GITHUB_STEP_SUMMARY"

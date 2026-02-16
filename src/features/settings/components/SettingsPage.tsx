@@ -28,7 +28,7 @@ const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
 }
 
 const SETTINGS_CATEGORIES = [
-  { id: 'general', label: 'General', description: 'Appearance, account, and billing' },
+  { id: 'general', label: 'General', description: 'Appearance, account, updates, and billing' },
   { id: 'cloud', label: 'Cloud', description: 'Storage and sync options' },
   { id: 'security', label: 'Security', description: 'Biometric and autofill controls' },
   { id: 'vault', label: 'Vault', description: 'Import, export, and trash settings' },
@@ -101,6 +101,9 @@ export function SettingsPage() {
     entitlementStatusMessage,
     capabilityLockReasons,
     billingUrl,
+    appBuildInfo,
+    updateCheckResult,
+    isCheckingForUpdates,
     devFlagOverrideState,
     autoFolderPreview,
     autoFolderPreviewDraft,
@@ -122,6 +125,7 @@ export function SettingsPage() {
     setCloudCacheTtlHours,
     pushVaultToCloudNow,
     refreshEntitlements,
+    checkForAppUpdates,
     applyManualEntitlementToken,
     clearManualEntitlementToken,
     applyDevFlagOverrides,
@@ -173,6 +177,12 @@ export function SettingsPage() {
     if (!billingUrl) return
     window.open(billingUrl, '_blank', 'noopener,noreferrer')
   }, [billingUrl])
+
+  const openExternalUrl = useCallback((url: string | null | undefined) => {
+    const normalized = (url || '').trim()
+    if (!normalized) return
+    window.open(normalized, '_blank', 'noopener,noreferrer')
+  }, [])
 
   const handleApplyManualToken = useCallback(async () => {
     setManualTokenBusy(true)
@@ -296,6 +306,15 @@ export function SettingsPage() {
   const isVault = settingsCategory === 'vault'
   const isDanger = settingsCategory === 'danger'
   const showManualTokenEntry = import.meta.env.DEV || hasCapability('enterprise.org_admin')
+  const updateStatusLabel = updateCheckResult.status === 'required'
+    ? 'Update Required'
+    : updateCheckResult.status === 'available'
+      ? 'Update Available'
+      : updateCheckResult.status === 'up_to_date'
+        ? 'Up to Date'
+        : 'Unavailable'
+  const releaseNotesUrl = (updateCheckResult.releaseNotesUrl || '').trim()
+  const installUrl = (updateCheckResult.installUrl || '').trim()
 
   if (!showSettings) return null
 
@@ -574,6 +593,52 @@ export function SettingsPage() {
                 {capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan'}
               </p>
             )}
+          </section>
+
+          <div className="settings-divider" hidden={!isGeneral} />
+
+          <section className="settings-section" hidden={!isGeneral}>
+            <h3>App & Updates</h3>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Channel: {appBuildInfo.channel}
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Build: {appBuildInfo.version} ({appBuildInfo.commit.slice(0, 8)})
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Built at: {formatDateTime(appBuildInfo.builtAt)}
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Policy: {updateCheckResult.policy}
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Status: {updateStatusLabel}
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Latest: {updateCheckResult.latestVersion ?? 'n/a'}
+            </p>
+            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+              Minimum supported: {updateCheckResult.minimumSupportedVersion ?? 'n/a'}
+            </p>
+            {updateCheckResult.forceBy && (
+              <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
+                Force by: {formatDateTime(updateCheckResult.forceBy)}
+              </p>
+            )}
+            <p className="muted" style={{ marginTop: 0 }}>
+              {updateCheckResult.message}
+            </p>
+            <div className="settings-action-list">
+              <button className="ghost" onClick={() => void checkForAppUpdates()} disabled={isCheckingForUpdates}>
+                {isCheckingForUpdates ? 'Checking...' : 'Check for Updates'}
+              </button>
+              <button className="ghost" onClick={() => openExternalUrl(releaseNotesUrl)} disabled={!releaseNotesUrl}>
+                Open Release Notes
+              </button>
+              <button className="ghost" onClick={() => openExternalUrl(installUrl)} disabled={!installUrl}>
+                Open Install Link
+              </button>
+            </div>
           </section>
 
           <div className="settings-divider" hidden={!isGeneral} />

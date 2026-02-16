@@ -1,4 +1,4 @@
-﻿# SOC2 Control Matrix (Draft)
+# SOC2 Control Matrix (Draft)
 
 | Control Area | Control | Implementation Status |
 |---|---|---|

@@ -1,4 +1,4 @@
-﻿# Access Control Policy
+# Access Control Policy
 
 ## Principles
 - Least privilege by default.

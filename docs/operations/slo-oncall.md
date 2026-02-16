@@ -1,4 +1,4 @@
-﻿# SLO and On-Call Baseline
+# SLO and On-Call Baseline
 
 ## SLO targets (pilot)
 - API availability: 99.5% monthly
