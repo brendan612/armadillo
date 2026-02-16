@@ -11,6 +11,9 @@
 ## Recent Changes
 - 2026-02-16
   - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed fast-lane Android CI Java toolchain mismatch by upgrading GitHub Actions Java setup from 17 to 21 to satisfy Capacitor Android `sourceCompatibility`/`--release 21`.
+- 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
   - Fixed Linux CI Gradle wrapper execution in fast-lane Android workflow by normalizing `android/gradlew` line endings and setting execute permission before running `assembleDevRelease`.
 - 2026-02-16
   - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
