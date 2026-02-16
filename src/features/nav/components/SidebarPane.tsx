@@ -1,9 +1,10 @@
 import { FolderTree } from './FolderTree'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function SidebarPane() {
   const { items, trash, selectedNode, mobileStep } = useVaultAppState()
-  const { setSelectedNode, setMobileStep, createSubfolder, setTreeContextMenu } = useVaultAppActions()
+  const { expiredItems, expiringSoonItems } = useVaultAppDerived()
+  const { setSelectedNode, setMobileStep, createSubfolder, setTreeContextMenu, openHome, openSmartView } = useVaultAppActions()
 
   function handleTreeContextMenu(event: React.MouseEvent) {
     // Only show tree context menu when clicking empty area (not on a folder node)
@@ -22,6 +23,12 @@ export function SidebarPane() {
 
       <nav className="sidebar-nav">
         <button
+          className={`sidebar-nav-item ${selectedNode === 'home' ? 'active' : ''}`}
+          onClick={openHome}
+        >
+          <span>Home</span>
+        </button>
+        <button
           className={`sidebar-nav-item ${selectedNode === 'all' ? 'active' : ''}`}
           onClick={() => {
             setSelectedNode('all')
@@ -30,6 +37,20 @@ export function SidebarPane() {
         >
           <span>All Items</span>
           <span className="sidebar-badge">{items.length}</span>
+        </button>
+        <button
+          className={`sidebar-nav-item ${selectedNode === 'expiring' ? 'active' : ''}`}
+          onClick={() => openSmartView('expiring')}
+        >
+          <span>Expiring Soon</span>
+          <span className="sidebar-badge">{expiringSoonItems.length}</span>
+        </button>
+        <button
+          className={`sidebar-nav-item ${selectedNode === 'expired' ? 'active' : ''}`}
+          onClick={() => openSmartView('expired')}
+        >
+          <span>Expired</span>
+          <span className="sidebar-badge">{expiredItems.length}</span>
         </button>
         <button
           className={`sidebar-nav-item ${selectedNode === 'unfiled' ? 'active' : ''}`}

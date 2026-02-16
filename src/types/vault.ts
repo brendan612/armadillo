@@ -1,5 +1,5 @@
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
-export const VAULT_SCHEMA_VERSION = 3 as const
+export const VAULT_SCHEMA_VERSION = 4 as const
 
 export type SecurityQuestion = {
   question: string
@@ -12,6 +12,7 @@ export type VaultItem = {
   username: string
   passwordMasked: string
   urls: string[]
+  linkedAndroidPackages?: string[]
   folder: string
   folderId?: string | null
   tags: string[]
@@ -53,6 +54,47 @@ export type GeneratorPreset = {
   symbols: boolean
 }
 
+export type BuiltInThemeId = 'midnight' | 'daylight' | 'void' | 'ember'
+export type ThemeMotionLevel = 'normal' | 'reduced'
+
+export type ThemeEditableTokenKey =
+  | 'accent'
+  | 'bg-0'
+  | 'bg-1'
+  | 'bg-2'
+  | 'bg-3'
+  | 'surface-solid'
+  | 'ink'
+  | 'ink-secondary'
+  | 'ink-muted'
+  | 'line-strong'
+  | 'safe'
+  | 'weak'
+  | 'reused'
+  | 'exposed'
+  | 'stale'
+  | 'blur'
+  | 'noise-opacity'
+
+export type ThemeTokenOverrides = Partial<Record<ThemeEditableTokenKey, string>>
+
+export type ThemeCustomPreset = {
+  id: string
+  name: string
+  baseThemeId: BuiltInThemeId
+  overrides: ThemeTokenOverrides
+  createdAt: string
+  updatedAt: string
+}
+
+export type VaultThemeSettings = {
+  activeBaseThemeId: BuiltInThemeId
+  activeOverrides: ThemeTokenOverrides
+  selectedPresetId: string
+  customPresets: ThemeCustomPreset[]
+  motionLevel: ThemeMotionLevel
+}
+
 export type AutoFolderMatchType = 'domain' | 'titleToken' | 'tag'
 
 export type AutoFolderCustomMapping = {
@@ -68,6 +110,7 @@ export type VaultSettings = {
   autoFolderExcludedItemIds?: string[]
   autoFolderLockedFolderPaths?: string[]
   autoFolderCustomMappings?: AutoFolderCustomMapping[]
+  theme?: VaultThemeSettings
 }
 
 export type VaultPayload = {

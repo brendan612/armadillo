@@ -4,12 +4,26 @@ import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
 import { App as CapacitorApp } from '@capacitor/app'
 import { Browser } from '@capacitor/browser'
-import { getCloudAuthStatus, listRemoteVaultsByOwner, pullRemoteSnapshot, pushRemoteSnapshot, setSyncAuthToken, subscribeToVaultUpdates, syncConfigured, syncProvider } from '../../lib/syncClient'
+import {
+  fetchEntitlementToken,
+  getCloudAuthStatus,
+  listRemoteVaultsByOwner,
+  pullRemoteSnapshot,
+  pushRemoteSnapshot,
+  setSyncAuthToken,
+  setSyncAuthContext,
+  subscribeToVaultUpdates,
+  syncConfigured,
+  syncProvider,
+} from '../../lib/syncClient'
 import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
 import { biometricEnrollmentExists, enrollBiometricQuickUnlock, unlockWithBiometric } from '../../lib/biometric'
 import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
-import { parseGooglePasswordCsv, type GooglePasswordCsvEntry } from '../../shared/utils/googlePasswordCsv'
+import { parseGooglePasswordCsv } from '../../shared/utils/googlePasswordCsv'
+import { parseKeePassCsv } from '../../shared/utils/keePassCsv'
+import { parseKeePassXml } from '../../shared/utils/keePassXml'
+import { getPasswordExpiryStatus } from '../../shared/utils/passwordExpiry'
 import {
   buildAutoFolderPlan,
   normalizeAutoFolderPath,
@@ -18,7 +32,7 @@ import {
   type AutoFolderPlan,
 } from '../../shared/utils/autoFoldering'
 import { LocalNotifications } from '@capacitor/local-notifications'
-import AutofillBridge from '../../plugins/autofillBridge'
+import AutofillBridge, { type CapturedCredentialDTO } from '../../plugins/autofillBridge'
 import {
   clearCachedVaultSnapshot,
   clearLocalVaultFile,
@@ -41,20 +55,70 @@ import {
   serializeVaultFile,
   unlockVaultFile,
 } from '../../lib/vaultFile'
-import type { ArmadilloVaultFile, SecurityQuestion, VaultFolder, VaultItem, VaultPayload, VaultSession, VaultSettings, VaultStorageMode, VaultTrashEntry } from '../../types/vault'
+import {
+  BUILT_IN_THEME_PRESETS,
+  applyPresetSelection,
+  areThemeSettingsEqual,
+  defaultThemeSettings,
+  deleteCustomThemePreset,
+  loadThemeSettingsFromMirror,
+  normalizeThemeSettings,
+  normalizeThemeTokenOverrides,
+  resolveThemeTokens,
+  saveThemeSettingsToMirror,
+  upsertCustomThemePreset,
+} from '../../shared/utils/theme'
+import {
+  clearDevFlagOverride,
+  getCachedEntitlementToken,
+  getDevFlagOverride,
+  getEntitlementLastRefreshAt,
+  getEntitlementStaleAt,
+  getManualEntitlementToken,
+  isEntitlementStale,
+  setCachedEntitlementToken,
+  setDevFlagOverride,
+  setEntitlementLastRefreshAt,
+  setManualEntitlementToken,
+} from '../../features/flags/entitlementCache'
+import { resolveFlags } from '../../features/flags/resolveFlags'
+import { verifyEntitlementJwt } from '../../features/flags/verifyEntitlementJwt'
+import type {
+  ArmadilloVaultFile,
+  SecurityQuestion,
+  ThemeEditableTokenKey,
+  ThemeMotionLevel,
+  VaultFolder,
+  VaultItem,
+  VaultPayload,
+  VaultSession,
+  VaultSettings,
+  VaultStorageMode,
+  VaultThemeSettings,
+  VaultTrashEntry,
+} from '../../types/vault'
+import type {
+  CapabilityKey,
+  DevFlagOverride,
+  EntitlementState,
+} from '../../types/entitlements'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details'
-type MobileStep = 'nav' | 'list' | 'detail'
+type MobileStep = 'home' | 'nav' | 'list' | 'detail'
 type SyncState = 'local' | 'syncing' | 'live' | 'error'
 type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
 type FolderFilterMode = 'direct' | 'recursive'
-type SidebarNode = 'all' | 'unfiled' | 'trash' | `folder:${string}`
+type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'danger'
+type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'unfiled' | 'trash' | `folder:${string}`
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
 type FolderInlineEditorState =
   | { mode: 'create'; parentId: string | null; value: string }
   | { mode: 'rename'; folderId: string; parentId: string | null; value: string }
+type ApplySessionOptions = {
+  resetNavigation?: boolean
+}
 
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const CLOUD_LIVE_REFRESH_INTERVAL_MS_MOBILE = 4000
@@ -66,6 +130,31 @@ const DEFAULT_FOLDER_COLOR = '#7f9cff'
 const DEFAULT_FOLDER_ICON = 'folder'
 const OAUTH_VERIFIER_STORAGE_KEY = '__convexAuthOAuthVerifier'
 const ANDROID_OAUTH_REDIRECT_URL = 'armadillo://oauth-callback'
+const PASSWORD_EXPIRING_SOON_DAYS = 7
+const HOME_SEARCH_RESULTS_LIMIT = 8
+const HOME_RECENT_ITEMS_LIMIT = 8
+const BILLING_URL = (import.meta.env.VITE_BILLING_URL || '').trim()
+
+function defaultEntitlementState(reason = 'Free plan active'): EntitlementState {
+  return {
+    source: 'free',
+    status: 'free',
+    tier: 'free',
+    capabilities: [],
+    flags: {},
+    expiresAt: null,
+    lastRefreshAt: null,
+    staleAt: null,
+    reason,
+  }
+}
+
+function toIsoOrNull(value: unknown) {
+  if (typeof value !== 'string') return null
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return null
+  return new Date(parsed).toISOString()
+}
 
 /* shell sections moved inline into sidebar nav */
 
@@ -76,6 +165,7 @@ function buildEmptyItem(folderName = '', folderId: string | null = null): VaultI
     username: '',
     passwordMasked: '',
     urls: [],
+    linkedAndroidPackages: [],
     folder: folderName,
     folderId,
     tags: [],
@@ -144,29 +234,32 @@ type TreeContextMenuState = { x: number; y: number } | null
 
 function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
   const now = new Date()
-  now.setHours(0, 0, 0, 0)
-  const soonThreshold = new Date(now)
-  soonThreshold.setDate(soonThreshold.getDate() + 7)
-
   const alerts: ExpiryAlert[] = []
   for (const item of items) {
-    if (!item.passwordExpiryDate) continue
-    const expiry = new Date(item.passwordExpiryDate)
-    if (isNaN(expiry.getTime())) continue
-    expiry.setHours(0, 0, 0, 0)
-    if (expiry <= now) {
+    const status = getPasswordExpiryStatus(item.passwordExpiryDate, { now, expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS })
+    if (status === 'expired') {
       alerts.push({ itemId: item.id, title: item.title, status: 'expired' })
-    } else if (expiry <= soonThreshold) {
+    } else if (status === 'expiring') {
       alerts.push({ itemId: item.id, title: item.title, status: 'expiring' })
     }
   }
   return alerts
 }
 
-function inferImportedItemTitle(entry: GooglePasswordCsvEntry, rowNumber: number) {
-  const name = entry.name.trim()
-  if (name) return name
-  const url = entry.url.trim()
+function itemMatchesQuery(item: VaultItem, queryLower: string) {
+  return (
+    item.title.toLowerCase().includes(queryLower) ||
+    item.username.toLowerCase().includes(queryLower) ||
+    item.urls.some((url) => url.toLowerCase().includes(queryLower)) ||
+    item.folder.toLowerCase().includes(queryLower) ||
+    item.tags.some((tag) => tag.toLowerCase().includes(queryLower))
+  )
+}
+
+function inferImportedItemTitle(values: { title?: string; url?: string; username?: string }, rowNumber: number) {
+  const title = values.title?.trim() ?? ''
+  if (title) return title
+  const url = values.url?.trim() ?? ''
   if (url) {
     try {
       const host = new URL(url).hostname.trim().replace(/^www\./i, '')
@@ -175,9 +268,51 @@ function inferImportedItemTitle(entry: GooglePasswordCsvEntry, rowNumber: number
       // Keep fallback order if URL is not valid.
     }
   }
-  const username = entry.username.trim()
+  const username = values.username?.trim() ?? ''
   if (username) return username
   return `Imported Credential ${rowNumber}`
+}
+
+function normalizeLinkedAndroidPackages(values: string[] | undefined) {
+  if (!Array.isArray(values)) return []
+  const deduped = new Set<string>()
+  const normalized: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim().toLowerCase()
+    if (!trimmed || deduped.has(trimmed)) continue
+    deduped.add(trimmed)
+    normalized.push(trimmed)
+  }
+  return normalized
+}
+
+function normalizeHost(value: string | undefined | null) {
+  if (!value) return ''
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+    const host = new URL(withScheme).hostname.trim().toLowerCase()
+    return host.replace(/^www\./, '')
+  } catch {
+    return trimmed.toLowerCase().replace(/^www\./, '')
+  }
+}
+
+function hostMatches(candidateHost: string, targetHost: string) {
+  if (!candidateHost || !targetHost) return false
+  if (candidateHost === targetHost) return true
+  return candidateHost.endsWith(`.${targetHost}`) || targetHost.endsWith(`.${candidateHost}`)
+}
+
+function buildCapturedCredentialTitle(capture: CapturedCredentialDTO, fallbackIndex: number) {
+  const title = capture.title?.trim()
+  if (title) return title
+  const fromDomain = normalizeHost(capture.webDomain || capture.urls[0] || '')
+  if (fromDomain) return fromDomain
+  const username = capture.username.trim()
+  if (username) return username
+  return `Captured Credential ${fallbackIndex}`
 }
 
 function uniqueNonEmptyStrings(values: string[] | undefined) {
@@ -215,11 +350,13 @@ function normalizeAutoFolderMappings(mappings: VaultSettings['autoFolderCustomMa
 }
 
 function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
+  const normalizedTheme = normalizeThemeSettings(settings.theme)
   return {
     ...settings,
     autoFolderExcludedItemIds: uniqueNonEmptyStrings(settings.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: uniqueNonEmptyStrings(settings.autoFolderLockedFolderPaths).map((path) => normalizeAutoFolderPath(path)).filter(Boolean),
     autoFolderCustomMappings: normalizeAutoFolderMappings(settings.autoFolderCustomMappings),
+    theme: normalizedTheme,
   }
 }
 
@@ -274,28 +411,36 @@ export function useVaultApp() {
   const [items, setItems] = useState<VaultItem[]>([])
   const [folders, setFolders] = useState<VaultFolder[]>([])
   const [trash, setTrash] = useState<VaultTrashEntry[]>([])
+  const [themeSettings, setThemeSettings] = useState<VaultThemeSettings>(() => loadThemeSettingsFromMirror())
+  const [themeSettingsDirty, setThemeSettingsDirty] = useState(false)
   const [vaultSettings, setVaultSettings] = useState<VaultSettings>({
     trashRetentionDays: 30,
     generatorPresets: [],
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
+    theme: defaultThemeSettings(),
   })
   const [query, setQuery] = useState('')
+  const [homeSearchQuery, setHomeSearchQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [activePanel, setActivePanel] = useState<Panel>('details')
-  const [mobileStep, setMobileStep] = useState<MobileStep>('nav')
+  const [mobileStep, setMobileStep] = useState<MobileStep>('home')
   const [syncState, setSyncState] = useState<SyncState>('local')
   const [syncMessage, setSyncMessage] = useState('Offline mode')
   const [isSaving, setIsSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [selectedNode, setSelectedNode] = useState<SidebarNode>('all')
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('general')
+  const [selectedNode, setSelectedNode] = useState<SidebarNode>('home')
   const [folderFilterMode, setFolderFilterMode] = useState<FolderFilterMode>('direct')
   const [storageMode, setStorageMode] = useState<VaultStorageMode>(initialStorageMode)
   const [cloudCacheTtlHours, setCloudCacheTtlHours] = useState(() => getCloudCacheTtlHours())
   const [cloudCacheExpiresAt, setCloudCacheExpiresAt] = useState(() => getCachedVaultExpiresAt())
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState(localStorage.getItem(CLOUD_SYNC_PREF_KEY) === 'true')
+  const [entitlementState, setEntitlementState] = useState<EntitlementState>(() => defaultEntitlementState())
+  const [devFlagOverrideState, setDevFlagOverrideState] = useState<DevFlagOverride | null>(() => getDevFlagOverride())
+  const [entitlementStatusMessage, setEntitlementStatusMessage] = useState('Free plan active')
   const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
   const [authMessage, setAuthMessage] = useState('')
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
@@ -326,12 +471,31 @@ export function useVaultApp() {
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const googlePasswordImportInputRef = useRef<HTMLInputElement | null>(null)
+  const keepassImportInputRef = useRef<HTMLInputElement | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
   const previousCloudAuthStateRef = useRef<CloudAuthState>('unknown')
   const cloudRefreshInFlightRef = useRef(false)
+  const autofillCaptureImportInFlightRef = useRef(false)
+  const nativeAutofillSyncRetryTimerRef = useRef<number | null>(null)
+  const consumeCapturedAutofillCredentialsRef = useRef<() => Promise<void>>(async () => {})
+  const appliedThemeOverrideKeysRef = useRef<string[]>([])
   const { isAuthenticated } = useSafeConvexAuth()
   const { signIn, signOut } = useSafeAuthActions()
   const authToken = useSafeAuthToken()
+  const resolvedFlags = useMemo(
+    () => resolveFlags({
+      entitlement: entitlementState,
+      devOverride: devFlagOverrideState,
+      allowDevOverride: import.meta.env.DEV,
+    }),
+    [entitlementState, devFlagOverrideState],
+  )
+  const effectiveTier = resolvedFlags.effectiveTier
+  const effectiveCapabilities = resolvedFlags.effectiveCapabilities
+  const effectiveFlags = resolvedFlags.effectiveFlags
+  const capabilityLockReasons = resolvedFlags.lockReasons
+  const hasCapability = useCallback((capability: CapabilityKey) => effectiveCapabilities.includes(capability), [effectiveCapabilities])
+  const isFlagEnabled = useCallback((flag: string) => Boolean(effectiveFlags[flag]), [effectiveFlags])
   const cloudConnected = cloudAuthState === 'connected'
   const authStatus = useMemo(() => {
     if (!syncConfigured()) {
@@ -424,7 +588,8 @@ export function useVaultApp() {
     }
   }, [])
 
-  function applySession(session: VaultSession) {
+  function applySession(session: VaultSession, options: ApplySessionOptions = {}) {
+    const { resetNavigation = false } = options
     setVaultSession(session)
     setItems(session.payload.items)
     setFolders(session.payload.folders)
@@ -435,6 +600,10 @@ export function useVaultApp() {
       generatorPresets: session.payload.settings.generatorPresets ?? [],
     })
     setVaultSettings(settings)
+    const nextThemeSettings = normalizeThemeSettings(settings.theme)
+    setThemeSettings(nextThemeSettings)
+    setThemeSettingsDirty(false)
+    saveThemeSettingsToMirror(nextThemeSettings)
     setAutoFolderPreview(null)
     setAutoFolderPreviewDraft(null)
     setShowAutoFolderPreview(false)
@@ -445,33 +614,185 @@ export function useVaultApp() {
     setExpiryAlertsDismissed(false)
     scheduleExpiryNotifications(alerts)
     const firstId = session.payload.items[0]?.id || ''
-    setSelectedId(firstId)
-    setDraft(session.payload.items[0] ?? null)
-    setSelectedNode('all')
-    setFolderFilterMode('direct')
+    const currentSelectedIdStillExists = session.payload.items.some((item) => item.id === selectedId)
+    const nextSelectedId = resetNavigation
+      ? firstId
+      : (currentSelectedIdStillExists ? selectedId : firstId)
+    setSelectedId(nextSelectedId)
+    setDraft(session.payload.items.find((item) => item.id === nextSelectedId) ?? null)
+    if (resetNavigation) {
+      setSelectedNode('home')
+      setFolderFilterMode('direct')
+      setMobileStep('home')
+      setHomeSearchQuery('')
+    }
     syncCredentialsToNative(session.payload.items)
   }
 
-  function syncCredentialsToNative(vaultItems: VaultItem[]) {
+  function syncCredentialsToNative(vaultItems: VaultItem[], attempt = 0) {
     if (!isNativeAndroid()) return
+    if (nativeAutofillSyncRetryTimerRef.current !== null) {
+      window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
+      nativeAutofillSyncRetryTimerRef.current = null
+    }
     const credentials = vaultItems.map((item) => ({
       id: item.id,
       title: item.title,
       username: item.username || '',
       password: item.passwordMasked || '',
       urls: item.urls,
+      linkedAndroidPackages: normalizeLinkedAndroidPackages(item.linkedAndroidPackages),
     }))
-    AutofillBridge.syncCredentials({ credentials }).catch(() => {
-      /* non-blocking */
-    })
+    AutofillBridge.syncCredentials({ credentials })
+      .then(() => {
+        nativeAutofillSyncRetryTimerRef.current = null
+      })
+      .catch(() => {
+        if (attempt >= 4) {
+          nativeAutofillSyncRetryTimerRef.current = null
+          return
+        }
+        const nextAttempt = attempt + 1
+        nativeAutofillSyncRetryTimerRef.current = window.setTimeout(() => {
+          syncCredentialsToNative(vaultItems, nextAttempt)
+        }, 400 * nextAttempt)
+      })
   }
 
   function clearNativeCredentials() {
     if (!isNativeAndroid()) return
+    if (nativeAutofillSyncRetryTimerRef.current !== null) {
+      window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
+      nativeAutofillSyncRetryTimerRef.current = null
+    }
     AutofillBridge.clearCredentials().catch(() => {
       /* non-blocking */
     })
   }
+
+  const consumeCapturedAutofillCredentials = useCallback(async () => {
+    if (!isNativeAndroid() || phase !== 'ready' || !vaultSession) {
+      return
+    }
+    if (autofillCaptureImportInFlightRef.current) {
+      return
+    }
+
+    autofillCaptureImportInFlightRef.current = true
+    try {
+      const result = await AutofillBridge.consumeCapturedCredentials()
+      const captures = Array.isArray(result?.captures) ? result.captures : []
+      if (captures.length === 0) {
+        return
+      }
+
+      const now = new Date().toLocaleString()
+      let createdCount = 0
+      let updatedCount = 0
+      let fallbackIndex = 1
+      const nextItems = [...items]
+
+      for (const capture of captures) {
+        const username = capture.username?.trim() || ''
+        const password = capture.password?.trim() || ''
+        if (!username || !password) continue
+
+        const packageName = (capture.packageName || '').trim().toLowerCase()
+        const packageSet = new Set(normalizeLinkedAndroidPackages(capture.linkedAndroidPackages))
+        if (packageName) packageSet.add(packageName)
+        const capturePackages = Array.from(packageSet)
+        const captureHosts = new Set<string>()
+        for (const url of capture.urls ?? []) {
+          const host = normalizeHost(url)
+          if (host) captureHosts.add(host)
+        }
+        const webDomainHost = normalizeHost(capture.webDomain)
+        if (webDomainHost) captureHosts.add(webDomainHost)
+
+        const matchedIndex = nextItems.findIndex((item) => {
+          const itemUsername = (item.username || '').trim().toLowerCase()
+          if (itemUsername !== username.toLowerCase()) return false
+
+          const itemPackages = normalizeLinkedAndroidPackages(item.linkedAndroidPackages)
+          if (packageName && itemPackages.includes(packageName)) return true
+
+          const itemHosts = item.urls.map((url) => normalizeHost(url)).filter(Boolean)
+          for (const captureHost of captureHosts) {
+            if (itemHosts.some((itemHost) => hostMatches(itemHost, captureHost))) {
+              return true
+            }
+          }
+          return false
+        })
+
+        if (matchedIndex >= 0) {
+          const current = nextItems[matchedIndex]
+          const mergedUrls = Array.from(new Set([
+            ...current.urls.map((url) => url.trim()).filter(Boolean),
+            ...(capture.urls ?? []).map((url) => url.trim()).filter(Boolean),
+            ...(webDomainHost ? [`https://${webDomainHost}`] : []),
+          ]))
+          const mergedPackages = Array.from(new Set([
+            ...normalizeLinkedAndroidPackages(current.linkedAndroidPackages),
+            ...capturePackages,
+          ]))
+
+          nextItems[matchedIndex] = {
+            ...current,
+            username,
+            passwordMasked: password,
+            urls: mergedUrls,
+            linkedAndroidPackages: mergedPackages,
+            updatedAt: now,
+          }
+          updatedCount += 1
+          continue
+        }
+
+        const fallbackTitle = buildCapturedCredentialTitle(capture, fallbackIndex)
+        fallbackIndex += 1
+        const created: VaultItem = {
+          id: crypto.randomUUID(),
+          title: fallbackTitle,
+          username,
+          passwordMasked: password,
+          urls: Array.from(new Set([
+            ...(capture.urls ?? []).map((url) => url.trim()).filter(Boolean),
+            ...(webDomainHost ? [`https://${webDomainHost}`] : []),
+          ])),
+          linkedAndroidPackages: capturePackages,
+          folder: '',
+          folderId: null,
+          tags: ['captured', 'android-autofill'],
+          risk: 'safe',
+          updatedAt: now,
+          note: '',
+          securityQuestions: [],
+          passwordExpiryDate: null,
+        }
+        nextItems.unshift(created)
+        createdCount += 1
+      }
+
+      if (createdCount === 0 && updatedCount === 0) {
+        return
+      }
+
+      await persistPayload({ items: nextItems })
+      if (createdCount > 0 && updatedCount > 0) {
+        setSyncMessage(`Imported ${createdCount} new and updated ${updatedCount} captured login(s) from Android autofill`)
+      } else if (createdCount > 0) {
+        setSyncMessage(`Imported ${createdCount} captured login(s) from Android autofill`)
+      } else {
+        setSyncMessage(`Updated ${updatedCount} login(s) from Android autofill captures`)
+      }
+    } catch {
+      // Ignore consume/import failures; autofill fill should continue functioning.
+    } finally {
+      autofillCaptureImportInFlightRef.current = false
+    }
+  }, [items, persistPayload, phase, vaultSession])
+  consumeCapturedAutofillCredentialsRef.current = consumeCapturedAutofillCredentials
 
   const persistVaultSnapshot = useCallback((file: ArmadilloVaultFile) => {
     saveCachedVaultSnapshot(file, cloudCacheTtlHours)
@@ -494,8 +815,142 @@ export function useVaultApp() {
     return loadLocalVaultFile() || loadCachedVaultSnapshot()
   }, [storageMode])
 
+  const buildEntitlementStateFromToken = useCallback(async (
+    token: string,
+    source: EntitlementState['source'],
+    lastRefreshAt: string | null,
+  ): Promise<EntitlementState> => {
+    const verified = await verifyEntitlementJwt(token)
+    const staleAt = getEntitlementStaleAt(lastRefreshAt)
+    if (!verified.ok) {
+      return {
+        ...defaultEntitlementState(verified.reason),
+        source,
+        status: verified.code === 'expired' ? 'expired' : 'invalid',
+        lastRefreshAt,
+        staleAt,
+      }
+    }
+
+    const expiresAt = new Date(verified.claims.exp * 1000).toISOString()
+    const stale = isEntitlementStale(lastRefreshAt)
+    return {
+      source,
+      status: stale ? 'stale' : 'verified',
+      tier: verified.claims.tier,
+      capabilities: verified.claims.capabilities ?? [],
+      flags: verified.claims.flags ?? {},
+      expiresAt,
+      lastRefreshAt,
+      staleAt,
+      reason: stale ? 'Entitlement is stale. Reconnect to refresh your plan.' : `${verified.claims.tier} entitlement verified`,
+      issuer: verified.claims.iss,
+      subject: verified.claims.sub,
+      kid: verified.header.kid,
+    }
+  }, [])
+
+  const refreshEntitlements = useCallback(async () => {
+    const nowIso = new Date().toISOString()
+    const manualToken = getManualEntitlementToken()
+    if (manualToken) {
+      const lastRefreshAt = getEntitlementLastRefreshAt() || nowIso
+      if (!getEntitlementLastRefreshAt()) {
+        setEntitlementLastRefreshAt(nowIso)
+      }
+      const manualState = await buildEntitlementStateFromToken(manualToken, 'manual', lastRefreshAt)
+      setEntitlementState(manualState)
+      setEntitlementStatusMessage(manualState.reason)
+      return
+    }
+
+    let cacheToken = getCachedEntitlementToken()
+    let cacheSource: EntitlementState['source'] = 'cache'
+    let lastRefreshAt = getEntitlementLastRefreshAt()
+
+    try {
+      const remote = await fetchEntitlementToken()
+      const remoteToken = typeof remote?.token === 'string' ? remote.token.trim() : ''
+      if (remoteToken) {
+        const fetchedAt = toIsoOrNull(remote?.fetchedAt) || nowIso
+        setCachedEntitlementToken(remoteToken)
+        setEntitlementLastRefreshAt(fetchedAt)
+        cacheToken = remoteToken
+        cacheSource = 'remote'
+        lastRefreshAt = fetchedAt
+      } else if (remote && !remote.ok && remote.reason) {
+        setEntitlementStatusMessage(remote.reason)
+      }
+    } catch {
+      // Keep local cache fallback when provider fetch fails.
+    }
+
+    if (!cacheToken) {
+      const freeState = defaultEntitlementState('Free plan active')
+      setEntitlementState(freeState)
+      setEntitlementStatusMessage(freeState.reason)
+      return
+    }
+
+    const cachedState = await buildEntitlementStateFromToken(cacheToken, cacheSource, lastRefreshAt)
+    setEntitlementState(cachedState)
+    setEntitlementStatusMessage(cachedState.reason)
+  }, [buildEntitlementStateFromToken])
+
+  const applyManualEntitlementToken = useCallback(async (tokenRaw: string) => {
+    const token = tokenRaw.trim()
+    if (!token) {
+      setSyncMessage('Signed entitlement token is required')
+      return false
+    }
+    const nowIso = new Date().toISOString()
+    const nextState = await buildEntitlementStateFromToken(token, 'manual', nowIso)
+    if (nextState.status === 'verified') {
+      setManualEntitlementToken(token)
+      setEntitlementLastRefreshAt(nowIso)
+    } else {
+      setManualEntitlementToken(null)
+    }
+    setEntitlementState(nextState)
+    setEntitlementStatusMessage(nextState.reason)
+    setSyncMessage(nextState.status === 'verified' ? 'Signed entitlement applied' : `Entitlement rejected: ${nextState.reason}`)
+    return nextState.status === 'verified'
+  }, [buildEntitlementStateFromToken])
+
+  const clearManualEntitlementTokenAction = useCallback(() => {
+    setManualEntitlementToken(null)
+    void refreshEntitlements()
+    setSyncMessage('Manual entitlement token cleared')
+  }, [refreshEntitlements])
+
+  const applyDevFlagOverrides = useCallback((override: DevFlagOverride | null) => {
+    if (!import.meta.env.DEV) return
+    setDevFlagOverride(override)
+    setDevFlagOverrideState(getDevFlagOverride())
+    setSyncMessage(override ? 'Dev flag override applied' : 'Dev flag override cleared')
+  }, [])
+
+  const clearDevFlagOverrides = useCallback(() => {
+    if (!import.meta.env.DEV) return
+    clearDevFlagOverride()
+    setDevFlagOverrideState(null)
+    setSyncMessage('Dev flag overrides cleared')
+  }, [])
+
+  function ensureCapability(capability: CapabilityKey) {
+    if (hasCapability(capability)) return true
+    setSyncMessage(capabilityLockReasons[capability] ?? 'Feature is locked')
+    return false
+  }
+
   function updateCloudSyncEnabled(value: boolean | ((value: boolean) => boolean)) {
     const nextValue = typeof value === 'function' ? value(cloudSyncEnabled) : value
+    if (nextValue && !ensureCapability('cloud.sync')) {
+      return
+    }
+    if (nextValue && syncProvider === 'self_hosted' && !ensureCapability('enterprise.self_hosted')) {
+      return
+    }
     if (storageMode === 'cloud_only' && !nextValue) {
       setSyncMessage('Cloud-only mode requires cloud sync to stay enabled')
       return
@@ -507,6 +962,12 @@ export function useVaultApp() {
     if (nextMode === storageMode) return
 
     if (nextMode === 'cloud_only') {
+      if (!ensureCapability('cloud.cloud_only')) {
+        return
+      }
+      if (syncProvider === 'self_hosted' && !ensureCapability('enterprise.self_hosted')) {
+        return
+      }
       if (!syncConfigured()) {
         setSyncMessage('Configure cloud sync before enabling cloud-only mode')
         return
@@ -556,6 +1017,54 @@ export function useVaultApp() {
   }, [cloudSyncEnabled])
 
   useEffect(() => {
+    const persistedTheme = normalizeThemeSettings(vaultSettings.theme)
+    setThemeSettingsDirty(!areThemeSettingsEqual(themeSettings, persistedTheme))
+  }, [themeSettings, vaultSettings.theme])
+
+  useEffect(() => {
+    const normalizedTheme = normalizeThemeSettings(themeSettings)
+    const root = document.documentElement
+    root.setAttribute('data-theme', normalizedTheme.activeBaseThemeId)
+    if (normalizedTheme.motionLevel === 'reduced') {
+      root.setAttribute('data-motion', 'reduced')
+    } else {
+      root.removeAttribute('data-motion')
+    }
+
+    const baseTokens = BUILT_IN_THEME_PRESETS.find((preset) => preset.id === normalizedTheme.activeBaseThemeId)?.tokens ?? {}
+    const resolvedTokens = resolveThemeTokens(normalizedTheme)
+    const nextOverrideSet = new Set<string>()
+
+    for (const [token, value] of Object.entries(resolvedTokens)) {
+      if (baseTokens[token] === value) continue
+      nextOverrideSet.add(token)
+      root.style.setProperty(`--${token}`, value)
+    }
+
+    for (const token of appliedThemeOverrideKeysRef.current) {
+      if (nextOverrideSet.has(token)) continue
+      root.style.removeProperty(`--${token}`)
+    }
+
+    appliedThemeOverrideKeysRef.current = Array.from(nextOverrideSet)
+  }, [themeSettings])
+
+  useEffect(() => {
+    return () => {
+      if (nativeAutofillSyncRetryTimerRef.current !== null) {
+        window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isNativeAndroid() || phase !== 'ready' || !vaultSession) {
+      return
+    }
+    syncCredentialsToNative(items)
+  }, [phase, vaultSession, items])
+
+  useEffect(() => {
     setStoredCloudCacheTtlHours(cloudCacheTtlHours)
     const cached = loadCachedVaultSnapshot(true)
     if (!cached) return
@@ -570,7 +1079,49 @@ export function useVaultApp() {
   }, [storageMode, cloudSyncEnabled])
 
   useEffect(() => {
+    void refreshEntitlements()
+  }, [refreshEntitlements])
+
+  useEffect(() => {
+    if (phase !== 'ready') return
+    void refreshEntitlements()
+  }, [phase, refreshEntitlements])
+
+  useEffect(() => {
+    if (storageMode !== 'cloud_only' || hasCapability('cloud.cloud_only')) {
+      return
+    }
+    const activeFile = vaultSession?.file || loadCachedVaultSnapshot(true)
+    if (activeFile) {
+      saveLocalVaultFile(activeFile)
+      setLocalVaultPath(getLocalVaultPath())
+    }
+    setStorageMode('local_file')
+    setStoredVaultStorageMode('local_file')
+    setSyncMessage(capabilityLockReasons['cloud.cloud_only'] ?? 'Requires Premium plan')
+  }, [storageMode, vaultSession, hasCapability, capabilityLockReasons])
+
+  useEffect(() => {
+    if (!cloudSyncEnabled || storageMode === 'cloud_only' || hasCapability('cloud.sync')) {
+      return
+    }
+    setCloudSyncEnabled(false)
+    setSyncMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+  }, [cloudSyncEnabled, storageMode, hasCapability, capabilityLockReasons])
+
+  useEffect(() => {
+    if (!cloudSyncEnabled || syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted')) {
+      return
+    }
+    setCloudSyncEnabled(false)
+    setSyncMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
+  }, [cloudSyncEnabled, syncProvider, hasCapability, capabilityLockReasons])
+
+  useEffect(() => {
     setSyncAuthToken(authToken ?? null)
+    if (!authToken) {
+      setSyncAuthContext(null)
+    }
   }, [authToken])
 
   useEffect(() => {
@@ -600,6 +1151,7 @@ export function useVaultApp() {
       try {
         const status = await getCloudAuthStatus()
         if (cancelled) return
+        setSyncAuthContext(status?.authContext ?? null)
 
         if (status?.authenticated || syncProvider === 'self_hosted') {
           const identityLabel = status?.authenticated
@@ -651,6 +1203,18 @@ export function useVaultApp() {
     if (phase === 'ready' || cloudAuthState !== 'connected') {
       setCloudVaultSnapshot(null)
       setCloudVaultCandidates([])
+      return
+    }
+    if (!hasCapability('cloud.sync')) {
+      setCloudVaultSnapshot(null)
+      setCloudVaultCandidates([])
+      setAuthMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+      return
+    }
+    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) {
+      setCloudVaultSnapshot(null)
+      setCloudVaultCandidates([])
+      setAuthMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
       return
     }
 
@@ -711,7 +1275,7 @@ export function useVaultApp() {
     return () => {
       cancelled = true
     }
-  }, [phase, cloudAuthState, authToken, persistVaultSnapshot])
+  }, [phase, cloudAuthState, authToken, persistVaultSnapshot, hasCapability, syncProvider, capabilityLockReasons])
 
   useEffect(() => {
     const shell = window.armadilloShell
@@ -757,6 +1321,30 @@ export function useVaultApp() {
       void listener.then((handle) => handle.remove())
     }
   }, [completeGoogleSignInFromCallback])
+
+  useEffect(() => {
+    if (!isNativeAndroid() || phase !== 'ready' || !vaultSession) {
+      return
+    }
+    void consumeCapturedAutofillCredentialsRef.current()
+  }, [phase, vaultSession])
+
+  useEffect(() => {
+    if (!isNativeAndroid()) {
+      return
+    }
+
+    let ignore = false
+    const listener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (ignore || !isActive) return
+      void consumeCapturedAutofillCredentialsRef.current()
+    })
+
+    return () => {
+      ignore = true
+      void listener.then((handle) => handle.remove())
+    }
+  }, [])
 
   useEffect(() => {
     function handlePointerDown() {
@@ -838,6 +1426,20 @@ export function useVaultApp() {
       if (!silent) {
         setSyncState('local')
         setSyncMessage('Offline mode')
+      }
+      return false
+    }
+    if (!hasCapability('cloud.sync')) {
+      if (!silent) {
+        setSyncState('local')
+        setSyncMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+      }
+      return false
+    }
+    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) {
+      if (!silent) {
+        setSyncState('local')
+        setSyncMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
       }
       return false
     }
@@ -923,7 +1525,7 @@ export function useVaultApp() {
     } finally {
       cloudRefreshInFlightRef.current = false
     }
-  }, [vaultSession, cloudSyncEnabled, storageMode, applySession, persistVaultSnapshot])
+  }, [vaultSession, cloudSyncEnabled, storageMode, applySession, persistVaultSnapshot, hasCapability, capabilityLockReasons])
 
   async function refreshVaultFromCloudNow() {
     await refreshVaultFromCloud({ silent: false, pushLocalWhenCurrent: false, requireAutoSync: false })
@@ -1023,9 +1625,47 @@ export function useVaultApp() {
     }
     return map
   }, [folders, folderMap])
+  const expiredItems = useMemo(
+    () => items.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired'),
+    [items],
+  )
+  const expiringSoonItems = useMemo(
+    () => items.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring'),
+    [items],
+  )
+  const homeRecentItems = useMemo(() => {
+    const ranked = items
+      .map((item, index) => ({ item, index, parsedUpdatedAt: Date.parse(item.updatedAt) }))
+      .sort((a, b) => {
+        const aValid = Number.isFinite(a.parsedUpdatedAt)
+        const bValid = Number.isFinite(b.parsedUpdatedAt)
+        if (aValid && bValid) {
+          return b.parsedUpdatedAt - a.parsedUpdatedAt
+        }
+        if (aValid !== bValid) {
+          return aValid ? -1 : 1
+        }
+        return a.index - b.index
+      })
+    return ranked.slice(0, HOME_RECENT_ITEMS_LIMIT).map((row) => row.item)
+  }, [items])
+  const homeSearchResults = useMemo(() => {
+    const value = homeSearchQuery.trim().toLowerCase()
+    if (!value) return []
+    return items.filter((item) => itemMatchesQuery(item, value)).slice(0, HOME_SEARCH_RESULTS_LIMIT)
+  }, [items, homeSearchQuery])
 
   const scopedItems = useMemo(() => {
     if (selectedNode === 'all') return items
+    if (selectedNode === 'home') {
+      return []
+    }
+    if (selectedNode === 'expiring') {
+      return expiringSoonItems
+    }
+    if (selectedNode === 'expired') {
+      return expiredItems
+    }
     if (selectedNode === 'unfiled') {
       return items.filter((item) => !item.folderId)
     }
@@ -1039,22 +1679,15 @@ export function useVaultApp() {
       return items.filter((item) => item.folderId && ids.has(item.folderId))
     }
     return items.filter((item) => item.folderId === folderId)
-  }, [items, selectedNode, folderFilterMode, folders])
+  }, [items, selectedNode, folderFilterMode, folders, expiringSoonItems, expiredItems])
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase()
     const base = !value
       ? scopedItems
-      : scopedItems.filter(
-          (item) =>
-            item.title.toLowerCase().includes(value) ||
-            item.username.toLowerCase().includes(value) ||
-            item.urls.some((url) => url.toLowerCase().includes(value)) ||
-            item.folder.toLowerCase().includes(value) ||
-            item.tags.some((tag) => tag.toLowerCase().includes(value)),
-        )
+      : scopedItems.filter((item) => itemMatchesQuery(item, value))
 
-    return [...base]
+    return base
   }, [scopedItems, query])
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
@@ -1116,7 +1749,7 @@ export function useVaultApp() {
     try {
       const session = await createVaultFile(createPassword)
       persistVaultSnapshot(session.file)
-      applySession(session)
+      applySession(session, { resetNavigation: true })
       setPhase('ready')
       setSyncState('local')
       setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted cloud-only vault created (cached locally)' : 'Encrypted local vault created (.armadillo)')
@@ -1175,13 +1808,14 @@ export function useVaultApp() {
         if (!session) {
           throw new Error('Local unlock failed for all password variants')
         }
-        applySession(session)
+        applySession(session, { resetNavigation: true })
         await ensureUnlockVisualFeedback()
         setPhase('ready')
         setSyncMessage(storageMode === 'cloud_only' ? 'Vault unlocked from encrypted cloud cache' : 'Vault unlocked locally')
         setUnlockPassword('')
       } catch (initialError) {
-        if (cloudConnected && syncConfigured()) {
+        const cloudSyncAllowed = hasCapability('cloud.sync') && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+        if (cloudConnected && syncConfigured() && cloudSyncAllowed) {
           try {
             setSyncAuthToken(authToken ?? null)
             const remote = await listRemoteVaultsByOwner()
@@ -1208,7 +1842,7 @@ export function useVaultApp() {
                   throw new Error('Candidate failed for all password variants')
                 }
                 persistVaultSnapshot(candidate)
-                applySession(recovered)
+                applySession(recovered, { resetNavigation: true })
                 await ensureUnlockVisualFeedback()
                 setPhase('ready')
                 setSyncMessage('Vault unlocked from cloud save')
@@ -1254,6 +1888,8 @@ export function useVaultApp() {
     setItems([])
     setDraft(null)
     setSelectedId('')
+    setThemeSettings(normalizeThemeSettings(vaultSettings.theme))
+    setThemeSettingsDirty(false)
     setPhase('unlock')
     setSyncMessage('Vault locked')
     clearNativeCredentials()
@@ -1452,6 +2088,24 @@ export function useVaultApp() {
     await persistPayload({ trash: trash.filter((row) => row.id !== entryId) })
   }
 
+  async function emptyVaultForTesting() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before emptying the vault')
+      return
+    }
+    await persistPayload({
+      items: [],
+      folders: [],
+      trash: [],
+    })
+    setSelectedNode('all')
+    setSelectedId('')
+    setDraft(null)
+    setMobileStep('list')
+    setActivePanel('details')
+    setSyncMessage('Vault emptied for testing')
+  }
+
   async function persistPayload(next: Partial<VaultPayload>) {
     if (!vaultSession) {
       return
@@ -1467,7 +2121,9 @@ export function useVaultApp() {
     applySession(nextSession)
     persistVaultSnapshot(nextSession.file)
 
-    if (cloudSyncEnabled && syncConfigured()) {
+    const canUseCloudSync = hasCapability('cloud.sync')
+    const canUseSelfHosted = syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted')
+    if (cloudSyncEnabled && syncConfigured() && canUseCloudSync && canUseSelfHosted) {
       try {
         setSyncState('syncing')
         const result = await pushRemoteSnapshot(nextSession.file)
@@ -1483,7 +2139,13 @@ export function useVaultApp() {
       }
     } else {
       setSyncState('local')
-      setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted change cached locally' : 'Encrypted change saved locally')
+      if (cloudSyncEnabled && !canUseCloudSync) {
+        setSyncMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+      } else if (cloudSyncEnabled && !canUseSelfHosted) {
+        setSyncMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
+      } else {
+        setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted change cached locally' : 'Encrypted change saved locally')
+      }
     }
   }
 
@@ -1499,6 +2161,70 @@ export function useVaultApp() {
     const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
     setVaultSettings(nextSettings)
     await persistPayload({ settings: nextSettings })
+  }
+
+  function selectThemePreset(presetId: string) {
+    setThemeSettings((current) => applyPresetSelection(current, presetId))
+  }
+
+  function updateThemeTokenOverride(token: ThemeEditableTokenKey, rawValue: string) {
+    setThemeSettings((current) => {
+      const normalized = normalizeThemeSettings(current)
+      const nextOverrides = {
+        ...normalized.activeOverrides,
+      } as Record<string, unknown>
+      const trimmed = rawValue.trim()
+      if (!trimmed) {
+        delete nextOverrides[token]
+      } else {
+        nextOverrides[token] = trimmed
+      }
+      return normalizeThemeSettings({
+        ...normalized,
+        activeOverrides: normalizeThemeTokenOverrides(nextOverrides),
+      })
+    })
+  }
+
+  function resetThemeOverrides() {
+    setThemeSettings((current) => {
+      const normalized = normalizeThemeSettings(current)
+      return normalizeThemeSettings({
+        ...normalized,
+        activeOverrides: {},
+        selectedPresetId: normalized.activeBaseThemeId,
+      })
+    })
+  }
+
+  function saveThemeAsCustomPreset(name: string) {
+    setThemeSettings((current) => upsertCustomThemePreset(current, name).themeSettings)
+  }
+
+  function deleteThemePreset(presetId: string) {
+    setThemeSettings((current) => deleteCustomThemePreset(current, presetId))
+  }
+
+  function setThemeMotionLevel(motionLevel: ThemeMotionLevel) {
+    setThemeSettings((current) => normalizeThemeSettings({ ...current, motionLevel }))
+  }
+
+  async function persistThemeSettings() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before saving theme settings')
+      return
+    }
+    const normalizedTheme = normalizeThemeSettings(themeSettings)
+    const nextSettings = normalizeAutoFolderSettings({
+      ...vaultSettings,
+      theme: normalizedTheme,
+    })
+    setVaultSettings(nextSettings)
+    setThemeSettings(normalizedTheme)
+    await persistPayload({ settings: nextSettings })
+    saveThemeSettingsToMirror(normalizedTheme)
+    setThemeSettingsDirty(false)
+    setSyncMessage('Theme settings saved')
   }
 
   function dismissExpiryAlerts() {
@@ -1542,6 +2268,9 @@ export function useVaultApp() {
   }
 
   function createItem() {
+    if (selectedNode === 'home') {
+      setSelectedNode('all')
+    }
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
     const item = buildEmptyItem(selectedFolderPath, selectedFolderId)
@@ -1551,6 +2280,48 @@ export function useVaultApp() {
     setDraft(item)
     setMobileStep('detail')
     setActivePanel('details')
+  }
+
+  function openSettings(category?: SettingsCategoryId) {
+    if (category) {
+      setSettingsCategory(category)
+    }
+    setShowSettings(true)
+  }
+
+  function closeSettings() {
+    setShowSettings(false)
+  }
+
+  function openHome() {
+    setSelectedNode('home')
+    setMobileStep('home')
+  }
+
+  function openSmartView(view: 'expired' | 'expiring') {
+    setQuery('')
+    setSelectedNode(view)
+    setMobileStep('list')
+  }
+
+  function updateHomeSearch(value: string) {
+    setHomeSearchQuery(value)
+  }
+
+  function submitHomeSearch() {
+    setSelectedNode('all')
+    setQuery(homeSearchQuery.trim())
+    setMobileStep('list')
+  }
+
+  function openItemFromHome(itemId: string) {
+    setSelectedNode('all')
+    setQuery('')
+    setSelectedId(itemId)
+    setActivePanel('details')
+    if (effectivePlatform === 'mobile') {
+      setMobileStep('detail')
+    }
   }
 
   async function saveCurrentItem() {
@@ -1578,18 +2349,66 @@ export function useVaultApp() {
     setNewFolderValue('')
   }
 
+  function scopeItemsForSelection(sourceItems: VaultItem[], node: SidebarNode, mode: FolderFilterMode) {
+    if (node === 'all') return sourceItems
+    if (node === 'home' || node === 'trash') return []
+    if (node === 'expiring') {
+      return sourceItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring')
+    }
+    if (node === 'expired') {
+      return sourceItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired')
+    }
+    if (node === 'unfiled') {
+      return sourceItems.filter((item) => !item.folderId)
+    }
+    const folderId = node.slice('folder:'.length)
+    if (!folderId) return sourceItems
+    if (mode === 'recursive') {
+      const descendantIds = new Set(collectDescendantIds(folderId, folders))
+      return sourceItems.filter((item) => item.folderId && descendantIds.has(item.folderId))
+    }
+    return sourceItems.filter((item) => item.folderId === folderId)
+  }
+
   async function removeCurrentItem() {
     if (!draft) return
     const deletingId = draft.id
+    const previousNode = selectedNode
+    const previousFilterMode = folderFilterMode
+    const previousMobileStep = mobileStep
     const remaining = items.filter((item) => item.id !== deletingId)
     await persistPayload({ items: remaining })
-    setSelectedId(remaining[0]?.id || '')
+    const inViewRemaining = scopeItemsForSelection(remaining, previousNode, previousFilterMode)
+    const nextSelected = inViewRemaining[0] ?? null
+    setSelectedNode(previousNode)
+    setFolderFilterMode(previousFilterMode)
+    setSelectedId(nextSelected?.id ?? '')
+    setDraft(nextSelected)
+    if (effectivePlatform === 'mobile') {
+      setMobileStep(nextSelected ? previousMobileStep : 'list')
+    }
   }
 
   async function removeItemById(itemId: string) {
+    const previousNode = selectedNode
+    const previousFilterMode = folderFilterMode
+    const previousMobileStep = mobileStep
+    const previousSelectedId = selectedId
     const remaining = items.filter((item) => item.id !== itemId)
     await persistPayload({ items: remaining })
-    setSelectedId((current) => (current === itemId ? (remaining[0]?.id || '') : current))
+    const inViewRemaining = scopeItemsForSelection(remaining, previousNode, previousFilterMode)
+    const fallbackSelected = inViewRemaining[0] ?? null
+    const keepSelected = previousSelectedId && previousSelectedId !== itemId
+      ? remaining.find((item) => item.id === previousSelectedId) ?? null
+      : null
+    const nextSelected = keepSelected ?? fallbackSelected
+    setSelectedNode(previousNode)
+    setFolderFilterMode(previousFilterMode)
+    setSelectedId(nextSelected?.id ?? '')
+    setDraft(nextSelected)
+    if (effectivePlatform === 'mobile') {
+      setMobileStep(nextSelected ? previousMobileStep : 'list')
+    }
     setItemContextMenu(null)
   }
 
@@ -1660,6 +2479,10 @@ export function useVaultApp() {
     googlePasswordImportInputRef.current?.click()
   }
 
+  function triggerKeePassImport() {
+    keepassImportInputRef.current?.click()
+  }
+
   async function onImportFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) {
@@ -1713,10 +2536,11 @@ export function useVaultApp() {
         const note = entry.note
         return {
           id: crypto.randomUUID(),
-          title: inferImportedItemTitle(entry, index + 1),
+          title: inferImportedItemTitle({ title: entry.name, url: entry.url, username: entry.username }, index + 1),
           username,
           passwordMasked: password,
           urls: url ? [url] : [],
+          linkedAndroidPackages: [],
           folder: '',
           folderId: null,
           tags: ['imported', 'google-password-manager'],
@@ -1744,6 +2568,100 @@ export function useVaultApp() {
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'unknown error'
       setSyncMessage(`Failed to import Google CSV: ${detail}`)
+    } finally {
+      event.currentTarget.value = ''
+    }
+  }
+
+  async function onKeePassCsvSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before importing KeePass data')
+      event.currentTarget.value = ''
+      return
+    }
+
+    try {
+      const text = await file.text()
+      const normalizedName = file.name.trim().toLowerCase()
+      const trimmedText = text.trimStart()
+      const looksLikeXml = normalizedName.endsWith('.xml')
+        || trimmedText.startsWith('<?xml')
+        || /<\s*KeePassFile(?:\s|>)/i.test(trimmedText.slice(0, 2048))
+      const parsed = looksLikeXml ? parseKeePassXml(text) : parseKeePassCsv(text)
+      const sourceLabel = looksLikeXml ? 'KeePass XML' : 'KeePass CSV'
+      if (parsed.entries.length === 0) {
+        setSyncMessage(`No importable credentials found in ${sourceLabel}`)
+        return
+      }
+
+      let nextFolders = folders
+      const folderIdByPathKey = new Map<string, string>()
+      for (const [folderId, path] of folderPathById.entries()) {
+        folderIdByPathKey.set(getPathKey(path), folderId)
+      }
+      const requestedGroupPaths = Array.from(new Set(parsed.entries
+        .map((entry) => normalizeAutoFolderPath(entry.group))
+        .filter(Boolean)))
+      for (const groupPath of requestedGroupPaths) {
+        const pathKey = getPathKey(groupPath)
+        if (folderIdByPathKey.has(pathKey)) continue
+        const ensured = ensureFolderByPath(groupPath, nextFolders)
+        nextFolders = ensured.nextFolders
+        if (ensured.folder) {
+          folderIdByPathKey.set(pathKey, ensured.folder.id)
+        }
+      }
+
+      const now = new Date().toLocaleString()
+      const importedItems: VaultItem[] = parsed.entries.map((entry, index) => {
+        const url = entry.url.trim()
+        const username = entry.username
+        const password = entry.password
+        const groupPath = normalizeAutoFolderPath(entry.group)
+        const folderId = groupPath ? (folderIdByPathKey.get(getPathKey(groupPath)) ?? null) : null
+        const baseNote = entry.note
+        const note = folderId
+          ? baseNote
+          : (groupPath ? `KeePass Group: ${groupPath}${baseNote ? `\n\n${baseNote}` : ''}` : baseNote)
+        return {
+          id: crypto.randomUUID(),
+          title: inferImportedItemTitle({ title: entry.title, url: entry.url, username: entry.username }, index + 1),
+          username,
+          passwordMasked: password,
+          urls: url ? [url] : [],
+          linkedAndroidPackages: [],
+          folder: groupPath || '',
+          folderId,
+          tags: ['imported', 'keepass'],
+          risk: 'safe',
+          updatedAt: now,
+          note,
+          securityQuestions: [],
+          passwordExpiryDate: null,
+        }
+      })
+
+      const nextItems = [...importedItems, ...items]
+      await persistPayload({ items: nextItems, folders: nextFolders })
+
+      setSelectedNode('all')
+      setSelectedId(importedItems[0].id)
+      setDraft(importedItems[0])
+      setMobileStep('detail')
+      setActivePanel('details')
+
+      const skippedSuffix = parsed.skippedRows > 0 ? `, skipped ${parsed.skippedRows}` : ''
+      const createdFolderCount = Math.max(0, nextFolders.length - folders.length)
+      const folderSuffix = createdFolderCount > 0 ? `, created ${createdFolderCount} folder(s)` : ''
+      setSyncMessage(`Imported ${importedItems.length} credential(s) from ${sourceLabel}${skippedSuffix}${folderSuffix}`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to import KeePass export: ${detail}`)
     } finally {
       event.currentTarget.value = ''
     }
@@ -2059,7 +2977,7 @@ export function useVaultApp() {
 
     try {
       const session = await unlockWithBiometric(file)
-      applySession(session)
+      applySession(session, { resetNavigation: true })
       setPhase('ready')
       setSyncMessage('Vault unlocked with biometrics')
     } catch (error) {
@@ -2147,6 +3065,7 @@ export function useVaultApp() {
   async function signOutCloud() {
     if (syncProvider === 'self_hosted') {
       setSyncAuthToken(null)
+      setSyncAuthContext(null)
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
         setCloudCacheExpiresAt('')
@@ -2154,6 +3073,7 @@ export function useVaultApp() {
       setAuthMessage('Self-hosted token cleared for this session')
       setCloudAuthState('disconnected')
       setCloudIdentity('')
+      void refreshEntitlements()
       return
     }
 
@@ -2166,6 +3086,7 @@ export function useVaultApp() {
       setAuthMessage('Signed out')
       setCloudAuthState('disconnected')
       setCloudIdentity('')
+      void refreshEntitlements()
     } catch {
       setAuthMessage('Sign out failed')
     }
@@ -2174,6 +3095,14 @@ export function useVaultApp() {
   async function pushVaultToCloudNow() {
     if (!vaultSession) {
       setSyncMessage('Unlock vault before pushing to cloud')
+      return
+    }
+    if (!hasCapability('cloud.sync')) {
+      setSyncMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+      return
+    }
+    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) {
+      setSyncMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
       return
     }
     if (!syncConfigured()) {
@@ -2221,7 +3150,10 @@ export function useVaultApp() {
       folders,
       trash,
       vaultSettings,
+      themeSettings,
+      themeSettingsDirty,
       query,
+      homeSearchQuery,
       selectedId,
       activePanel,
       mobileStep,
@@ -2230,6 +3162,7 @@ export function useVaultApp() {
       isSaving,
       showPassword,
       showSettings,
+      settingsCategory,
       selectedNode,
       folderFilterMode,
       storageMode,
@@ -2237,6 +3170,14 @@ export function useVaultApp() {
       cloudCacheExpiresAt,
       syncProvider,
       cloudSyncEnabled,
+      entitlementState,
+      effectiveTier,
+      effectiveCapabilities,
+      effectiveFlags,
+      entitlementStatusMessage,
+      capabilityLockReasons,
+      billingUrl: BILLING_URL,
+      devFlagOverrideState,
       biometricEnabled,
       authMessage,
       cloudAuthState,
@@ -2269,9 +3210,15 @@ export function useVaultApp() {
       vaultTitle,
       effectivePlatform,
       folderPathById,
+      expiredItems,
+      expiringSoonItems,
+      homeRecentItems,
+      homeSearchResults,
       filtered,
       selected,
       folderOptions,
+      hasCapability,
+      isFlagEnabled,
     },
     actions: {
       setPhase,
@@ -2283,13 +3230,27 @@ export function useVaultApp() {
       setActivePanel,
       setMobileStep,
       setShowPassword,
-      setShowSettings,
+      openSettings,
+      closeSettings,
+      setSettingsCategory,
       setSelectedNode,
       setFolderFilterMode,
       setCloudSyncEnabled: updateCloudSyncEnabled,
       setStorageMode: updateStorageMode,
       setCloudCacheTtlHours,
       setVaultSettings,
+      refreshEntitlements,
+      applyManualEntitlementToken,
+      clearManualEntitlementToken: clearManualEntitlementTokenAction,
+      applyDevFlagOverrides,
+      clearDevFlagOverrides,
+      selectThemePreset,
+      updateThemeTokenOverride,
+      resetThemeOverrides,
+      saveThemeAsCustomPreset,
+      deleteThemePreset,
+      setThemeMotionLevel,
+      persistThemeSettings,
       setItemContextMenu,
       setContextMenu,
       setFolderEditor,
@@ -2299,6 +3260,11 @@ export function useVaultApp() {
       setTreeContextMenu,
       setShowAllCloudSnapshots,
       setDraftField,
+      openHome,
+      openSmartView,
+      updateHomeSearch,
+      submitHomeSearch,
+      openItemFromHome,
       copyToClipboard,
       minimizeDesktopWindow,
       toggleMaximizeDesktopWindow,
@@ -2334,8 +3300,10 @@ export function useVaultApp() {
       exportVaultFile,
       triggerImport,
       triggerGooglePasswordImport,
+      triggerKeePassImport,
       onImportFileSelected,
       onGooglePasswordCsvSelected,
+      onKeePassCsvSelected,
       previewAutoFoldering,
       cancelAutoFolderingPreview,
       applyAutoFoldering,
@@ -2350,6 +3318,7 @@ export function useVaultApp() {
       refreshVaultFromCloudNow,
       pushVaultToCloudNow,
       persistPayload,
+      emptyVaultForTesting,
       clearLocalVaultFile,
       clearCachedVaultSnapshot,
       getChildrenFolders,
@@ -2360,6 +3329,7 @@ export function useVaultApp() {
     refs: {
       importFileInputRef,
       googlePasswordImportInputRef,
+      keepassImportInputRef,
       folderLongPressTimerRef,
     },
   }

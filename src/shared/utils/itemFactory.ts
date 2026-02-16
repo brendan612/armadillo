@@ -10,6 +10,7 @@ export function buildEmptyItem(
     username: '',
     passwordMasked: '',
     urls: [],
+    linkedAndroidPackages: [],
     folder: folderName,
     folderId,
     tags: [],

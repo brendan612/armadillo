@@ -303,6 +303,11 @@ export function FolderTree({ parentId }: FolderTreeProps) {
                     setSelectedNode(nodeKey)
                     setMobileStep('list')
                   }}
+                  onDoubleClick={(event) => {
+                    if (isEditing || childCount === 0) return
+                    if (event.target instanceof HTMLElement && event.target.closest('input,textarea,button')) return
+                    toggleCollapsed(folder.id)
+                  }}
                   onKeyDown={(event) => {
                     if (isEditing) return
                     if (event.key === 'Enter' || event.key === ' ') {

@@ -1,0 +1,6 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-label="Desktop screenshot placeholder">
+  <rect width="1200" height="760" fill="#0b1220"/>
+  <rect x="30" y="30" width="1140" height="700" rx="20" fill="#111827" stroke="#334155" stroke-width="3"/>
+  <text x="70" y="120" fill="#e5e7eb" font-size="46" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Desktop App Screenshot Placeholder</text>
+  <text x="70" y="180" fill="#94a3b8" font-size="28" font-family="Segoe UI, Arial, sans-serif">Swap with real dashboard/list/detail capture</text>
+</svg>

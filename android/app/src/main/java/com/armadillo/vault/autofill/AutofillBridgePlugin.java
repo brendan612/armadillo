@@ -12,7 +12,6 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -32,8 +31,23 @@ public class AutofillBridgePlugin extends Plugin {
 
             List<AutofillCredential> credentials = new ArrayList<>();
             for (int i = 0; i < credentialsArray.length(); i++) {
-                JSONObject obj = credentialsArray.getJSONObject(i);
-                credentials.add(AutofillCredential.fromJson(obj));
+                try {
+                    JSONObject obj = credentialsArray.optJSONObject(i);
+                    if (obj == null) {
+                        Object raw = credentialsArray.opt(i);
+                        if (raw instanceof JSONObject) {
+                            obj = (JSONObject) raw;
+                        } else if (raw != null) {
+                            obj = new JSONObject(String.valueOf(raw));
+                        }
+                    }
+                    if (obj == null) {
+                        continue;
+                    }
+                    credentials.add(AutofillCredential.fromJson(obj));
+                } catch (Exception ignored) {
+                    // Skip malformed entries instead of rejecting the whole sync batch.
+                }
             }
 
             CredentialStore store = new CredentialStore(getContext());
@@ -43,8 +57,6 @@ public class AutofillBridgePlugin extends Plugin {
             result.put("success", true);
             result.put("count", credentials.size());
             call.resolve(result);
-        } catch (JSONException e) {
-            call.reject("Failed to parse credentials: " + e.getMessage());
         } catch (Exception e) {
             call.reject("Failed to save credentials: " + e.getMessage());
         }
@@ -61,6 +73,25 @@ public class AutofillBridgePlugin extends Plugin {
             call.resolve(result);
         } catch (Exception e) {
             call.reject("Failed to clear credentials: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void consumeCapturedCredentials(PluginCall call) {
+        try {
+            CredentialStore store = new CredentialStore(getContext());
+            List<AutofillCredential> captures = store.consumeCapturedCredentials();
+            JSArray captureRows = new JSArray();
+            for (AutofillCredential capture : captures) {
+                captureRows.put(toJsObject(capture));
+            }
+
+            JSObject result = new JSObject();
+            result.put("captures", captureRows);
+            result.put("count", captures.size());
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("Failed to consume captured credentials: " + e.getMessage());
         }
     }
 
@@ -97,5 +128,29 @@ public class AutofillBridgePlugin extends Plugin {
         } catch (Exception e) {
             call.reject("Failed to open autofill settings: " + e.getMessage());
         }
+    }
+
+    private JSObject toJsObject(AutofillCredential credential) {
+        JSObject row = new JSObject();
+        row.put("id", credential.id);
+        row.put("title", credential.title);
+        row.put("username", credential.username);
+        row.put("password", credential.password);
+        row.put("packageName", credential.packageName);
+        row.put("webDomain", credential.webDomain);
+        row.put("capturedAt", credential.capturedAt);
+
+        JSArray urls = new JSArray();
+        for (String url : credential.urls) {
+            urls.put(url);
+        }
+        row.put("urls", urls);
+
+        JSArray linkedPackages = new JSArray();
+        for (String linkedPackage : credential.linkedAndroidPackages) {
+            linkedPackages.put(linkedPackage);
+        }
+        row.put("linkedAndroidPackages", linkedPackages);
+        return row;
     }
 }

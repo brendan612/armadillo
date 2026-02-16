@@ -9,6 +9,78 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-16
+  - Updated `AGENTS.md`, `README.md`, `CHANGELOG.md`, `docs/assets/readme/hero-placeholder.svg`, `docs/assets/readme/desktop-placeholder.svg`, `docs/assets/readme/mobile-placeholder.svg`, `android/app/build.gradle`
+  - Reworked the root README into a consumer-friendly product page with renderable screenshot/art placeholders and aligned visible release version metadata for launch communication.
+- 2026-02-16
+  - Updated `.env.example`, `.github/workflows/ci.yml`, `AGENTS.md`, `README.md`, `android/app/build.gradle`, `android/app/src/main/AndroidManifest.xml`, `docs/compliance/gdpr-workflows.md`, `docs/compliance/soc2-control-matrix.md`, `docs/operations/backup-restore-drill.md`, `docs/operations/slo-oncall.md`, `docs/security/access-control-policy.md`, `docs/security/incident-response.md`, `docs/security/key-management.md`, `docs/security/security-overview.md`, `docs/security/vulnerability-disclosure.md`, `eslint.config.js`, `package-lock.json`, `package.json`, `scripts/release/check-signing-env.mjs`, `scripts/sync-gateway/run-migrations.mjs`, `services/sync-gateway/README.md`, `services/sync-gateway/migrations/001_init.sql`, `services/sync-gateway/server.mjs`, `services/sync-gateway/tests/server.test.mjs`, `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/features/settings/components/SettingsPage.tsx`, `src/lib/convexApi.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/lib/syncClient.ts`, `src/lib/syncTypes.ts`
+  - Implemented a paid-pilot enterprise hardening slice: CI quality gates, release/security defaults, v2 self-hosted auth/RBAC/audit/ops endpoints, structured entitlement fetching, provider/client contract upgrades, break-glass token UX tightening, and baseline security/compliance/operations documentation.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/index.css`
+  - Removed stale desktop right-pane viewport sticky offset after workspace-height refactor so the detail pane aligns with left/middle panes without a top gap.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/index.css`
+  - Fixed desktop/web layout regression from the prior scroll pass by restoring stable top-header stacking (no pane top clipping), keeping workspace-level overflow confinement, and centering desktop titlebar content with a three-column grid.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/index.css`
+  - Constrained desktop/web shell and workspace heights so the center pane fits the viewport and scrolls internally (item-list scrollbar) instead of growing page-level window scroll.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemListPane.tsx`, `src/index.css`
+  - Improved center-pane large-list responsiveness by keeping `filtered` reference-stable, memoizing item rows with stable action handlers to avoid unnecessary rerenders, and enabling offscreen row content skipping via CSS `content-visibility`.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/features/items/components/ItemListPane.tsx`
+  - Reduced right-click context-menu latency on item rows by opening the menu on mouse right-button pointer-down (with propagation prevention) instead of waiting solely for delayed `contextmenu` timing.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`
+  - Fixed post-delete navigation regression by preserving current node/folder/mobile step across payload rewrites and making item deletion choose the next selection from the current scoped view instead of forcing a Home reset.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/features/settings/components/SettingsPage.tsx`
+  - Fixed lingering settings bounce-back by stabilizing the settings `popstate` effect dependencies and using a close-action ref so unrelated state updates no longer trigger history cleanup/auto-close.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/app/AppShell.tsx`
+  - Fixed immediate settings close-on-open regression in dev/StrictMode by keeping `SettingsPage` mounted and toggling view visibility via `showSettings` instead of mounting it only when opened.
+- 2026-02-15
+  - Updated `AGENTS.md`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/layout/components/Topbar.tsx`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`; removed `src/features/settings/components/SettingsModal.tsx`
+  - Replaced the settings drawer with a full-page split settings workspace (left category nav + right detail pane), added explicit settings navigation actions/state, and added responsive mobile category-picker behavior while preserving existing settings functionality.
+- 2026-02-15
+  - Updated `.env.example`, `README.md`, `package.json`, `src/types/entitlements.ts`, `src/features/flags/registry.ts`, `src/features/flags/resolveFlags.ts`, `src/features/flags/verifyEntitlementJwt.ts`, `src/features/flags/entitlementCache.ts`, `src/lib/syncTypes.ts`, `src/lib/syncClient.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`, `scripts/entitlements/generate-keypair.mjs`, `scripts/entitlements/sign-token.mjs`
+  - Implemented a signed offline entitlement + feature-flag system with free/premium/enterprise gating, settings/billing controls, dev overrides, and token tooling to support monetization rollout.
+- 2026-02-15
+  - Updated `src/index.css`
+  - Increased the folder-tree max height in the left sidebar so more folders are visible at once before scrolling.
+- 2026-02-15
+  - Updated `src/features/settings/components/SettingsModal.tsx`
+  - Compacted Appearance settings behind a single toggle button so advanced theme customization only shows after explicit user expansion.
+- 2026-02-15
+  - Updated `src/types/vault.ts`, `src/shared/utils/theme.ts`, `src/lib/vaultFile.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`, `src/index.css`
+  - Added a full theme system with built-in/custom presets, advanced appearance controls, live preview + explicit save, vault-synced theme settings, and local mirror bootstrapping so pre-unlock screens keep the last saved look.
+- 2026-02-15
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/home/components/HomePane.tsx`, `src/features/nav/components/SidebarPane.tsx`, `src/features/layout/components/MobileNav.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/features/items/components/ItemDetailPane.tsx`, `src/shared/utils/passwordExpiry.ts`, `src/index.css`
+  - Added a home-first dashboard with quick search, expiry/unfiled summary cards, smart expiry views, recent-updates list, and mobile navigation updates while preserving existing list/detail workflows.
+- 2026-02-15
+  - Updated `src/features/nav/components/FolderTree.tsx`
+  - Added folder-row double-click behavior to toggle expand/collapse for folders with children (in addition to existing chevron toggle).
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`
+  - Made KeePass import recreate folder paths from KeePass groups and assign imported items into those folders (`folderId` + path), including reporting created-folder counts after import.
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsModal.tsx`
+  - Added a local testing Danger Zone action to empty the current unlocked vault contents (items/folders/trash) with a confirmation prompt, without resetting app/auth state.
+- 2026-02-14
+  - Updated `src/shared/utils/keePassXml.ts`, `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/settings/components/SettingsModal.tsx`, `README.md`
+  - Expanded KeePass import to support native KeePass XML exports (recursive group/entry parsing with credential-field extraction) while keeping CSV support under a single `.xml/.csv` import action.
+- 2026-02-14
+  - Updated `src/shared/utils/keePassCsv.ts`, `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/settings/components/SettingsModal.tsx`, `README.md`
+  - Added KeePass CSV import support by parsing KeePass headers/rows, wiring a dedicated Settings import action + hidden file input, and ingesting imported credentials into the unlocked vault with import tagging.
+- 2026-02-14
+  - Updated `src/app/hooks/useVaultApp.ts`, `android/app/src/main/java/com/armadillo/vault/autofill/CredentialStore.java`, `android/app/src/main/java/com/armadillo/vault/autofill/AutofillCredential.java`
+  - Fixed Android autofill false-locked behavior by retrying native credential sync on unlock/ready state and falling back to non-encrypted local storage when encrypted autofill prefs cannot initialize in service context.
+- 2026-02-14
+  - Updated `android/app/src/main/java/com/armadillo/vault/autofill/ArmadilloAutofillService.java`, `android/app/src/main/java/com/armadillo/vault/autofill/AutofillBridgePlugin.java`
+  - Hardened Android autofill runtime reliability by making credential sync skip malformed rows instead of failing the full sync, and making fill requests gracefully fall back to unlock/basic suggestions when credential-store read or ranking logic errors occur.
+- 2026-02-14
+  - Updated `android/app/src/main/java/com/armadillo/vault/autofill/ArmadilloAutofillService.java`, `android/app/src/main/java/com/armadillo/vault/autofill/AutofillBridgePlugin.java`, `android/app/src/main/java/com/armadillo/vault/autofill/AutofillCredential.java`, `android/app/src/main/java/com/armadillo/vault/autofill/CredentialStore.java`, `android/app/src/main/java/com/armadillo/vault/autofill/AppDomainHeuristics.java`, `android/app/src/main/res/layout/autofill_item.xml`, `android/app/src/main/res/values/autofill_colors.xml`, `android/app/src/main/res/values-night/autofill_colors.xml`, `src/plugins/autofillBridge.ts`, `src/app/hooks/useVaultApp.ts`, `src/lib/vaultFile.ts`, `src/types/vault.ts`, `src/shared/utils/itemFactory.ts`
+  - Upgraded Android autofill with high-contrast suggestion rows, ranked app/domain-aware matching, system save-capture of new logins, and automatic vault import of captured credentials with persisted Android package associations for future autofill relevance.
 - 2026-02-14
   - Updated `package.json`, `electron/main.cjs`
   - Branded Windows desktop packaging/runtime identity by forcing executable/process/app naming to Armadillo and explicitly setting NSIS installer/uninstaller/header icons to the Armadillo `.ico` asset.

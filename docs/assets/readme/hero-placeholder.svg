@@ -1,0 +1,7 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="Armadillo hero placeholder">
+  <rect width="1600" height="900" fill="#0f172a"/>
+  <rect x="40" y="40" width="1520" height="820" rx="24" fill="#111827" stroke="#334155" stroke-width="4"/>
+  <text x="80" y="140" fill="#e5e7eb" font-size="52" font-family="Segoe UI, Arial, sans-serif" font-weight="700">README Hero Placeholder</text>
+  <text x="80" y="210" fill="#94a3b8" font-size="32" font-family="Segoe UI, Arial, sans-serif">Replace with polished product hero art</text>
+  <text x="80" y="290" fill="#64748b" font-size="26" font-family="Segoe UI, Arial, sans-serif">Recommended size: 1600x900</text>
+</svg>

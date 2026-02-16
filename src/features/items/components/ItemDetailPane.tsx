@@ -1,22 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
+import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
 import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
-
-function getExpiryStatus(expiryDate: string | null | undefined): 'expired' | 'expiring' | null {
-  if (!expiryDate) return null
-  const expiry = new Date(expiryDate)
-  if (isNaN(expiry.getTime())) return null
-  const now = new Date()
-  now.setHours(0, 0, 0, 0)
-  expiry.setHours(0, 0, 0, 0)
-  if (expiry <= now) return 'expired'
-  const soon = new Date(now)
-  soon.setDate(soon.getDate() + 7)
-  if (expiry <= soon) return 'expiring'
-  return null
-}
 
 function snapshotItemForDirtyCheck(item: VaultItem | null) {
   if (!item) return null
@@ -73,15 +60,9 @@ export function ItemDetailPane() {
   const [showPresetSave, setShowPresetSave] = useState(false)
   const genPopoverRef = useRef<HTMLDivElement>(null)
 
-  // Password confirm state
-  const [passwordConfirm, setPasswordConfirm] = useState('')
-  const [saveError, setSaveError] = useState('')
-
-  // Reset confirm when draft changes
-  useEffect(() => {
-    setPasswordConfirm(draft?.passwordMasked ?? '')
-    setSaveError('')
-  }, [draft?.id])
+  // Password confirm/save-error state keyed by item id to avoid effect-driven state resets.
+  const [passwordConfirmById, setPasswordConfirmById] = useState<Record<string, string>>({})
+  const [saveErrorById, setSaveErrorById] = useState<Record<string, string>>({})
 
   // Close popover on outside click
   useEffect(() => {
@@ -107,10 +88,10 @@ export function ItemDetailPane() {
     regenerate(next)
   }
 
-  function usePassword(password: string) {
+  function applyGeneratedPassword(password: string) {
     if (draft) {
       setDraftField('passwordMasked', password)
-      setPasswordConfirm(password)
+      setPasswordConfirmById((current) => ({ ...current, [draft.id]: password }))
     }
     setShowGenerator(false)
     setShowGenEditor(false)
@@ -126,7 +107,7 @@ export function ItemDetailPane() {
       symbols: preset.symbols,
     }
     const password = generatePassword(config)
-    usePassword(password)
+    applyGeneratedPassword(password)
   }
 
   async function handleSavePreset() {
@@ -146,22 +127,28 @@ export function ItemDetailPane() {
   }
 
   async function handleSave() {
-    setSaveError('')
+    if (draft) {
+      setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+    }
     if (passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
-      setSaveError('Passwords do not match')
+      setSaveErrorById((current) => ({ ...current, [draft.id]: 'Passwords do not match' }))
       return false
     }
     try {
       await saveCurrentItem()
       return true
     } catch {
-      setSaveError('Failed to save item')
+      if (draft) {
+        setSaveErrorById((current) => ({ ...current, [draft.id]: 'Failed to save item' }))
+      }
       return false
     }
   }
 
+  const passwordConfirm = draft ? (passwordConfirmById[draft.id] ?? draft.passwordMasked ?? '') : ''
+  const saveError = draft ? (saveErrorById[draft.id] ?? '') : ''
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
-  const expiryStatus = draft ? getExpiryStatus(draft.passwordExpiryDate) : null
+  const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
   const hasUnsavedChanges = useMemo(() => {
     if (!draft || !selected) return false
     return JSON.stringify(snapshotItemForDirtyCheck(draft)) !== JSON.stringify(snapshotItemForDirtyCheck(selected))
@@ -344,7 +331,7 @@ export function ItemDetailPane() {
                           <button className="ghost" onClick={() => regenerate(genConfig)}>
                             <RefreshCw size={13} /> Regenerate
                           </button>
-                          <button className="solid" onClick={() => usePassword(genPreview)}>
+                          <button className="solid" onClick={() => applyGeneratedPassword(genPreview)}>
                             Use Password
                           </button>
                         </div>
@@ -382,7 +369,12 @@ export function ItemDetailPane() {
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={passwordConfirm}
-                onChange={(e) => { setPasswordConfirm(e.target.value); setSaveError('') }}
+                onChange={(e) => {
+                  if (!draft) return
+                  const nextValue = e.target.value
+                  setPasswordConfirmById((current) => ({ ...current, [draft.id]: nextValue }))
+                  setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+                }}
                 placeholder="Retype password to verify"
               />
             </label>

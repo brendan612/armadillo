@@ -6,11 +6,12 @@ import { Topbar } from '../features/layout/components/Topbar'
 import { SidebarPane } from '../features/nav/components/SidebarPane'
 import { ItemListPane } from '../features/items/components/ItemListPane'
 import { ItemDetailPane } from '../features/items/components/ItemDetailPane'
+import { HomePane } from '../features/home/components/HomePane'
 import { FolderContextMenu } from '../features/nav/components/FolderContextMenu'
 import { TreeContextMenu } from '../features/nav/components/TreeContextMenu'
 import { ItemContextMenu } from '../features/items/components/ItemContextMenu'
 import { EditFolderModal } from '../features/folders/components/EditFolderModal'
-import { SettingsModal } from '../features/settings/components/SettingsModal'
+import { SettingsPage } from '../features/settings/components/SettingsPage'
 import { MobileNav } from '../features/layout/components/MobileNav'
 
 const PULL_TO_REFRESH_THRESHOLD_PX = 88
@@ -39,14 +40,16 @@ function findScrollableAncestor(target: EventTarget | null): HTMLElement | null 
 
 export function AppShell() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { expiryAlerts, expiryAlertsDismissed, syncState } = useVaultAppState()
-  const { importFileInputRef, googlePasswordImportInputRef } = useVaultAppRefs()
-  const { onImportFileSelected, onGooglePasswordCsvSelected, dismissExpiryAlerts, refreshVaultFromCloudNow } = useVaultAppActions()
+  const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, showSettings } = useVaultAppState()
+  const { importFileInputRef, googlePasswordImportInputRef, keepassImportInputRef } = useVaultAppRefs()
+  const { onImportFileSelected, onGooglePasswordCsvSelected, onKeePassCsvSelected, dismissExpiryAlerts, refreshVaultFromCloudNow } = useVaultAppActions()
   const pullRefreshRef = useRef<PullRefreshGesture | null>(null)
 
   const expiredCount = expiryAlerts.filter((a) => a.status === 'expired').length
   const expiringCount = expiryAlerts.filter((a) => a.status === 'expiring').length
   const showExpiryBar = expiryAlerts.length > 0 && !expiryAlertsDismissed
+  const showHomePane = selectedNode === 'home'
+  const showDetailPane = !showHomePane
 
   function resetPullRefreshGesture() {
     pullRefreshRef.current = null
@@ -115,24 +118,27 @@ export function AppShell() {
         </div>
       )}
 
-      <main
-        className="workspace density-compact"
-        onTouchStart={effectivePlatform === 'mobile' ? handleWorkspaceTouchStart : undefined}
-        onTouchMove={effectivePlatform === 'mobile' ? handleWorkspaceTouchMove : undefined}
-        onTouchEnd={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
-        onTouchCancel={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
-      >
-        <SidebarPane />
-        <ItemListPane />
-        <ItemDetailPane />
-      </main>
+      {!showSettings && (
+        <main
+          className={`workspace density-compact ${showHomePane ? 'workspace-home' : ''}`}
+          onTouchStart={effectivePlatform === 'mobile' ? handleWorkspaceTouchStart : undefined}
+          onTouchMove={effectivePlatform === 'mobile' ? handleWorkspaceTouchMove : undefined}
+          onTouchEnd={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
+          onTouchCancel={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
+        >
+          <SidebarPane />
+          {showHomePane ? <HomePane /> : <ItemListPane />}
+          {showDetailPane && <ItemDetailPane />}
+        </main>
+      )}
+      <SettingsPage />
 
       <FolderContextMenu />
       <TreeContextMenu />
       <ItemContextMenu />
       <EditFolderModal />
 
-      <MobileNav />
+      {!showSettings && <MobileNav />}
 
       <input
         ref={importFileInputRef}
@@ -148,8 +154,13 @@ export function AppShell() {
         style={{ display: 'none' }}
         onChange={(event) => void onGooglePasswordCsvSelected(event)}
       />
-
-      <SettingsModal />
+      <input
+        ref={keepassImportInputRef}
+        type="file"
+        accept=".csv,.xml,text/csv,text/xml,application/xml"
+        style={{ display: 'none' }}
+        onChange={(event) => void onKeePassCsvSelected(event)}
+      />
     </div>
   )
 }

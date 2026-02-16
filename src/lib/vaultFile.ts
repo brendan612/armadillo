@@ -18,6 +18,7 @@ import {
   type VaultSession,
   type VaultTrashEntry,
 } from '../types/vault'
+import { defaultThemeSettings, normalizeThemeSettings } from '../shared/utils/theme'
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
 const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
@@ -44,6 +45,7 @@ export function defaultVaultSettings(): VaultSettings {
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
+    theme: defaultThemeSettings(),
   }
 }
 
@@ -108,6 +110,20 @@ function normalizeTagValues(tagsInput: unknown, legacyCategoryInput: unknown) {
   return Array.from(deduped.values())
 }
 
+function normalizeLinkedAndroidPackages(input: unknown) {
+  if (!Array.isArray(input)) return []
+  const deduped = new Set<string>()
+  const values: string[] = []
+  for (const value of input) {
+    if (typeof value !== 'string') continue
+    const trimmed = value.trim().toLowerCase()
+    if (!trimmed || deduped.has(trimmed)) continue
+    deduped.add(trimmed)
+    values.push(trimmed)
+  }
+  return values
+}
+
 function normalizeAutoFolderCustomMappings(input: unknown): AutoFolderCustomMapping[] {
   if (!Array.isArray(input)) return []
   const deduped = new Set<string>()
@@ -157,6 +173,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
       username: typeof source.username === 'string' ? source.username : '',
       passwordMasked: typeof source.passwordMasked === 'string' ? source.passwordMasked : '',
       urls: Array.isArray(source.urls) ? source.urls.filter((v): v is string => typeof v === 'string') : [],
+      linkedAndroidPackages: normalizeLinkedAndroidPackages(source.linkedAndroidPackages),
       folder: typeof source.folder === 'string' ? source.folder : '',
       folderId: typeof source.folderId === 'string' ? source.folderId : null,
       tags: normalizeTagValues(source.tags, source.category),
@@ -240,6 +257,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     autoFolderExcludedItemIds: normalizeStringArray(settingsSource.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: normalizeStringArray(settingsSource.autoFolderLockedFolderPaths),
     autoFolderCustomMappings: normalizeAutoFolderCustomMappings(settingsSource.autoFolderCustomMappings),
+    theme: normalizeThemeSettings(settingsSource.theme),
   }
 
   const trashSource = Array.isArray(base.trash) ? base.trash : []

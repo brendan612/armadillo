@@ -1,5 +1,14 @@
 import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
 
+export type Role = 'owner' | 'admin' | 'editor' | 'viewer'
+
+export type AuthContext = {
+  subject: string
+  orgId: string
+  roles: Role[]
+  sessionId: string
+}
+
 export type PullResponse = {
   snapshot: ArmadilloVaultFile | null
   ownerSource: SyncIdentitySource
@@ -22,6 +31,15 @@ export type CloudAuthStatus = {
   email?: string | null
   name?: string | null
   tokenIdentifier?: string | null
+  authContext?: AuthContext | null
+}
+
+export type EntitlementFetchResponse = {
+  ok: boolean
+  token: string | null
+  reason: string
+  expiresAt?: string | null
+  fetchedAt?: string
 }
 
 export type VaultUpdateEvent = {
@@ -36,13 +54,42 @@ export type VaultUpdateSubscriptionOptions = {
   onError?: (error: unknown) => void
 }
 
+export type AuditEvent = {
+  id: string
+  orgId: string
+  actorSubject: string
+  action: string
+  target: string
+  createdAt: string
+  metadata?: Record<string, unknown>
+}
+
+export type AdminMember = {
+  memberId: string
+  role: Role
+  addedAt: string
+}
+
+export type EntitlementStatusResponse = {
+  ok: boolean
+  token: string | null
+  reason: string
+  expiresAt: string | null
+  fetchedAt: string
+}
+
 export type SyncProviderClient = {
   configured: () => boolean
   setAuthToken: (token: string | null) => void
+  setAuthContext?: (context: AuthContext | null) => void
   pullRemoteVaultByOwner: () => Promise<PullResponse | null>
   listRemoteVaultsByOwner: () => Promise<ListByOwnerResponse | null>
   pullRemoteSnapshot: (vaultId: string) => Promise<PullResponse | null>
   pushRemoteSnapshot: (file: ArmadilloVaultFile) => Promise<PushResponse | null>
   getCloudAuthStatus: () => Promise<CloudAuthStatus | null>
+  fetchEntitlementToken?: () => Promise<EntitlementFetchResponse | null>
   subscribeToVaultUpdates?: (vaultId: string, options: VaultUpdateSubscriptionOptions) => (() => void)
+  listOrgAuditEvents?: (orgId: string) => Promise<AuditEvent[]>
+  addOrgMember?: (orgId: string, member: { memberId: string; role: Role }) => Promise<AdminMember | null>
+  removeOrgMember?: (orgId: string, memberId: string) => Promise<boolean>
 }

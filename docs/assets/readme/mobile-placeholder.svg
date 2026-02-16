@@ -1,0 +1,6 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200" role="img" aria-label="Mobile screenshot placeholder">
+  <rect width="900" height="1200" fill="#0f172a"/>
+  <rect x="210" y="70" width="480" height="1060" rx="42" fill="#111827" stroke="#334155" stroke-width="4"/>
+  <text x="250" y="180" fill="#e5e7eb" font-size="44" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Mobile Placeholder</text>
+  <text x="250" y="245" fill="#94a3b8" font-size="24" font-family="Segoe UI, Arial, sans-serif">Insert Android UI screenshot</text>
+</svg>

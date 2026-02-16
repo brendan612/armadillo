@@ -1,4 +1,5 @@
 import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
+import type { AuthContext, EntitlementFetchResponse } from './syncTypes'
 import { getOwnerHint } from './owner'
 
 function normalizeBaseUrl(url: string) {
@@ -21,6 +22,7 @@ function resolveHttpBaseUrl() {
 
 const baseUrl = resolveHttpBaseUrl()
 let authToken: string | null = null
+let authContext: AuthContext | null = null
 
 type PullResponse = {
   snapshot: ArmadilloVaultFile | null
@@ -44,38 +46,65 @@ export type CloudAuthStatus = {
   email?: string | null
   name?: string | null
   tokenIdentifier?: string | null
+  authContext?: AuthContext | null
 }
 
 function hasConvexConfig() {
   return Boolean(baseUrl)
 }
 
+function buildHeaders(contentType = true) {
+  const headers: Record<string, string> = {
+    'x-armadillo-owner': getOwnerHint(),
+  }
+
+  if (contentType) {
+    headers['Content-Type'] = 'application/json'
+  }
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`
+  }
+  if (authContext?.orgId) {
+    headers['x-armadillo-org'] = authContext.orgId
+  }
+  if (authContext?.sessionId) {
+    headers['x-armadillo-session'] = authContext.sessionId
+  }
+
+  return headers
+}
+
 export function setConvexAuthToken(token: string | null) {
   authToken = token
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'x-armadillo-owner': getOwnerHint(),
-  }
+export function setConvexAuthContext(context: AuthContext | null) {
+  authContext = context
+}
 
-  if (authToken) {
-    headers.Authorization = `Bearer ${authToken}`
-  }
-
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  })
-
+async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`Convex request failed (${response.status}): ${errorText}`)
+    throw new Error(`${context} failed (${response.status}): ${errorText}`)
   }
-
   return (await response.json()) as T
+}
+
+async function postJson<T>(path: string, body: unknown, context: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: buildHeaders(true),
+    body: JSON.stringify(body),
+  })
+  return parseJsonResponse<T>(response, context)
+}
+
+async function getJson<T>(path: string, context: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'GET',
+    headers: buildHeaders(false),
+  })
+  return parseJsonResponse<T>(response, context)
 }
 
 export function convexConfigured() {
@@ -86,24 +115,33 @@ export async function pullRemoteVaultByOwner(): Promise<PullResponse | null> {
   if (!hasConvexConfig()) {
     return null
   }
-
-  return postJson<PullResponse>('/api/sync/pull-by-owner', {})
+  try {
+    return await postJson<PullResponse>('/api/v2/sync/pull-by-owner', {}, 'Convex pull-by-owner')
+  } catch {
+    return postJson<PullResponse>('/api/sync/pull-by-owner', {}, 'Convex pull-by-owner (legacy)')
+  }
 }
 
 export async function listRemoteVaultsByOwner(): Promise<ListByOwnerResponse | null> {
   if (!hasConvexConfig()) {
     return null
   }
-
-  return postJson<ListByOwnerResponse>('/api/sync/list-by-owner', {})
+  try {
+    return await postJson<ListByOwnerResponse>('/api/v2/sync/list-by-owner', {}, 'Convex list-by-owner')
+  } catch {
+    return postJson<ListByOwnerResponse>('/api/sync/list-by-owner', {}, 'Convex list-by-owner (legacy)')
+  }
 }
 
 export async function pullRemoteSnapshot(vaultId: string): Promise<PullResponse | null> {
   if (!hasConvexConfig()) {
     return null
   }
-
-  return postJson<PullResponse>('/api/sync/pull', { vaultId })
+  try {
+    return await postJson<PullResponse>(`/api/v2/sync/vaults/${encodeURIComponent(vaultId)}/pull`, {}, 'Convex pull')
+  } catch {
+    return postJson<PullResponse>('/api/sync/pull', { vaultId }, 'Convex pull (legacy)')
+  }
 }
 
 export async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<PushResponse | null> {
@@ -111,12 +149,18 @@ export async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<Push
     return null
   }
 
-  return postJson<PushResponse>('/api/sync/push', {
+  const payload = {
     vaultId: file.vaultId,
     revision: file.revision,
     encryptedFile: JSON.stringify(file),
     updatedAt: file.updatedAt,
-  })
+  }
+
+  try {
+    return await postJson<PushResponse>(`/api/v2/sync/vaults/${encodeURIComponent(file.vaultId)}/push`, payload, 'Convex push')
+  } catch {
+    return postJson<PushResponse>('/api/sync/push', payload, 'Convex push (legacy)')
+  }
 }
 
 export async function getCloudAuthStatus(): Promise<CloudAuthStatus | null> {
@@ -124,5 +168,31 @@ export async function getCloudAuthStatus(): Promise<CloudAuthStatus | null> {
     return null
   }
 
-  return postJson<CloudAuthStatus>('/api/auth/status', {})
+  let status: CloudAuthStatus
+  try {
+    status = await postJson<CloudAuthStatus>('/api/v2/auth/status', {}, 'Convex auth status')
+  } catch {
+    status = await postJson<CloudAuthStatus>('/api/auth/status', {}, 'Convex auth status (legacy)')
+  }
+
+  if (status?.authContext) {
+    authContext = status.authContext
+  }
+  return status
+}
+
+export async function getEntitlementStatus(): Promise<EntitlementFetchResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+  try {
+    return await getJson<EntitlementFetchResponse>('/api/v2/entitlements/me', 'Convex entitlement')
+  } catch {
+    return {
+      ok: false,
+      token: null,
+      reason: 'Entitlement endpoint unavailable',
+      fetchedAt: new Date().toISOString(),
+    }
+  }
 }

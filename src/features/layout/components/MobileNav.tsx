@@ -1,18 +1,26 @@
-import { FolderOpen, KeyRound, PenSquare } from 'lucide-react'
+import { House, KeyRound, PenSquare } from 'lucide-react'
 import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function MobileNav() {
-  const { mobileStep } = useVaultAppState()
-  const { setMobileStep } = useVaultAppActions()
+  const { mobileStep, selectedNode } = useVaultAppState()
+  const { setMobileStep, setSelectedNode, openHome } = useVaultAppActions()
 
   return (
     <>
       <div className="mobile-nav">
-        <button className={mobileStep === 'nav' ? 'active' : ''} onClick={() => setMobileStep('nav')}>
-          <FolderOpen size={20} strokeWidth={1.8} aria-hidden="true" />
-          Menu
+        <button className={mobileStep === 'home' ? 'active' : ''} onClick={openHome}>
+          <House size={20} strokeWidth={1.8} aria-hidden="true" />
+          Home
         </button>
-        <button className={mobileStep === 'list' ? 'active' : ''} onClick={() => setMobileStep('list')}>
+        <button
+          className={mobileStep === 'list' ? 'active' : ''}
+          onClick={() => {
+            if (selectedNode === 'home') {
+              setSelectedNode('all')
+            }
+            setMobileStep('list')
+          }}
+        >
           <KeyRound size={20} strokeWidth={1.8} aria-hidden="true" />
           Vault
         </button>
