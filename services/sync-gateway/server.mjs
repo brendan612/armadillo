@@ -15,6 +15,9 @@ const SESSION_TOKEN_SECRET = process.env.SYNC_SESSION_TOKEN_SECRET || STREAM_TOK
 const STREAM_TOKEN_TTL_MS = Number(process.env.SYNC_STREAM_TOKEN_TTL_MS || 2 * 60 * 1000)
 const SSE_HEARTBEAT_MS = Number(process.env.SYNC_SSE_HEARTBEAT_MS || 20_000)
 const MAX_REQUEST_BYTES = Number(process.env.SYNC_MAX_REQUEST_BYTES || 1024 * 1024)
+const MAX_BLOB_FILE_BYTES = Number(process.env.SYNC_MAX_BLOB_FILE_BYTES || 20 * 1024 * 1024)
+const MAX_BLOB_TOTAL_BYTES = Number(process.env.SYNC_MAX_BLOB_TOTAL_BYTES || 2 * 1024 * 1024 * 1024)
+const MAX_BLOB_REQUEST_BYTES = Number(process.env.SYNC_MAX_BLOB_REQUEST_BYTES || 32 * 1024 * 1024)
 const RATE_LIMIT_WINDOW_MS = Number(process.env.SYNC_RATE_LIMIT_WINDOW_MS || 60_000)
 const RATE_LIMIT_MAX = Number(process.env.SYNC_RATE_LIMIT_MAX || 300)
 const ENTITLEMENT_TOKEN = (process.env.SYNC_ENTITLEMENT_TOKEN || '').trim()
@@ -33,6 +36,9 @@ function normalizeOwnerHint(v) { return String(v || '').trim().toLowerCase().rep
 function normalizeToken(v) { return String(v || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 256) }
 function parseEncryptedFile(v) { try { return JSON.parse(v) } catch { return null } }
 function makeAudit(orgId, actorSubject, action, target, metadata = {}) { return { id: `audit_${crypto.randomUUID()}`, orgId, actorSubject, action, target, metadata, createdAt: nowIso() } }
+function normalizeBlobMime(value) { return typeof value === 'string' && value.trim() ? value.trim().slice(0, 256) : 'application/octet-stream' }
+function normalizeBlobFileName(value) { return typeof value === 'string' && value.trim() ? value.trim().slice(0, 512) : 'file.bin' }
+function parseBytes(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0 }
 
 function signPayload(payload, secret) {
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url')
@@ -97,8 +103,8 @@ function resolveLegacyOwner(req, url) {
 
 function corsHeaders(req) {
   const origin = String(req.headers.origin || '')
-  if (!origin) return { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner, x-armadillo-org, x-armadillo-session, idempotency-key', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', Vary: 'Origin' }
-  if (corsOrigins.includes('*') || corsOrigins.includes(origin)) return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner, x-armadillo-org, x-armadillo-session, idempotency-key', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', Vary: 'Origin' }
+  if (!origin) return { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner, x-armadillo-org, x-armadillo-session, idempotency-key', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', Vary: 'Origin' }
+  if (corsOrigins.includes('*') || corsOrigins.includes(origin)) return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner, x-armadillo-org, x-armadillo-session, idempotency-key', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', Vary: 'Origin' }
   return null
 }
 
@@ -107,20 +113,37 @@ function text(req, res, status, payload, extraHeaders = {}) { const cors = corsH
 
 function enforceRate(req, suffix = '') { const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim(); const key = `${ip}:${suffix}`; const now = Date.now(); const row = rateRows.get(key); if (!row || now > row.resetAt) { rateRows.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS }); return true } row.count += 1; if (row.count > RATE_LIMIT_MAX) { metrics.rateLimitedTotal += 1; return false } return true }
 
-function readJsonBody(req) { return new Promise((resolve, reject) => { let total = 0; const chunks = []; req.on('data', (c) => { total += c.length; if (total > MAX_REQUEST_BYTES) { reject(new Error(`Request body exceeded ${MAX_REQUEST_BYTES} bytes`)); req.destroy(); return } chunks.push(c) }); req.on('end', () => { const raw = Buffer.concat(chunks).toString('utf8'); if (!raw) { resolve({}); return } try { resolve(JSON.parse(raw)) } catch { reject(new Error('Invalid JSON body')) } }); req.on('error', reject) }) }
+function readJsonBody(req, maxBytes = MAX_REQUEST_BYTES) { return new Promise((resolve, reject) => { let total = 0; const chunks = []; req.on('data', (c) => { total += c.length; if (total > maxBytes) { reject(new Error(`Request body exceeded ${maxBytes} bytes`)); req.destroy(); return } chunks.push(c) }); req.on('end', () => { const raw = Buffer.concat(chunks).toString('utf8'); if (!raw) { resolve({}); return } try { resolve(JSON.parse(raw)) } catch { reject(new Error('Invalid JSON body')) } }); req.on('error', reject) }) }
 
 function readState() {
   try {
-    if (!fs.existsSync(DATA_FILE)) return { snapshotsByOwner: {}, snapshotsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {} }
+    if (!fs.existsSync(DATA_FILE)) return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {} }
     const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
-    return { snapshotsByOwner: parsed?.snapshotsByOwner && typeof parsed.snapshotsByOwner === 'object' ? parsed.snapshotsByOwner : {}, snapshotsByOrg: parsed?.snapshotsByOrg && typeof parsed.snapshotsByOrg === 'object' ? parsed.snapshotsByOrg : {}, orgs: parsed?.orgs && typeof parsed.orgs === 'object' ? parsed.orgs : {}, auditByOrg: parsed?.auditByOrg && typeof parsed.auditByOrg === 'object' ? parsed.auditByOrg : {}, idempotency: parsed?.idempotency && typeof parsed.idempotency === 'object' ? parsed.idempotency : {} }
+    return { snapshotsByOwner: parsed?.snapshotsByOwner && typeof parsed.snapshotsByOwner === 'object' ? parsed.snapshotsByOwner : {}, snapshotsByOrg: parsed?.snapshotsByOrg && typeof parsed.snapshotsByOrg === 'object' ? parsed.snapshotsByOrg : {}, blobsByOrg: parsed?.blobsByOrg && typeof parsed.blobsByOrg === 'object' ? parsed.blobsByOrg : {}, orgs: parsed?.orgs && typeof parsed.orgs === 'object' ? parsed.orgs : {}, auditByOrg: parsed?.auditByOrg && typeof parsed.auditByOrg === 'object' ? parsed.auditByOrg : {}, idempotency: parsed?.idempotency && typeof parsed.idempotency === 'object' ? parsed.idempotency : {} }
   } catch {
-    return { snapshotsByOwner: {}, snapshotsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {} }
+    return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {} }
   }
 }
 
 function writeState(state) { fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true }); fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf8') }
 const state = readState()
+
+function listOrgVaultBlobs(orgId, vaultId) {
+  const byVault = state.blobsByOrg?.[orgId]?.[vaultId]
+  if (!byVault || typeof byVault !== 'object') return []
+  return Object.values(byVault)
+}
+
+function computeOrgVaultBlobUsageBytes(orgId, vaultId, excludingBlobId = '') {
+  const rows = listOrgVaultBlobs(orgId, vaultId)
+  let total = 0
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    if (excludingBlobId && row.blobId === excludingBlobId) continue
+    total += parseBytes(row.sizeBytes)
+  }
+  return total
+}
 
 function ensureOrg(context) {
   if (state.orgs[context.orgId]) {
@@ -141,7 +164,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   if (!enforceRate(req, url.pathname)) { json(req, res, 429, { error: 'Rate limit exceeded' }); return }
   if (req.method === 'OPTIONS') { const cors = corsHeaders(req); if (!cors) { json(req, res, 403, { error: 'Origin not allowed' }); return } res.writeHead(204, cors); res.end(); return }
-  if (req.method !== 'POST' && req.method !== 'GET' && req.method !== 'DELETE') { json(req, res, 405, { error: 'Method not allowed' }); return }
+  if (req.method !== 'POST' && req.method !== 'GET' && req.method !== 'PUT' && req.method !== 'DELETE') { json(req, res, 405, { error: 'Method not allowed' }); return }
 
   try {
     if (url.pathname === '/healthz' && req.method === 'GET') { json(req, res, 200, { ok: true, mode: ENTERPRISE_MODE ? 'enterprise' : 'standard', storage: 'file', now: nowIso() }); return }
@@ -164,6 +187,74 @@ const server = createServer(async (req, res) => {
 
     const pushV2 = url.pathname.match(/^\/v2\/vaults\/([^/]+)\/push$/)
     if (pushV2 && req.method === 'POST') { const c = resolveContext(req, url, ENTERPRISE_MODE); if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return } const role = ensureOrg(c); if (!hasRole([role], 'editor')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return } const vaultId = decodeURIComponent(pushV2[1]); const body = await readJsonBody(req); const revision = Number(body.revision); const encryptedFile = typeof body.encryptedFile === 'string' ? body.encryptedFile : ''; const updatedAt = typeof body.updatedAt === 'string' ? body.updatedAt : ''; if (!Number.isFinite(revision) || !encryptedFile || !updatedAt) { json(req, res, 400, { error: 'revision, encryptedFile, and updatedAt are required' }); return } const idempotencyKey = String(req.headers['idempotency-key'] || '').trim(); if (idempotencyKey && state.idempotency[idempotencyKey]) { json(req, res, 200, state.idempotency[idempotencyKey]); return } state.snapshotsByOrg[c.orgId] = state.snapshotsByOrg[c.orgId] || {}; const existing = state.snapshotsByOrg[c.orgId][vaultId]; const accepted = !existing || revision > Number(existing.revision || 0); if (accepted) { state.snapshotsByOrg[c.orgId][vaultId] = { orgId: c.orgId, vaultId, revision, encryptedFile, updatedAt, updatedBy: c.subject }; publishVaultUpdate(c.orgId, vaultId, revision, updatedAt) } else { metrics.pushConflictsTotal += 1 } const payload = { ok: true, accepted, ownerSource: c.authenticated ? 'auth' : 'anonymous' }; if (idempotencyKey) state.idempotency[idempotencyKey] = payload; appendAudit(makeAudit(c.orgId, c.subject, 'vault.push', vaultId, { revision, accepted })); writeState(state); json(req, res, 200, payload); return }
+
+    const blobV2 = url.pathname.match(/^\/v2\/vaults\/([^/]+)\/blobs\/([^/]+)$/)
+    if (blobV2 && req.method === 'PUT') {
+      const c = resolveContext(req, url, ENTERPRISE_MODE)
+      if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return }
+      const role = ensureOrg(c)
+      if (!hasRole([role], 'editor')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const vaultId = decodeURIComponent(blobV2[1])
+      const blobId = decodeURIComponent(blobV2[2])
+      const body = await readJsonBody(req, MAX_BLOB_REQUEST_BYTES)
+      const nonce = typeof body.nonce === 'string' ? body.nonce : ''
+      const ciphertext = typeof body.ciphertext === 'string' ? body.ciphertext : ''
+      const sizeBytes = parseBytes(body.sizeBytes)
+      const sha256 = typeof body.sha256 === 'string' ? body.sha256 : ''
+      const updatedAt = typeof body.updatedAt === 'string' && body.updatedAt ? body.updatedAt : nowIso()
+      if (!blobId || !nonce || !ciphertext || !sha256 || sizeBytes <= 0) { json(req, res, 400, { error: 'blobId, nonce, ciphertext, sizeBytes, and sha256 are required' }); return }
+      if (sizeBytes > MAX_BLOB_FILE_BYTES) { json(req, res, 413, { error: `Blob exceeds file limit of ${MAX_BLOB_FILE_BYTES} bytes` }); return }
+      const usageWithoutCurrent = computeOrgVaultBlobUsageBytes(c.orgId, vaultId, blobId)
+      if (usageWithoutCurrent + sizeBytes > MAX_BLOB_TOTAL_BYTES) { json(req, res, 413, { error: `Vault blob quota exceeded (${MAX_BLOB_TOTAL_BYTES} bytes)` }); return }
+      state.blobsByOrg[c.orgId] = state.blobsByOrg[c.orgId] || {}
+      state.blobsByOrg[c.orgId][vaultId] = state.blobsByOrg[c.orgId][vaultId] || {}
+      state.blobsByOrg[c.orgId][vaultId][blobId] = {
+        orgId: c.orgId,
+        vaultId,
+        blobId,
+        nonce,
+        ciphertext,
+        sizeBytes,
+        sha256,
+        mimeType: normalizeBlobMime(body.mimeType),
+        fileName: normalizeBlobFileName(body.fileName),
+        updatedAt,
+        updatedBy: c.subject,
+      }
+      writeState(state)
+      appendAudit(makeAudit(c.orgId, c.subject, 'vault.blob.put', `${vaultId}/${blobId}`, { sizeBytes }))
+      json(req, res, 200, { ok: true, accepted: true, ownerSource: c.authenticated ? 'auth' : 'anonymous', usedBytes: usageWithoutCurrent + sizeBytes })
+      return
+    }
+    if (blobV2 && req.method === 'GET') {
+      const c = resolveContext(req, url, ENTERPRISE_MODE)
+      if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return }
+      const role = ensureOrg(c)
+      if (!hasRole([role], 'viewer')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const vaultId = decodeURIComponent(blobV2[1])
+      const blobId = decodeURIComponent(blobV2[2])
+      const row = state.blobsByOrg?.[c.orgId]?.[vaultId]?.[blobId] || null
+      appendAudit(makeAudit(c.orgId, c.subject, 'vault.blob.get', `${vaultId}/${blobId}`))
+      json(req, res, 200, { blob: row, ownerSource: c.authenticated ? 'auth' : 'anonymous' })
+      return
+    }
+    if (blobV2 && req.method === 'DELETE') {
+      const c = resolveContext(req, url, ENTERPRISE_MODE)
+      if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return }
+      const role = ensureOrg(c)
+      if (!hasRole([role], 'editor')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const vaultId = decodeURIComponent(blobV2[1])
+      const blobId = decodeURIComponent(blobV2[2])
+      const bucket = state.blobsByOrg?.[c.orgId]?.[vaultId]
+      const existed = Boolean(bucket?.[blobId])
+      if (bucket?.[blobId]) delete bucket[blobId]
+      if (bucket && Object.keys(bucket).length === 0) delete state.blobsByOrg[c.orgId][vaultId]
+      const usedBytes = computeOrgVaultBlobUsageBytes(c.orgId, vaultId)
+      writeState(state)
+      appendAudit(makeAudit(c.orgId, c.subject, 'vault.blob.delete', `${vaultId}/${blobId}`))
+      json(req, res, 200, { ok: true, deleted: existed, ownerSource: c.authenticated ? 'auth' : 'anonymous', usedBytes })
+      return
+    }
 
     const auditV2 = url.pathname.match(/^\/v2\/orgs\/([^/]+)\/audit$/)
     if (auditV2 && req.method === 'GET') { const orgId = decodeURIComponent(auditV2[1]); const c = resolveContext(req, url, true); if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return } if (c.orgId !== orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return } const role = state.orgs?.[orgId]?.members?.[c.subject]?.role || null; if (!role || !hasRole([role], 'admin')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return } json(req, res, 200, { events: [...(state.auditByOrg[orgId] || [])].sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1)).slice(0, 500) }); return }

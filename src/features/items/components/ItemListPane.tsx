@@ -16,6 +16,7 @@ type ItemListRowProps = {
   item: VaultItem
   isActive: boolean
   folderLabel: string
+  isLocalOnly: boolean
   onSelectItem: (itemId: string) => void
   onOpenItemContextMenu: (itemId: string, x: number, y: number) => void
   onTouchStartItem: (itemId: string, x: number, y: number) => void
@@ -30,6 +31,7 @@ const ItemListRow = memo(function ItemListRow({
   item,
   isActive,
   folderLabel,
+  isLocalOnly,
   onSelectItem,
   onOpenItemContextMenu,
   onTouchStartItem,
@@ -69,6 +71,7 @@ const ItemListRow = memo(function ItemListRow({
       <div className="item-info">
         <div className="item-inline-top">
           <strong className="item-title">{item.title || 'Untitled'}</strong>
+          {isLocalOnly && <span className="item-local-badge">Local only</span>}
         </div>
         {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
         <p className="item-secondary">
@@ -129,12 +132,13 @@ const ItemListRow = memo(function ItemListRow({
 }, (previous, next) =>
   previous.item === next.item &&
   previous.isActive === next.isActive &&
-  previous.folderLabel === next.folderLabel,
+  previous.folderLabel === next.folderLabel &&
+  previous.isLocalOnly === next.isLocalOnly,
 )
 
 export function ItemListPane() {
-  const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items } = useVaultAppState()
-  const { filtered, folderPathById, effectivePlatform } = useVaultAppDerived()
+  const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items, syncProvider } = useVaultAppState()
+  const { filtered, folderPathById, effectivePlatform, hasCapability } = useVaultAppDerived()
   const folderLongPressTimerRef = useRef<number | null>(null)
   const {
     setQuery,
@@ -192,6 +196,9 @@ export function ItemListPane() {
     void autofillItem(item)
   }, [autofillItem])
 
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+
   const itemRows = useMemo(() => filtered.map((item) => {
     const folderLabel = item.folderId ? (folderPathById.get(item.folderId) ?? item.folder) : 'Unfiled'
     return (
@@ -200,6 +207,7 @@ export function ItemListPane() {
         item={item}
         isActive={item.id === selectedId}
         folderLabel={folderLabel}
+        isLocalOnly={canManageCloudSyncExclusions && item.excludeFromCloudSync === true}
         onSelectItem={handleSelectItem}
         onOpenItemContextMenu={handleOpenItemContextMenu}
         onTouchStartItem={handleTouchStartItem}
@@ -222,6 +230,7 @@ export function ItemListPane() {
     handleCopyUsername,
     handleCopyPassword,
     handleAutofillItem,
+    canManageCloudSyncExclusions,
   ])
 
   const noCredentialsInVault = items.length === 0

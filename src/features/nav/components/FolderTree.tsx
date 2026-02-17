@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Folder } from 'lucide-react'
 import type { VaultFolder } from '../../../types/vault'
-import { useVaultAppActions, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 type FolderTreeProps = {
   parentId: string | null
@@ -22,7 +22,8 @@ function isTouchPointer() {
 }
 
 export function FolderTree({ parentId }: FolderTreeProps) {
-  const { items, folders, selectedNode, folderInlineEditor } = useVaultAppState()
+  const { items, storageItems, workspaceSection, folders, selectedNode, folderInlineEditor, syncProvider } = useVaultAppState()
+  const { hasCapability } = useVaultAppDerived()
   const { folderLongPressTimerRef } = useVaultAppRefs()
   const {
     getChildrenFolders,
@@ -45,6 +46,8 @@ export function FolderTree({ parentId }: FolderTreeProps) {
   const suppressClickRef = useRef(false)
   const touching = useMemo(() => isTouchPointer(), [])
   const activeDrag = pointerDrag ?? touchDrag
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
   const inlineEditorKey = folderInlineEditor
     ? `${folderInlineEditor.mode}:${folderInlineEditor.mode === 'rename' ? folderInlineEditor.folderId : folderInlineEditor.parentId}`
@@ -269,7 +272,8 @@ export function FolderTree({ parentId }: FolderTreeProps) {
           const nodeKey = `folder:${folder.id}` as const
           const childCount = getChildrenFolders(folder.id).length
           const isCollapsed = collapsedIds.has(folder.id)
-          const directCount = items.filter((item) => item.folderId === folder.id).length
+          const sourceItems = workspaceSection === 'storage' ? storageItems : items
+          const directCount = sourceItems.filter((item) => item.folderId === folder.id).length
           const isEditing = folderInlineEditor?.mode === 'rename' && folderInlineEditor.folderId === folder.id
           const isDragOverInside = dragOverTarget === `inside:${folder.id}`
           const isDragOverAfter = dragOverTarget === `after:${folder.id}`
@@ -394,7 +398,10 @@ export function FolderTree({ parentId }: FolderTreeProps) {
                         }}
                       />
                     ) : (
-                      folder.name
+                      <>
+                        {folder.name}
+                        {canManageCloudSyncExclusions && folder.excludeFromCloudSync && <span className="folder-local-badge">Local</span>}
+                      </>
                     )}
                   </span>
                   <span className="folder-tree-count">{directCount}</span>

@@ -25,6 +25,37 @@ export type PushResponse = {
   ownerSource: SyncIdentitySource
 }
 
+export type RemoteBlobRecord = {
+  blobId: string
+  vaultId: string
+  nonce: string
+  ciphertext: string
+  sizeBytes: number
+  sha256: string
+  mimeType: string
+  fileName: string
+  updatedAt: string
+}
+
+export type BlobPutResponse = {
+  ok: boolean
+  accepted: boolean
+  ownerSource: SyncIdentitySource
+  usedBytes: number
+}
+
+export type BlobGetResponse = {
+  blob: RemoteBlobRecord | null
+  ownerSource: SyncIdentitySource
+}
+
+export type BlobDeleteResponse = {
+  ok: boolean
+  deleted: boolean
+  ownerSource: SyncIdentitySource
+  usedBytes: number
+}
+
 export type CloudAuthStatus = {
   authenticated: boolean
   subject?: string | null
@@ -86,6 +117,9 @@ export type SyncProviderClient = {
   listRemoteVaultsByOwner: () => Promise<ListByOwnerResponse | null>
   pullRemoteSnapshot: (vaultId: string) => Promise<PullResponse | null>
   pushRemoteSnapshot: (file: ArmadilloVaultFile) => Promise<PushResponse | null>
+  putRemoteBlob?: (vaultId: string, blob: RemoteBlobRecord) => Promise<BlobPutResponse | null>
+  getRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobGetResponse | null>
+  deleteRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobDeleteResponse | null>
   getCloudAuthStatus: () => Promise<CloudAuthStatus | null>
   fetchEntitlementToken?: () => Promise<EntitlementFetchResponse | null>
   subscribeToVaultUpdates?: (vaultId: string, options: VaultUpdateSubscriptionOptions) => (() => void)

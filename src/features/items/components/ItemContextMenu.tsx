@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
+  Cloud,
+  CloudOff,
   ExternalLink,
   KeyRound,
   UserRound,
@@ -7,10 +9,11 @@ import {
   CopyPlus,
   Trash2,
 } from 'lucide-react'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function ItemContextMenu() {
-  const { itemContextMenu, items } = useVaultAppState()
+  const { itemContextMenu, items, syncProvider } = useVaultAppState()
+  const { hasCapability } = useVaultAppDerived()
   const {
     setSelectedId,
     setMobileStep,
@@ -19,6 +22,7 @@ export function ItemContextMenu() {
     copyToClipboard,
     autofillItem,
     removeItemById,
+    setItemCloudSyncExcluded,
   } = useVaultAppActions()
 
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -48,6 +52,9 @@ export function ItemContextMenu() {
   if (!itemContextMenu) return null
 
   const item = items.find((row) => row.id === itemContextMenu.itemId)
+  const isLocalOnly = item?.excludeFromCloudSync === true
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
   function dismiss() {
     setItemContextMenu(null)
@@ -125,6 +132,19 @@ export function ItemContextMenu() {
         <ClipboardPaste className="ctx-menu-icon" />
         <span className="ctx-menu-label">Autofill</span>
       </button>
+
+      {canManageCloudSyncExclusions && (
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            void setItemCloudSyncExcluded(itemContextMenu.itemId, !isLocalOnly)
+            dismiss()
+          }}
+        >
+          {isLocalOnly ? <Cloud className="ctx-menu-icon" /> : <CloudOff className="ctx-menu-icon" />}
+          <span className="ctx-menu-label">{isLocalOnly ? 'Include in Cloud Sync' : 'Exclude from Cloud Sync'}</span>
+        </button>
+      )}
 
       <div className="ctx-menu-divider" />
 

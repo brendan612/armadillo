@@ -26,6 +26,9 @@ SYNC_STREAM_TOKEN_SECRET=<secret>
 SYNC_SESSION_TOKEN_SECRET=<secret>
 SYNC_STREAM_TOKEN_TTL_MS=120000
 SYNC_MAX_REQUEST_BYTES=1048576
+SYNC_MAX_BLOB_FILE_BYTES=20971520
+SYNC_MAX_BLOB_TOTAL_BYTES=2147483648
+SYNC_MAX_BLOB_REQUEST_BYTES=33554432
 SYNC_RATE_LIMIT_WINDOW_MS=60000
 SYNC_RATE_LIMIT_MAX=300
 SYNC_ENTITLEMENT_TOKEN=<signed-jwt>
@@ -53,6 +56,9 @@ SYNC_DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db> npm run sync:selfhos
 - `POST /v2/vaults/list-by-owner`
 - `POST /v2/vaults/:vaultId/pull`
 - `POST /v2/vaults/:vaultId/push` (`Idempotency-Key` supported)
+- `PUT /v2/vaults/:vaultId/blobs/:blobId`
+- `GET /v2/vaults/:vaultId/blobs/:blobId`
+- `DELETE /v2/vaults/:vaultId/blobs/:blobId`
 - `POST /v2/events/token`
 - `GET /v2/vaults/:vaultId/events?streamToken=<token>`
 - `GET /v2/orgs/:orgId/audit`

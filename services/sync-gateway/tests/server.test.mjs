@@ -145,3 +145,55 @@ test('v2 push and pull round-trip snapshot', async (t) => {
   assert.equal(pullResponse.snapshot?.vaultId, snapshot.vaultId)
   assert.equal(pullResponse.snapshot?.revision, snapshot.revision)
 })
+
+test('v2 blob put/get/delete round-trip', async (t) => {
+  const server = spawnServer()
+  t.after(async () => {
+    await server.cleanup()
+  })
+
+  await waitForReady(server.baseUrl)
+
+  const vaultId = 'vault-blob-test'
+  const blobId = 'blob-test-1'
+  const body = {
+    blobId,
+    vaultId,
+    nonce: 'bm9uY2U=',
+    ciphertext: 'Y2lwaGVy',
+    sizeBytes: 6,
+    sha256: 'c2hh',
+    mimeType: 'text/plain',
+    fileName: 'secret.txt',
+    updatedAt: new Date().toISOString(),
+  }
+
+  const put = await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blobId)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-armadillo-owner': 'test-device',
+    },
+    body: JSON.stringify(body),
+  }).then((res) => res.json())
+  assert.equal(put.ok, true)
+  assert.equal(put.accepted, true)
+
+  const get = await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blobId)}`, {
+    method: 'GET',
+    headers: {
+      'x-armadillo-owner': 'test-device',
+    },
+  }).then((res) => res.json())
+  assert.equal(get.blob?.blobId, blobId)
+  assert.equal(get.blob?.fileName, 'secret.txt')
+
+  const del = await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blobId)}`, {
+    method: 'DELETE',
+    headers: {
+      'x-armadillo-owner': 'test-device',
+    },
+  }).then((res) => res.json())
+  assert.equal(del.ok, true)
+  assert.equal(del.deleted, true)
+})

@@ -11,9 +11,11 @@ auth.addHttpRoutes(http)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner',
+  'Access-Control-Allow-Headers': 'content-type, authorization, x-armadillo-owner, x-armadillo-org, x-armadillo-session',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
+const MAX_BLOB_FILE_BYTES = Number(process.env.SYNC_MAX_BLOB_FILE_BYTES || 20 * 1024 * 1024)
+const MAX_BLOB_TOTAL_BYTES = Number(process.env.SYNC_MAX_BLOB_TOTAL_BYTES || 2 * 1024 * 1024 * 1024)
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -188,6 +190,24 @@ http.route({
 })
 
 http.route({
+  path: '/api/v2/sync/blobs/put',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/sync/blobs/get',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/sync/blobs/delete',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
   path: '/api/sync/pull-by-owner',
   method: 'POST',
   handler: httpAction(async (ctx, request) => {
@@ -315,6 +335,114 @@ http.route({
     })
 
     return json({ ok: true, accepted: result.accepted, ownerSource: owner.ownerSource })
+  }),
+})
+
+http.route({
+  path: '/api/v2/sync/blobs/put',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+    const payload = (await request.json()) as {
+      vaultId?: string
+      blobId?: string
+      nonce?: string
+      ciphertext?: string
+      sizeBytes?: number
+      sha256?: string
+      mimeType?: string
+      fileName?: string
+      updatedAt?: string
+    }
+    if (
+      !payload.vaultId
+      || !payload.blobId
+      || !payload.nonce
+      || !payload.ciphertext
+      || typeof payload.sizeBytes !== 'number'
+      || !payload.sha256
+      || !payload.updatedAt
+    ) {
+      return json({ error: 'vaultId, blobId, nonce, ciphertext, sizeBytes, sha256, and updatedAt are required' }, 400)
+    }
+    try {
+      const result = await ctx.runMutation(api.sync.putBlobByOwnerVault, {
+        ownerId: owner.ownerId,
+        vaultId: payload.vaultId,
+        blobId: payload.blobId,
+        nonce: payload.nonce,
+        ciphertext: payload.ciphertext,
+        sizeBytes: payload.sizeBytes,
+        sha256: payload.sha256,
+        mimeType: payload.mimeType || 'application/octet-stream',
+        fileName: payload.fileName || 'file.bin',
+        updatedAt: payload.updatedAt,
+        maxFileBytes: MAX_BLOB_FILE_BYTES,
+        maxVaultBytes: MAX_BLOB_TOTAL_BYTES,
+      })
+      return json({
+        ok: true,
+        accepted: result.accepted,
+        ownerSource: owner.ownerSource,
+        usedBytes: result.usedBytes,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'blob upload failed'
+      if (message.includes('quota') || message.includes('limit')) {
+        return json({ error: message }, 413)
+      }
+      return json({ error: message }, 400)
+    }
+  }),
+})
+
+http.route({
+  path: '/api/v2/sync/blobs/get',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+    const payload = (await request.json()) as { vaultId?: string; blobId?: string }
+    if (!payload.vaultId || !payload.blobId) {
+      return json({ error: 'vaultId and blobId are required' }, 400)
+    }
+    const blob = await ctx.runQuery(api.sync.getBlobByOwnerVault, {
+      ownerId: owner.ownerId,
+      vaultId: payload.vaultId,
+      blobId: payload.blobId,
+    })
+    return json({ blob, ownerSource: owner.ownerSource })
+  }),
+})
+
+http.route({
+  path: '/api/v2/sync/blobs/delete',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+    const payload = (await request.json()) as { vaultId?: string; blobId?: string }
+    if (!payload.vaultId || !payload.blobId) {
+      return json({ error: 'vaultId and blobId are required' }, 400)
+    }
+    const result = await ctx.runMutation(api.sync.deleteBlobByOwnerVault, {
+      ownerId: owner.ownerId,
+      vaultId: payload.vaultId,
+      blobId: payload.blobId,
+    })
+    return json({
+      ok: true,
+      deleted: result.deleted,
+      ownerSource: owner.ownerSource,
+      usedBytes: result.usedBytes,
+    })
   }),
 })
 

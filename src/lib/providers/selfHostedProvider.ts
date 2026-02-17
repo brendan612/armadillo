@@ -4,11 +4,15 @@ import type {
   AdminMember,
   AuditEvent,
   AuthContext,
+  BlobDeleteResponse,
+  BlobGetResponse,
+  BlobPutResponse,
   CloudAuthStatus,
   EntitlementFetchResponse,
   ListByOwnerResponse,
   PullResponse,
   PushResponse,
+  RemoteBlobRecord,
   Role,
   SyncProviderClient,
   VaultUpdateEvent,
@@ -140,6 +144,43 @@ async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<PushRespons
   }
 }
 
+async function putRemoteBlob(vaultId: string, blob: RemoteBlobRecord): Promise<BlobPutResponse | null> {
+  if (!baseUrl) return null
+  const response = await fetch(
+    `${baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blob.blobId)}`,
+    {
+      method: 'PUT',
+      headers: buildHeaders(true),
+      body: JSON.stringify(blob),
+    },
+  )
+  return parseJsonResponse<BlobPutResponse>(response, 'Self-hosted blob put')
+}
+
+async function getRemoteBlob(vaultId: string, blobId: string): Promise<BlobGetResponse | null> {
+  if (!baseUrl) return null
+  const response = await fetch(
+    `${baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blobId)}`,
+    {
+      method: 'GET',
+      headers: buildHeaders(false),
+    },
+  )
+  return parseJsonResponse<BlobGetResponse>(response, 'Self-hosted blob get')
+}
+
+async function deleteRemoteBlob(vaultId: string, blobId: string): Promise<BlobDeleteResponse | null> {
+  if (!baseUrl) return null
+  const response = await fetch(
+    `${baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/blobs/${encodeURIComponent(blobId)}`,
+    {
+      method: 'DELETE',
+      headers: buildHeaders(false),
+    },
+  )
+  return parseJsonResponse<BlobDeleteResponse>(response, 'Self-hosted blob delete')
+}
+
 async function getCloudAuthStatus(): Promise<CloudAuthStatus | null> {
   if (!baseUrl) return null
   const status = await postJson<CloudAuthStatus>('/v2/auth/status', {}, 'Self-hosted auth status')
@@ -267,6 +308,9 @@ export const selfHostedProvider: SyncProviderClient = {
   listRemoteVaultsByOwner,
   pullRemoteSnapshot,
   pushRemoteSnapshot,
+  putRemoteBlob,
+  getRemoteBlob,
+  deleteRemoteBlob,
   getCloudAuthStatus,
   fetchEntitlementToken,
   subscribeToVaultUpdates,

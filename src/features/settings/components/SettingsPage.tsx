@@ -31,6 +31,8 @@ const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
 const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   'cloud.sync': 'Cloud Sync',
   'cloud.cloud_only': 'Cloud-Only Storage',
+  'vault.storage': 'Storage Vault',
+  'vault.storage.blobs': 'Storage Blob Sync',
   'enterprise.self_hosted': 'Self-Hosted Sync',
   'enterprise.org_admin': 'Org Admin',
 }
@@ -39,6 +41,7 @@ const FLAG_LABELS: Record<string, string> = {
   'billing.plans_section': 'Plans Section',
   'billing.manual_token_entry': 'Manual Token Entry',
   'experiments.enterprise_team_ui': 'Enterprise Team UI',
+  'experiments.storage_tab': 'Storage Tab',
 }
 
 const TIER_OPTIONS: PlanTier[] = ['free', 'premium', 'enterprise']
@@ -150,7 +153,9 @@ export function SettingsPage() {
     enableBiometricUnlock,
     emptyVaultForTesting,
     exportVaultFile,
+    exportVaultBackupBundle,
     triggerImport,
+    triggerBackupImport,
     triggerGooglePasswordImport,
     triggerKeePassImport,
     previewAutoFoldering,
@@ -788,7 +793,9 @@ export function SettingsPage() {
             <h3>Vault</h3>
             <div className="settings-action-list">
               <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
+              <button className="ghost" onClick={() => void exportVaultBackupBundle()}>Export Full Backup (.zip)</button>
               <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
+              <button className="ghost" onClick={triggerBackupImport}>Import Full Backup (.zip)</button>
               <button className="ghost" onClick={triggerGooglePasswordImport}>Import Google Passwords (.csv)</button>
               <button className="ghost" onClick={triggerKeePassImport}>Import KeePass Export (.xml/.csv)</button>
               <button className="ghost" onClick={() => void previewAutoFoldering()} disabled={autoFolderBusy}>

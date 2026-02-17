@@ -24,6 +24,9 @@ export const pullRemoteVaultByOwner = activeProvider.pullRemoteVaultByOwner
 export const listRemoteVaultsByOwner = activeProvider.listRemoteVaultsByOwner
 export const pullRemoteSnapshot = activeProvider.pullRemoteSnapshot
 export const pushRemoteSnapshot = activeProvider.pushRemoteSnapshot
+export const putRemoteBlob = activeProvider.putRemoteBlob ?? (async () => null)
+export const getRemoteBlob = activeProvider.getRemoteBlob ?? (async () => null)
+export const deleteRemoteBlob = activeProvider.deleteRemoteBlob ?? (async () => null)
 export const getCloudAuthStatus = activeProvider.getCloudAuthStatus
 export const fetchEntitlementToken = activeProvider.fetchEntitlementToken ?? (async () => null)
 export const listOrgAuditEvents = activeProvider.listOrgAuditEvents ?? (async () => [])

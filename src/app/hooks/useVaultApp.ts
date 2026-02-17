@@ -4,10 +4,14 @@ import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
 import { App as CapacitorApp } from '@capacitor/app'
 import { Browser } from '@capacitor/browser'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
+  deleteRemoteBlob,
   fetchEntitlementToken,
   getCloudAuthStatus,
+  getRemoteBlob,
   listRemoteVaultsByOwner,
+  putRemoteBlob,
   pullRemoteSnapshot,
   pushRemoteSnapshot,
   setSyncAuthToken,
@@ -24,6 +28,13 @@ import { parseGooglePasswordCsv } from '../../shared/utils/googlePasswordCsv'
 import { parseKeePassCsv } from '../../shared/utils/keePassCsv'
 import { parseKeePassXml } from '../../shared/utils/keePassXml'
 import { getPasswordExpiryStatus } from '../../shared/utils/passwordExpiry'
+import {
+  decryptBytesWithVaultKey,
+  encryptBytesWithVaultKey,
+  encryptJsonWithKey,
+  sha256Base64,
+} from '../../lib/crypto'
+import { blobStore } from '../../lib/blobStore'
 import {
   buildAutoFolderPlan,
   normalizeAutoFolderPath,
@@ -92,12 +103,14 @@ import {
 } from '../../lib/updateManifest'
 import type {
   ArmadilloVaultFile,
+  StorageKind,
   SecurityQuestion,
   ThemeEditableTokenKey,
   ThemeMotionLevel,
   VaultFolder,
   VaultItem,
   VaultPayload,
+  VaultStorageItem,
   VaultSession,
   VaultSettings,
   VaultStorageMode,
@@ -118,7 +131,9 @@ type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'e
 type FolderFilterMode = 'direct' | 'recursive'
 type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'billing' | 'danger'
 type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'unfiled' | 'trash' | `folder:${string}`
+type WorkspaceSection = 'passwords' | 'storage'
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
+type StorageContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
 type FolderInlineEditorState =
   | { mode: 'create'; parentId: string | null; value: string }
@@ -142,6 +157,26 @@ const HOME_SEARCH_RESULTS_LIMIT = 8
 const HOME_RECENT_ITEMS_LIMIT = 8
 const BILLING_URL = (import.meta.env.VITE_BILLING_URL || '').trim()
 const APP_BUILD_INFO = getAppBuildInfo()
+const STORAGE_FILE_LIMIT_BYTES = 20 * 1024 * 1024
+const STORAGE_TOTAL_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+
+type BackupManifestBlob = {
+  blobId: string
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  sha256: string
+  updatedAt: string
+  path: string
+}
+
+type BackupManifest = {
+  version: 1
+  vaultId: string
+  createdAt: string
+  blobCount: number
+  blobs: BackupManifestBlob[]
+}
 
 function defaultEntitlementState(reason = 'Free plan active'): EntitlementState {
   return {
@@ -182,7 +217,36 @@ function buildEmptyItem(folderName = '', folderId: string | null = null): VaultI
     note: '',
     securityQuestions: [],
     passwordExpiryDate: null,
+    excludeFromCloudSync: false,
   }
+}
+
+function buildEmptyStorageItem(folderName = '', folderId: string | null = null): VaultStorageItem {
+  return {
+    id: crypto.randomUUID(),
+    title: 'New Storage Item',
+    kind: 'document',
+    folder: folderName,
+    folderId,
+    tags: [],
+    note: '',
+    updatedAt: new Date().toLocaleString(),
+    excludeFromCloudSync: false,
+    textValue: '',
+    blobRef: null,
+  }
+}
+
+function inferStorageKindFromMime(mimeType: string, fallbackName = ''): StorageKind {
+  const mime = mimeType.trim().toLowerCase()
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.includes('json') || mime.includes('pem') || mime.includes('pkcs')) return 'key'
+  if (mime.startsWith('text/')) return 'document'
+  const fileName = fallbackName.trim().toLowerCase()
+  if (/\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(fileName)) return 'image'
+  if (/\.(pem|key|p12|pfx|asc)$/.test(fileName)) return 'key'
+  if (/\.(txt|md|pdf|doc|docx|rtf)$/.test(fileName)) return 'document'
+  return 'other'
 }
 
 function formatFolderPath(folderId: string | null, folderMap: Map<string, VaultFolder>): string {
@@ -216,6 +280,223 @@ function collectDescendantIds(folderId: string, folders: VaultFolder[]): string[
     }
   }
   return collected
+}
+
+function collectCloudExcludedFolderIds(folders: VaultFolder[]) {
+  const childrenByParent = new Map<string, string[]>()
+  for (const folder of folders) {
+    if (!folder.parentId) continue
+    const rows = childrenByParent.get(folder.parentId) ?? []
+    rows.push(folder.id)
+    childrenByParent.set(folder.parentId, rows)
+  }
+
+  const excluded = new Set<string>()
+  const queue = folders.filter((folder) => folder.excludeFromCloudSync).map((folder) => folder.id)
+  while (queue.length > 0) {
+    const current = queue.shift() as string
+    if (excluded.has(current)) continue
+    excluded.add(current)
+    for (const childId of childrenByParent.get(current) ?? []) {
+      queue.push(childId)
+    }
+  }
+  return excluded
+}
+
+function isTrashEntryCloudSyncable(
+  entry: VaultTrashEntry,
+  excludedItemIds: Set<string>,
+  excludedStorageItemIds: Set<string>,
+  excludedFolderIds: Set<string>,
+) {
+  if (entry.kind === 'itemSnapshot') {
+    const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as Record<string, unknown> | null
+    if (!payload) return false
+    const itemId = typeof payload.id === 'string' ? payload.id : ''
+    const folderId = typeof payload.folderId === 'string' ? payload.folderId : ''
+    if (itemId && excludedItemIds.has(itemId)) return false
+    if (folderId && excludedFolderIds.has(folderId)) return false
+    return payload.excludeFromCloudSync !== true
+  }
+
+  if (entry.kind === 'folderTreeSnapshot') {
+    const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as Record<string, unknown> | null
+    if (!payload) return false
+    const entryFolders = Array.isArray(payload.folders) ? payload.folders : []
+    const entryItems = Array.isArray(payload.items) ? payload.items : []
+    const entryStorageItems = Array.isArray(payload.storageItems) ? payload.storageItems : []
+
+    for (const folder of entryFolders) {
+      const source = (folder && typeof folder === 'object' ? folder : null) as Record<string, unknown> | null
+      if (!source) return false
+      const folderId = typeof source.id === 'string' ? source.id : ''
+      if (source.excludeFromCloudSync === true) return false
+      if (folderId && excludedFolderIds.has(folderId)) return false
+    }
+
+    for (const item of entryItems) {
+      const source = (item && typeof item === 'object' ? item : null) as Record<string, unknown> | null
+      if (!source) return false
+      const itemId = typeof source.id === 'string' ? source.id : ''
+      const folderId = typeof source.folderId === 'string' ? source.folderId : ''
+      if (source.excludeFromCloudSync === true) return false
+      if (itemId && excludedItemIds.has(itemId)) return false
+      if (folderId && excludedFolderIds.has(folderId)) return false
+    }
+    for (const item of entryStorageItems) {
+      const source = (item && typeof item === 'object' ? item : null) as Record<string, unknown> | null
+      if (!source) return false
+      const itemId = typeof source.id === 'string' ? source.id : ''
+      const folderId = typeof source.folderId === 'string' ? source.folderId : ''
+      if (source.excludeFromCloudSync === true) return false
+      if (itemId && excludedStorageItemIds.has(itemId)) return false
+      if (folderId && excludedFolderIds.has(folderId)) return false
+    }
+    return true
+  }
+
+  if (entry.kind === 'storageItemSnapshot') {
+    const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as Record<string, unknown> | null
+    if (!payload) return false
+    const itemId = typeof payload.id === 'string' ? payload.id : ''
+    const folderId = typeof payload.folderId === 'string' ? payload.folderId : ''
+    if (itemId && excludedStorageItemIds.has(itemId)) return false
+    if (folderId && excludedFolderIds.has(folderId)) return false
+    return payload.excludeFromCloudSync !== true
+  }
+
+  return false
+}
+
+type CloudPayloadProjection = {
+  payload: VaultPayload
+  excludedItemIds: Set<string>
+  excludedStorageItemIds: Set<string>
+  excludedFolderIds: Set<string>
+  hasLocalOnlyContent: boolean
+}
+
+function projectPayloadForCloudSync(payload: VaultPayload): CloudPayloadProjection {
+  const excludedFolderIds = collectCloudExcludedFolderIds(payload.folders)
+  const cloudFolders = payload.folders.filter((folder) => !excludedFolderIds.has(folder.id))
+
+  const excludedItemIds = new Set<string>()
+  const excludedStorageItemIds = new Set<string>()
+  const cloudItems: VaultItem[] = []
+  for (const item of payload.items) {
+    const excludedByFolder = Boolean(item.folderId && excludedFolderIds.has(item.folderId))
+    const excluded = item.excludeFromCloudSync === true || excludedByFolder
+    if (excluded) {
+      excludedItemIds.add(item.id)
+      continue
+    }
+    cloudItems.push(item)
+  }
+
+  const cloudStorageItems: VaultStorageItem[] = []
+  for (const item of payload.storageItems) {
+    const excludedByFolder = Boolean(item.folderId && excludedFolderIds.has(item.folderId))
+    const excluded = item.excludeFromCloudSync === true || excludedByFolder
+    if (excluded) {
+      excludedStorageItemIds.add(item.id)
+      continue
+    }
+    cloudStorageItems.push(item)
+  }
+
+  const cloudTrash = payload.trash.filter((entry) => isTrashEntryCloudSyncable(
+    entry,
+    excludedItemIds,
+    excludedStorageItemIds,
+    excludedFolderIds,
+  ))
+  const hasLocalOnlyContent = excludedFolderIds.size > 0
+    || excludedItemIds.size > 0
+    || excludedStorageItemIds.size > 0
+    || cloudTrash.length !== payload.trash.length
+
+  return {
+    payload: {
+      schemaVersion: payload.schemaVersion,
+      items: cloudItems,
+      storageItems: cloudStorageItems,
+      folders: cloudFolders,
+      trash: cloudTrash,
+      settings: payload.settings,
+    },
+    excludedItemIds,
+    excludedStorageItemIds,
+    excludedFolderIds,
+    hasLocalOnlyContent,
+  }
+}
+
+function mergeById<T extends { id: string }>(primary: T[], secondary: T[]) {
+  const merged = new Map<string, T>()
+  for (const row of primary) {
+    merged.set(row.id, row)
+  }
+  for (const row of secondary) {
+    merged.set(row.id, row)
+  }
+  return Array.from(merged.values())
+}
+
+function mergeRemotePayloadWithLocalOnly(remotePayload: VaultPayload, localPayload: VaultPayload): VaultPayload {
+  const remoteProjection = projectPayloadForCloudSync(remotePayload)
+  const localProjection = projectPayloadForCloudSync(localPayload)
+
+  const localOnlyFolders = localPayload.folders.filter((folder) => localProjection.excludedFolderIds.has(folder.id))
+  const localOnlyItems = localPayload.items.filter((item) => localProjection.excludedItemIds.has(item.id))
+  const localOnlyStorageItems = localPayload.storageItems.filter((item) => localProjection.excludedStorageItemIds.has(item.id))
+  const localOnlyTrash = localPayload.trash.filter((entry) => !isTrashEntryCloudSyncable(
+    entry,
+    localProjection.excludedItemIds,
+    localProjection.excludedStorageItemIds,
+    localProjection.excludedFolderIds,
+  ))
+
+  const remoteFolders = remoteProjection.payload.folders.filter((folder) => !localProjection.excludedFolderIds.has(folder.id))
+  const remoteItems = remoteProjection.payload.items.filter((item) => (
+    !localProjection.excludedItemIds.has(item.id)
+    && !(item.folderId && localProjection.excludedFolderIds.has(item.folderId))
+  ))
+  const remoteStorageItems = remoteProjection.payload.storageItems.filter((item) => (
+    !localProjection.excludedStorageItemIds.has(item.id)
+    && !(item.folderId && localProjection.excludedFolderIds.has(item.folderId))
+  ))
+  const remoteTrash = remoteProjection.payload.trash.filter((entry) => isTrashEntryCloudSyncable(
+    entry,
+    localProjection.excludedItemIds,
+    localProjection.excludedStorageItemIds,
+    localProjection.excludedFolderIds,
+  ))
+
+  return {
+    schemaVersion: remoteProjection.payload.schemaVersion,
+    items: mergeById(remoteItems, localOnlyItems),
+    storageItems: mergeById(remoteStorageItems, localOnlyStorageItems),
+    folders: mergeById(remoteFolders, localOnlyFolders),
+    trash: mergeById(remoteTrash, localOnlyTrash),
+    settings: remoteProjection.payload.settings,
+  }
+}
+
+async function buildSessionFileWithPayload(session: VaultSession, payload: VaultPayload): Promise<ArmadilloVaultFile> {
+  const vaultData = await encryptJsonWithKey(session.vaultKey, payload)
+  return {
+    ...session.file,
+    vaultData,
+  }
+}
+
+async function buildCloudPushFile(session: VaultSession): Promise<ArmadilloVaultFile> {
+  const projection = projectPayloadForCloudSync(session.payload)
+  if (!projection.hasLocalOnlyContent) {
+    return session.file
+  }
+  return buildSessionFileWithPayload(session, projection.payload)
 }
 
 function purgeExpiredTrash(entries: VaultTrashEntry[]) {
@@ -261,6 +542,18 @@ function itemMatchesQuery(item: VaultItem, queryLower: string) {
     item.urls.some((url) => url.toLowerCase().includes(queryLower)) ||
     item.folder.toLowerCase().includes(queryLower) ||
     item.tags.some((tag) => tag.toLowerCase().includes(queryLower))
+  )
+}
+
+function storageItemMatchesQuery(item: VaultStorageItem, queryLower: string) {
+  return (
+    item.title.toLowerCase().includes(queryLower)
+    || item.folder.toLowerCase().includes(queryLower)
+    || item.tags.some((tag) => tag.toLowerCase().includes(queryLower))
+    || item.note.toLowerCase().includes(queryLower)
+    || (item.textValue || '').toLowerCase().includes(queryLower)
+    || item.kind.toLowerCase().includes(queryLower)
+    || (item.blobRef?.fileName || '').toLowerCase().includes(queryLower)
   )
 }
 
@@ -417,6 +710,7 @@ export function useVaultApp() {
   const [pendingVaultExists] = useState(hasExistingVault)
 
   const [items, setItems] = useState<VaultItem[]>([])
+  const [storageItems, setStorageItems] = useState<VaultStorageItem[]>([])
   const [folders, setFolders] = useState<VaultFolder[]>([])
   const [trash, setTrash] = useState<VaultTrashEntry[]>([])
   const [themeSettings, setThemeSettings] = useState<VaultThemeSettings>(() => loadThemeSettingsFromMirror())
@@ -431,7 +725,9 @@ export function useVaultApp() {
   })
   const [query, setQuery] = useState('')
   const [homeSearchQuery, setHomeSearchQuery] = useState('')
+  const [workspaceSection, setWorkspaceSection] = useState<WorkspaceSection>('passwords')
   const [selectedId, setSelectedId] = useState('')
+  const [selectedStorageId, setSelectedStorageId] = useState('')
   const [activePanel, setActivePanel] = useState<Panel>('details')
   const [mobileStep, setMobileStep] = useState<MobileStep>('home')
   const [syncState, setSyncState] = useState<SyncState>('local')
@@ -461,10 +757,12 @@ export function useVaultApp() {
   const [windowMaximized, setWindowMaximized] = useState(false)
   const [contextMenu, setContextMenu] = useState<FolderContextMenuState>(null)
   const [itemContextMenu, setItemContextMenu] = useState<ItemContextMenuState>(null)
+  const [storageContextMenu, setStorageContextMenu] = useState<StorageContextMenuState>(null)
   const [folderEditor, setFolderEditor] = useState<VaultFolder | null>(null)
   const [folderEditorOpen, setFolderEditorOpen] = useState(false)
   const [folderInlineEditor, setFolderInlineEditor] = useState<FolderInlineEditorState | null>(null)
   const [newFolderValue, setNewFolderValue] = useState('')
+  const [newStorageFolderValue, setNewStorageFolderValue] = useState('')
 
   const [treeContextMenu, setTreeContextMenu] = useState<TreeContextMenuState>(null)
   const [expiryAlerts, setExpiryAlerts] = useState<ExpiryAlert[]>([])
@@ -480,7 +778,10 @@ export function useVaultApp() {
   const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false)
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
+  const [storageDraft, setStorageDraft] = useState<VaultStorageItem | null>(null)
+  const [storageFileBusy, setStorageFileBusy] = useState(false)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null)
   const googlePasswordImportInputRef = useRef<HTMLInputElement | null>(null)
   const keepassImportInputRef = useRef<HTMLInputElement | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
@@ -603,6 +904,7 @@ export function useVaultApp() {
     const { resetNavigation = false } = options
     setVaultSession(session)
     setItems(session.payload.items)
+    setStorageItems(session.payload.storageItems)
     setFolders(session.payload.folders)
     setTrash(purgeExpiredTrash(session.payload.trash))
     const settings = normalizeAutoFolderSettings({
@@ -625,13 +927,21 @@ export function useVaultApp() {
     setExpiryAlertsDismissed(false)
     scheduleExpiryNotifications(alerts)
     const firstId = session.payload.items[0]?.id || ''
+    const firstStorageId = session.payload.storageItems[0]?.id || ''
     const currentSelectedIdStillExists = session.payload.items.some((item) => item.id === selectedId)
+    const currentSelectedStorageStillExists = session.payload.storageItems.some((item) => item.id === selectedStorageId)
     const nextSelectedId = resetNavigation
       ? firstId
       : (currentSelectedIdStillExists ? selectedId : firstId)
+    const nextSelectedStorageId = resetNavigation
+      ? firstStorageId
+      : (currentSelectedStorageStillExists ? selectedStorageId : firstStorageId)
     setSelectedId(nextSelectedId)
     setDraft(session.payload.items.find((item) => item.id === nextSelectedId) ?? null)
+    setSelectedStorageId(nextSelectedStorageId)
+    setStorageDraft(session.payload.storageItems.find((item) => item.id === nextSelectedStorageId) ?? null)
     if (resetNavigation) {
+      setWorkspaceSection('passwords')
       setSelectedNode('home')
       setFolderFilterMode('direct')
       setMobileStep('home')
@@ -780,6 +1090,7 @@ export function useVaultApp() {
           note: '',
           securityQuestions: [],
           passwordExpiryDate: null,
+          excludeFromCloudSync: false,
         }
         nextItems.unshift(created)
         createdCount += 1
@@ -1485,9 +1796,15 @@ export function useVaultApp() {
       if (remoteSnapshot && remoteSnapshot.revision > activeSession.file.revision) {
         try {
           const remotePayload = await readPayloadWithSessionKey(activeSession, remoteSnapshot)
-          const nextSession: VaultSession = {
+          const mergedPayload = mergeRemotePayloadWithLocalOnly(remotePayload, activeSession.payload)
+          const mergedFile = await buildSessionFileWithPayload({
+            ...activeSession,
             file: remoteSnapshot,
             payload: remotePayload,
+          }, mergedPayload)
+          const nextSession: VaultSession = {
+            file: mergedFile,
+            payload: mergedPayload,
             vaultKey: activeSession.vaultKey,
           }
           persistVaultSnapshot(nextSession.file)
@@ -1503,7 +1820,8 @@ export function useVaultApp() {
       }
 
       if (pushLocalWhenCurrent) {
-        const pushResult = await pushRemoteSnapshot(activeSession.file)
+        const pushFile = await buildCloudPushFile(activeSession)
+        const pushResult = await pushRemoteSnapshot(pushFile)
         if (pushResult?.ok) {
           setSyncState('live')
           if (!silent) {
@@ -1695,14 +2013,40 @@ export function useVaultApp() {
     return base
   }, [scopedItems, query])
 
+  const scopedStorageItems = useMemo(() => {
+    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired' || selectedNode === 'trash') {
+      return []
+    }
+    if (selectedNode === 'all') return storageItems
+    if (selectedNode === 'unfiled') return storageItems.filter((item) => !item.folderId)
+    const folderId = selectedNode.slice('folder:'.length)
+    if (!folderId) return storageItems
+    if (folderFilterMode === 'recursive') {
+      const ids = new Set(collectDescendantIds(folderId, folders))
+      return storageItems.filter((item) => item.folderId && ids.has(item.folderId))
+    }
+    return storageItems.filter((item) => item.folderId === folderId)
+  }, [storageItems, selectedNode, folderFilterMode, folders])
+
+  const filteredStorage = useMemo(() => {
+    const value = query.trim().toLowerCase()
+    const base = !value
+      ? scopedStorageItems
+      : scopedStorageItems.filter((item) => storageItemMatchesQuery(item, value))
+    return base
+  }, [scopedStorageItems, query])
+
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
   const selected = itemById.get(selectedId) ?? null
+  const storageItemById = useMemo(() => new Map(storageItems.map((item) => [item.id, item])), [storageItems])
+  const selectedStorage = storageItemById.get(selectedStorageId) ?? null
 
   const folderOptions = useMemo(() => {
     return folders
       .map((folder) => ({ id: folder.id, label: folderPathById.get(folder.id) ?? folder.name }))
       .sort((a, b) => a.label.localeCompare(b.label))
   }, [folders, folderPathById])
+  const storageFeatureEnabled = hasCapability('vault.storage') && isFlagEnabled('experiments.storage_tab')
 
   useEffect(() => {
     // Seed folder editor when the selected draft changes.
@@ -1716,8 +2060,21 @@ export function useVaultApp() {
     setDraft(nextSelected)
   }, [selectedId, itemById])
 
+  useEffect(() => {
+    setNewStorageFolderValue(storageDraft?.folderId ? (folderPathById.get(storageDraft.folderId) ?? storageDraft.folder) : (storageDraft?.folder ?? ''))
+  }, [storageDraft?.id, folderPathById])
+
+  useLayoutEffect(() => {
+    const nextSelected = storageItemById.get(selectedStorageId) ?? null
+    setStorageDraft(nextSelected)
+  }, [selectedStorageId, storageItemById])
+
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
+  }
+
+  function setStorageDraftField<K extends keyof VaultStorageItem>(key: K, value: VaultStorageItem[K]) {
+    setStorageDraft((current) => (current ? { ...current, [key]: value } : current))
   }
 
   function buildPasswordCandidates(raw: string) {
@@ -1891,8 +2248,12 @@ export function useVaultApp() {
   function lockVault() {
     setVaultSession(null)
     setItems([])
+    setStorageItems([])
     setDraft(null)
+    setStorageDraft(null)
     setSelectedId('')
+    setSelectedStorageId('')
+    setWorkspaceSection('passwords')
     setThemeSettings(normalizeThemeSettings(vaultSettings.theme))
     setThemeSettingsDirty(false)
     setPhase('unlock')
@@ -1901,8 +2262,13 @@ export function useVaultApp() {
   }
 
   function closeOpenItem() {
-    setSelectedId('')
-    setDraft(null)
+    if (workspaceSection === 'storage') {
+      setSelectedStorageId('')
+      setStorageDraft(null)
+    } else {
+      setSelectedId('')
+      setDraft(null)
+    }
     if (effectivePlatform === 'mobile') {
       setMobileStep('list')
     }
@@ -1942,11 +2308,42 @@ export function useVaultApp() {
     if (!folderEditor) return
     const nextParentId = folderEditor.parentId === folderEditor.id ? null : folderEditor.parentId
     const updated = folders.map((folder) => (folder.id === folderEditor.id
-      ? { ...folderEditor, parentId: nextParentId, updatedAt: new Date().toISOString() }
+      ? {
+          ...folderEditor,
+          parentId: nextParentId,
+          updatedAt: new Date().toISOString(),
+          excludeFromCloudSync: folderEditor.excludeFromCloudSync === true,
+        }
       : folder))
     setFolderEditorOpen(false)
     setFolderEditor(null)
     await persistPayload({ folders: updated })
+  }
+
+  async function setFolderCloudSyncExcluded(folderId: string, excluded: boolean) {
+    const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+      && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+    if (!canManageCloudSyncExclusions) {
+      setSyncMessage(syncProvider === 'self_hosted'
+        ? (capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
+        : (capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan'))
+      return
+    }
+    const target = folders.find((folder) => folder.id === folderId)
+    if (!target) return
+    const nextFolders = folders.map((folder) => (
+      folder.id === folderId
+        ? { ...folder, excludeFromCloudSync: excluded, updatedAt: new Date().toISOString() }
+        : folder
+    ))
+    setFolderEditor((current) => (
+      current?.id === folderId
+        ? { ...current, excludeFromCloudSync: excluded }
+        : current
+    ))
+    await persistPayload({ folders: nextFolders })
+    setContextMenu(null)
+    setSyncMessage(excluded ? 'Folder marked local-only (excluded from cloud sync)' : 'Folder included in cloud sync')
   }
 
   function createSubfolder(parentId: string | null) {
@@ -1969,6 +2366,7 @@ export function useVaultApp() {
         notes: '',
         createdAt: now,
         updatedAt: now,
+        excludeFromCloudSync: false,
       }
       const nextFolders = [...folders, nextFolder]
       setFolderInlineEditor(null)
@@ -2034,8 +2432,11 @@ export function useVaultApp() {
     if (!target) return
     const descendantIds = new Set(collectDescendantIds(folderId, folders))
     const impactedItems = items.filter((item) => item.folderId && descendantIds.has(item.folderId))
+    const impactedStorageItems = storageItems.filter((item) => item.folderId && descendantIds.has(item.folderId))
     const impactedFolders = folders.filter((folder) => descendantIds.has(folder.id))
-    const confirmed = window.confirm(`Delete folder "${target.name}" and all ${impactedFolders.length - 1} subfolders with ${impactedItems.length} item(s)?`)
+    const confirmed = window.confirm(
+      `Delete folder "${target.name}" and all ${impactedFolders.length - 1} subfolders with ${impactedItems.length + impactedStorageItems.length} item(s)?`,
+    )
     if (!confirmed) return
 
     const deletedAt = new Date().toISOString()
@@ -2049,44 +2450,74 @@ export function useVaultApp() {
         folderIds: Array.from(descendantIds),
         folders: impactedFolders,
         items: impactedItems,
+        storageItems: impactedStorageItems,
       },
     }
 
     const nextFolders = folders.filter((folder) => !descendantIds.has(folder.id))
     const nextItems = items.filter((item) => !(item.folderId && descendantIds.has(item.folderId)))
+    const nextStorageItems = storageItems.filter((item) => !(item.folderId && descendantIds.has(item.folderId)))
     const nextTrashEntries = [nextTrash, ...trash]
     setContextMenu(null)
     setSelectedNode('all')
     setSelectedId(nextItems[0]?.id ?? '')
     setDraft(nextItems[0] ?? null)
-    await persistPayload({ folders: nextFolders, items: nextItems, trash: nextTrashEntries })
+    setSelectedStorageId(nextStorageItems[0]?.id ?? '')
+    setStorageDraft(nextStorageItems[0] ?? null)
+    await persistPayload({ folders: nextFolders, items: nextItems, storageItems: nextStorageItems, trash: nextTrashEntries })
   }
 
   async function restoreTrashEntry(entryId: string) {
     const entry = trash.find((row) => row.id === entryId)
-    if (!entry || entry.kind !== 'folderTreeSnapshot') return
-    const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : {}) as {
-      folders?: VaultFolder[]
-      items?: VaultItem[]
-    }
-    const restoredFolders = Array.isArray(payload.folders) ? payload.folders : []
-    const restoredItems = Array.isArray(payload.items) ? payload.items : []
-    const folderIds = new Set(folders.map((folder) => folder.id))
-    const itemIds = new Set(items.map((item) => item.id))
-    const nextFolders = [...folders]
-    for (const folder of restoredFolders) {
-      if (!folderIds.has(folder.id)) {
-        nextFolders.push(folder)
+    if (!entry) return
+
+    if (entry.kind === 'folderTreeSnapshot') {
+      const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : {}) as {
+        folders?: VaultFolder[]
+        items?: VaultItem[]
+        storageItems?: VaultStorageItem[]
       }
-    }
-    const nextItems = [...items]
-    for (const item of restoredItems) {
-      if (!itemIds.has(item.id)) {
-        nextItems.push(item)
+      const restoredFolders = Array.isArray(payload.folders) ? payload.folders : []
+      const restoredItems = Array.isArray(payload.items) ? payload.items : []
+      const restoredStorageItems = Array.isArray(payload.storageItems) ? payload.storageItems : []
+      const folderIds = new Set(folders.map((folder) => folder.id))
+      const itemIds = new Set(items.map((item) => item.id))
+      const storageIds = new Set(storageItems.map((item) => item.id))
+      const nextFolders = [...folders]
+      for (const folder of restoredFolders) {
+        if (!folderIds.has(folder.id)) {
+          nextFolders.push(folder)
+        }
       }
+      const nextItems = [...items]
+      for (const item of restoredItems) {
+        if (!itemIds.has(item.id)) {
+          nextItems.push(item)
+        }
+      }
+      const nextStorageItems = [...storageItems]
+      for (const item of restoredStorageItems) {
+        if (!storageIds.has(item.id)) {
+          nextStorageItems.push(item)
+        }
+      }
+      const nextTrashEntries = trash.filter((row) => row.id !== entryId)
+      await persistPayload({ folders: nextFolders, items: nextItems, storageItems: nextStorageItems, trash: nextTrashEntries })
+      return
     }
-    const nextTrashEntries = trash.filter((row) => row.id !== entryId)
-    await persistPayload({ folders: nextFolders, items: nextItems, trash: nextTrashEntries })
+
+    if (entry.kind === 'storageItemSnapshot') {
+      const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as VaultStorageItem | null
+      if (!payload) return
+      if (storageItems.some((item) => item.id === payload.id)) {
+        await persistPayload({ trash: trash.filter((row) => row.id !== entryId) })
+        return
+      }
+      await persistPayload({
+        storageItems: [payload, ...storageItems],
+        trash: trash.filter((row) => row.id !== entryId),
+      })
+    }
   }
 
   async function deleteTrashEntryPermanently(entryId: string) {
@@ -2100,6 +2531,7 @@ export function useVaultApp() {
     }
     await persistPayload({
       items: [],
+      storageItems: [],
       folders: [],
       trash: [],
     })
@@ -2111,6 +2543,38 @@ export function useVaultApp() {
     setSyncMessage('Vault emptied for testing')
   }
 
+  async function garbageCollectStorageBlobs(nextSession: VaultSession, payload: VaultPayload) {
+    const keepBlobIds = new Set<string>()
+    for (const item of payload.storageItems) {
+      if (item.blobRef?.blobId) keepBlobIds.add(item.blobRef.blobId)
+    }
+    for (const entry of payload.trash) {
+      if (entry.kind !== 'storageItemSnapshot') continue
+      const snapshot = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as VaultStorageItem | null
+      if (snapshot?.blobRef?.blobId) keepBlobIds.add(snapshot.blobRef.blobId)
+    }
+
+    const vaultId = nextSession.file.vaultId
+    const metas = await blobStore.listBlobMetaByVault(vaultId)
+    const canDeleteRemote = cloudSyncEnabled
+      && syncConfigured()
+      && hasCapability('cloud.sync')
+      && hasCapability('vault.storage.blobs')
+      && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+
+    for (const meta of metas) {
+      if (keepBlobIds.has(meta.blobId)) continue
+      await blobStore.deleteBlob(vaultId, meta.blobId)
+      if (canDeleteRemote) {
+        try {
+          await deleteRemoteBlob(vaultId, meta.blobId)
+        } catch {
+          // Best effort cleanup only.
+        }
+      }
+    }
+  }
+
   async function persistPayload(next: Partial<VaultPayload>) {
     if (!vaultSession) {
       return
@@ -2118,6 +2582,7 @@ export function useVaultApp() {
     const payload: VaultPayload = {
       schemaVersion: vaultSession.payload.schemaVersion,
       items: next.items ?? items,
+      storageItems: next.storageItems ?? storageItems,
       folders: next.folders ?? folders,
       trash: purgeExpiredTrash(next.trash ?? trash),
       settings: next.settings ?? vaultSettings,
@@ -2125,13 +2590,15 @@ export function useVaultApp() {
     const nextSession = await rewriteVaultFile(vaultSession, payload)
     applySession(nextSession)
     persistVaultSnapshot(nextSession.file)
+    await garbageCollectStorageBlobs(nextSession, payload)
 
     const canUseCloudSync = hasCapability('cloud.sync')
     const canUseSelfHosted = syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted')
     if (cloudSyncEnabled && syncConfigured() && canUseCloudSync && canUseSelfHosted) {
       try {
         setSyncState('syncing')
-        const result = await pushRemoteSnapshot(nextSession.file)
+        const cloudPushFile = await buildCloudPushFile(nextSession)
+        const result = await pushRemoteSnapshot(cloudPushFile)
         if (result) {
           setSyncState('live')
           setSyncMessage(result.accepted ? `Encrypted sync pushed (${result.ownerSource})` : 'Sync ignored older revision')
@@ -2263,6 +2730,7 @@ export function useVaultApp() {
         notes: '',
         createdAt: now,
         updatedAt: now,
+        excludeFromCloudSync: false,
       }
       localFolders.push(created)
       latest = created
@@ -2273,6 +2741,7 @@ export function useVaultApp() {
   }
 
   function createItem() {
+    setWorkspaceSection('passwords')
     if (selectedNode === 'home') {
       setSelectedNode('all')
     }
@@ -2285,6 +2754,218 @@ export function useVaultApp() {
     setDraft(item)
     setMobileStep('detail')
     setActivePanel('details')
+  }
+
+  function createStorageItem() {
+    if (!hasCapability('vault.storage') || !isFlagEnabled('experiments.storage_tab')) {
+      setSyncMessage(capabilityLockReasons['vault.storage'] ?? 'Requires Premium plan')
+      return
+    }
+    setWorkspaceSection('storage')
+    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+      setSelectedNode('all')
+    }
+    const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
+    const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
+    const item = buildEmptyStorageItem(selectedFolderPath, selectedFolderId)
+    const next = [item, ...storageItems]
+    void persistPayload({ storageItems: next })
+    setSelectedStorageId(item.id)
+    setStorageDraft(item)
+    setMobileStep('detail')
+    setActivePanel('details')
+  }
+
+  function storageItemExcludedFromCloud(item: VaultStorageItem) {
+    const excludedByFolder = Boolean(item.folderId && folders.find((folder) => folder.id === item.folderId)?.excludeFromCloudSync)
+    return item.excludeFromCloudSync === true || excludedByFolder
+  }
+
+  function canSyncStorageBlob(item: VaultStorageItem) {
+    if (storageItemExcludedFromCloud(item)) return false
+    if (!cloudSyncEnabled || !syncConfigured()) return false
+    if (!hasCapability('cloud.sync') || !hasCapability('vault.storage.blobs')) return false
+    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) return false
+    return true
+  }
+
+  async function loadStorageBlobRecord(item: VaultStorageItem) {
+    if (!vaultSession || !item.blobRef) return null
+    const vaultId = vaultSession.file.vaultId
+    const local = await blobStore.getBlob(vaultId, item.blobRef.blobId)
+    if (local) {
+      return local
+    }
+    if (!canSyncStorageBlob(item)) {
+      return null
+    }
+    const remote = await getRemoteBlob(vaultId, item.blobRef.blobId)
+    if (!remote?.blob) return null
+    await blobStore.putBlob({
+      vaultId,
+      blobId: remote.blob.blobId,
+      nonce: remote.blob.nonce,
+      ciphertext: remote.blob.ciphertext,
+      sizeBytes: remote.blob.sizeBytes,
+      sha256: remote.blob.sha256,
+      mimeType: remote.blob.mimeType,
+      fileName: remote.blob.fileName,
+      updatedAt: remote.blob.updatedAt,
+      createdAt: new Date().toISOString(),
+    })
+    return blobStore.getBlob(vaultId, item.blobRef.blobId)
+  }
+
+  async function attachFileToStorageDraft(file: File) {
+    if (!vaultSession || !storageDraft) return
+    if (file.size > STORAGE_FILE_LIMIT_BYTES) {
+      setSyncMessage(`File exceeds ${Math.round(STORAGE_FILE_LIMIT_BYTES / (1024 * 1024))}MB limit`)
+      return
+    }
+
+    setStorageFileBusy(true)
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const vaultId = vaultSession.file.vaultId
+      const usageBytes = await blobStore.computeUsageBytes(vaultId)
+      const existingBlobSize = storageDraft.blobRef
+        ? ((await blobStore.getBlob(vaultId, storageDraft.blobRef.blobId))?.sizeBytes ?? 0)
+        : 0
+      const projectedUsage = usageBytes - existingBlobSize + bytes.byteLength
+      if (projectedUsage > STORAGE_TOTAL_LIMIT_BYTES) {
+        setSyncMessage(`Vault storage exceeds ${Math.round(STORAGE_TOTAL_LIMIT_BYTES / (1024 * 1024 * 1024))}GB limit`)
+        return
+      }
+      const sha256 = await sha256Base64(bytes)
+      const encrypted = await encryptBytesWithVaultKey(vaultSession.vaultKey, bytes)
+      const blobId = storageDraft.blobRef?.blobId ?? crypto.randomUUID()
+      const updatedAt = new Date().toISOString()
+      const remoteBlob = {
+        blobId,
+        vaultId,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext,
+        sizeBytes: bytes.byteLength,
+        sha256,
+        mimeType: file.type || 'application/octet-stream',
+        fileName: file.name || 'file.bin',
+        updatedAt,
+      }
+
+      if (canSyncStorageBlob(storageDraft)) {
+        const uploaded = await putRemoteBlob(vaultSession.file.vaultId, remoteBlob)
+        if (!uploaded?.ok) {
+          setSyncMessage('Encrypted file upload failed')
+          return
+        }
+      }
+
+      await blobStore.putBlob({
+        ...remoteBlob,
+        createdAt: new Date().toISOString(),
+      })
+
+      setStorageDraft((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          kind: inferStorageKindFromMime(remoteBlob.mimeType, remoteBlob.fileName),
+          blobRef: {
+            blobId,
+            fileName: remoteBlob.fileName,
+            mimeType: remoteBlob.mimeType,
+            sizeBytes: remoteBlob.sizeBytes,
+            sha256: remoteBlob.sha256,
+          },
+          updatedAt: new Date().toLocaleString(),
+        }
+      })
+      setSyncMessage('Encrypted file attached')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed attaching file: ${detail}`)
+    } finally {
+      setStorageFileBusy(false)
+    }
+  }
+
+  async function loadStorageBlobFile(itemId: string) {
+    if (!vaultSession) return null
+    const item = storageItems.find((row) => row.id === itemId)
+    if (!item?.blobRef) return null
+    const row = await loadStorageBlobRecord(item)
+    if (!row) return null
+    const bytes = await decryptBytesWithVaultKey(vaultSession.vaultKey, { nonce: row.nonce, ciphertext: row.ciphertext })
+    return {
+      fileName: row.fileName,
+      mimeType: row.mimeType,
+      bytes,
+      sha256: row.sha256,
+    }
+  }
+
+  async function downloadStorageFile(itemId: string) {
+    const loaded = await loadStorageBlobFile(itemId)
+    if (!loaded) {
+      setSyncMessage('Storage file is unavailable')
+      return
+    }
+    const blobBytes = loaded.bytes.slice()
+    const blob = new Blob([blobBytes.buffer], { type: loaded.mimeType || 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = loaded.fileName || 'download.bin'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function saveCurrentStorageItem() {
+    if (!storageDraft) return
+    setIsSaving(true)
+    const folderInput = newStorageFolderValue.trim() || storageDraft.folder || ''
+    const ensuredFolder = ensureFolderByPath(folderInput, folders)
+    const nextItem: VaultStorageItem = {
+      ...storageDraft,
+      folder: folderInput,
+      folderId: ensuredFolder.folder?.id ?? null,
+      tags: storageDraft.tags.map((tag) => tag.trim()).filter(Boolean),
+      updatedAt: new Date().toLocaleString(),
+    }
+    const nextItems = storageItems.map((item) => (item.id === nextItem.id ? nextItem : item))
+    setFolders(ensuredFolder.nextFolders)
+    await persistPayload({
+      storageItems: nextItems,
+      folders: ensuredFolder.nextFolders,
+    })
+    setIsSaving(false)
+    setNewStorageFolderValue('')
+  }
+
+  async function removeStorageItemById(itemId: string) {
+    const target = storageItems.find((item) => item.id === itemId)
+    if (!target) return
+    const deletedAt = new Date().toISOString()
+    const retentionMs = getSafeRetentionDays(vaultSettings.trashRetentionDays) * 24 * 60 * 60 * 1000
+    const trashEntry: VaultTrashEntry = {
+      id: crypto.randomUUID(),
+      kind: 'storageItemSnapshot',
+      deletedAt,
+      purgeAt: new Date(Date.parse(deletedAt) + retentionMs).toISOString(),
+      payload: target,
+    }
+    const remaining = storageItems.filter((item) => item.id !== itemId)
+    const nextTrash = [trashEntry, ...trash]
+    await persistPayload({ storageItems: remaining, trash: nextTrash })
+    const inViewRemaining = scopeStorageItemsForSelection(remaining, selectedNode, folderFilterMode)
+    const nextSelected = inViewRemaining[0] ?? null
+    setSelectedStorageId(nextSelected?.id ?? '')
+    setStorageDraft(nextSelected)
+  }
+
+  async function removeCurrentStorageItem() {
+    if (!storageDraft) return
+    await removeStorageItemById(storageDraft.id)
   }
 
   const checkForAppUpdates = useCallback(async () => {
@@ -2318,11 +2999,38 @@ export function useVaultApp() {
   }
 
   function openHome() {
+    setWorkspaceSection('passwords')
     setSelectedNode('home')
     setMobileStep('home')
   }
 
+  function openStorageWorkspace() {
+    if (!hasCapability('vault.storage') || !isFlagEnabled('experiments.storage_tab')) {
+      setSyncMessage(capabilityLockReasons['vault.storage'] ?? 'Requires Premium plan')
+      return
+    }
+    setWorkspaceSection('storage')
+    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+      setSelectedNode('all')
+    }
+    if (effectivePlatform === 'mobile') {
+      setMobileStep('list')
+    }
+  }
+
+  function switchWorkspaceSection(section: WorkspaceSection) {
+    if (section === 'storage') {
+      openStorageWorkspace()
+      return
+    }
+    setWorkspaceSection('passwords')
+    if (selectedNode !== 'home' && effectivePlatform === 'mobile' && mobileStep === 'home') {
+      setMobileStep('list')
+    }
+  }
+
   function openSmartView(view: 'expired' | 'expiring') {
+    setWorkspaceSection('passwords')
     setQuery('')
     setSelectedNode(view)
     setMobileStep('list')
@@ -2333,12 +3041,14 @@ export function useVaultApp() {
   }
 
   function submitHomeSearch() {
+    setWorkspaceSection('passwords')
     setSelectedNode('all')
     setQuery(homeSearchQuery.trim())
     setMobileStep('list')
   }
 
   function openItemFromHome(itemId: string) {
+    setWorkspaceSection('passwords')
     setSelectedNode('all')
     setQuery('')
     setSelectedId(itemId)
@@ -2394,6 +3104,19 @@ export function useVaultApp() {
     return sourceItems.filter((item) => item.folderId === folderId)
   }
 
+  function scopeStorageItemsForSelection(sourceItems: VaultStorageItem[], node: SidebarNode, mode: FolderFilterMode) {
+    if (node === 'all') return sourceItems
+    if (node === 'home' || node === 'trash' || node === 'expiring' || node === 'expired') return []
+    if (node === 'unfiled') return sourceItems.filter((item) => !item.folderId)
+    const folderId = node.slice('folder:'.length)
+    if (!folderId) return sourceItems
+    if (mode === 'recursive') {
+      const descendantIds = new Set(collectDescendantIds(folderId, folders))
+      return sourceItems.filter((item) => item.folderId && descendantIds.has(item.folderId))
+    }
+    return sourceItems.filter((item) => item.folderId === folderId)
+  }
+
   async function removeCurrentItem() {
     if (!draft) return
     const deletingId = draft.id
@@ -2434,6 +3157,58 @@ export function useVaultApp() {
       setMobileStep(nextSelected ? previousMobileStep : 'list')
     }
     setItemContextMenu(null)
+  }
+
+  async function setItemCloudSyncExcluded(itemId: string, excluded: boolean) {
+    const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+      && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+    if (!canManageCloudSyncExclusions) {
+      setSyncMessage(syncProvider === 'self_hosted'
+        ? (capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
+        : (capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan'))
+      return
+    }
+    const target = items.find((item) => item.id === itemId)
+    if (!target) return
+    const nextItems = items.map((item) => (
+      item.id === itemId
+        ? { ...item, excludeFromCloudSync: excluded, updatedAt: new Date().toLocaleString() }
+        : item
+    ))
+    setDraft((current) => (
+      current?.id === itemId
+        ? { ...current, excludeFromCloudSync: excluded }
+        : current
+    ))
+    await persistPayload({ items: nextItems })
+    setItemContextMenu(null)
+    setSyncMessage(excluded ? 'Credential marked local-only (excluded from cloud sync)' : 'Credential included in cloud sync')
+  }
+
+  async function setStorageItemCloudSyncExcluded(itemId: string, excluded: boolean) {
+    const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+      && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+    if (!canManageCloudSyncExclusions) {
+      setSyncMessage(syncProvider === 'self_hosted'
+        ? (capabilityLockReasons['enterprise.self_hosted'] ?? 'Requires Enterprise plan')
+        : (capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan'))
+      return
+    }
+    const target = storageItems.find((item) => item.id === itemId)
+    if (!target) return
+    const nextItems = storageItems.map((item) => (
+      item.id === itemId
+        ? { ...item, excludeFromCloudSync: excluded, updatedAt: new Date().toLocaleString() }
+        : item
+    ))
+    setStorageDraft((current) => (
+      current?.id === itemId
+        ? { ...current, excludeFromCloudSync: excluded }
+        : current
+    ))
+    await persistPayload({ storageItems: nextItems })
+    setStorageContextMenu(null)
+    setSyncMessage(excluded ? 'Storage item marked local-only (excluded from cloud sync)' : 'Storage item included in cloud sync')
   }
 
   async function duplicateItem(itemId: string) {
@@ -2495,8 +3270,76 @@ export function useVaultApp() {
     setSyncMessage('Encrypted vault exported (.armadillo)')
   }
 
+  async function exportVaultBackupBundle() {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before exporting backup bundle')
+      return
+    }
+
+    try {
+      const vaultId = vaultSession.file.vaultId
+      const manifest: BackupManifest = {
+        version: 1,
+        vaultId,
+        createdAt: new Date().toISOString(),
+        blobCount: 0,
+        blobs: [],
+      }
+      const archive: Record<string, Uint8Array> = {
+        'vault.armadillo': strToU8(serializeVaultFile(vaultSession.file)),
+      }
+
+      const metas = await blobStore.listBlobMetaByVault(vaultId)
+      for (const meta of metas) {
+        const row = await blobStore.getBlob(vaultId, meta.blobId)
+        if (!row) continue
+        const path = `blobs/${meta.blobId}.bin`
+        archive[path] = strToU8(JSON.stringify({
+          blobId: row.blobId,
+          vaultId: row.vaultId,
+          nonce: row.nonce,
+          ciphertext: row.ciphertext,
+          sizeBytes: row.sizeBytes,
+          sha256: row.sha256,
+          mimeType: row.mimeType,
+          fileName: row.fileName,
+          updatedAt: row.updatedAt,
+        }))
+        manifest.blobs.push({
+          blobId: row.blobId,
+          fileName: row.fileName,
+          mimeType: row.mimeType,
+          sizeBytes: row.sizeBytes,
+          sha256: row.sha256,
+          updatedAt: row.updatedAt,
+          path,
+        })
+      }
+      manifest.blobCount = manifest.blobs.length
+      archive['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
+
+      const zipped = zipSync(archive, { level: 0 })
+      const zipBytes = new Uint8Array(zipped)
+      const blob = new Blob([zipBytes.buffer], { type: 'application/zip' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `vault-${vaultId}.armadillo-backup.zip`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setSyncMessage(`Encrypted backup bundle exported (${manifest.blobCount} blob${manifest.blobCount === 1 ? '' : 's'})`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Backup bundle export failed: ${detail}`)
+    }
+  }
+
   function triggerImport() {
     importFileInputRef.current?.click()
+  }
+
+  function triggerBackupImport() {
+    backupImportInputRef.current?.click()
   }
 
   function triggerGooglePasswordImport() {
@@ -2519,10 +3362,14 @@ export function useVaultApp() {
       persistVaultSnapshot(parsed)
       setVaultSession(null)
       setItems([])
+      setStorageItems([])
       setFolders([])
       setTrash([])
       setDraft(null)
+      setStorageDraft(null)
       setSelectedId('')
+      setSelectedStorageId('')
+      setWorkspaceSection('passwords')
       setPhase('unlock')
       setSyncMessage('Encrypted vault imported. Unlock with master password.')
     } catch {
@@ -2530,6 +3377,76 @@ export function useVaultApp() {
     }
 
     event.currentTarget.value = ''
+  }
+
+  async function onBackupBundleSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const archive = unzipSync(bytes)
+      const manifestBytes = archive['manifest.json']
+      const vaultBytes = archive['vault.armadillo']
+      if (!manifestBytes || !vaultBytes) {
+        setSyncMessage('Backup bundle is missing manifest.json or vault.armadillo')
+        return
+      }
+
+      const manifest = JSON.parse(strFromU8(manifestBytes)) as BackupManifest
+      const parsedVault = parseVaultFileFromText(strFromU8(vaultBytes))
+      const nowIso = new Date().toISOString()
+      for (const row of manifest.blobs ?? []) {
+        const blobBytes = archive[row.path]
+        if (!blobBytes) continue
+        try {
+          const payload = JSON.parse(strFromU8(blobBytes)) as {
+            blobId: string
+            vaultId: string
+            nonce: string
+            ciphertext: string
+            sizeBytes: number
+            sha256: string
+            mimeType: string
+            fileName: string
+            updatedAt: string
+          }
+          if (!payload.blobId || !payload.nonce || !payload.ciphertext) continue
+          await blobStore.putBlob({
+            vaultId: manifest.vaultId || parsedVault.vaultId,
+            blobId: payload.blobId,
+            nonce: payload.nonce,
+            ciphertext: payload.ciphertext,
+            sizeBytes: Number.isFinite(Number(payload.sizeBytes)) ? Number(payload.sizeBytes) : row.sizeBytes,
+            sha256: payload.sha256 || row.sha256,
+            mimeType: payload.mimeType || row.mimeType || 'application/octet-stream',
+            fileName: payload.fileName || row.fileName || 'file.bin',
+            updatedAt: payload.updatedAt || row.updatedAt || nowIso,
+            createdAt: nowIso,
+          })
+        } catch {
+          // Skip malformed blob rows.
+        }
+      }
+
+      persistVaultSnapshot(parsedVault)
+      setVaultSession(null)
+      setItems([])
+      setStorageItems([])
+      setFolders([])
+      setTrash([])
+      setDraft(null)
+      setStorageDraft(null)
+      setSelectedId('')
+      setSelectedStorageId('')
+      setWorkspaceSection('passwords')
+      setPhase('unlock')
+      setSyncMessage(`Encrypted backup bundle imported (${manifest.blobCount ?? 0} blob${(manifest.blobCount ?? 0) === 1 ? '' : 's'})`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to import backup bundle: ${detail}`)
+    } finally {
+      event.currentTarget.value = ''
+    }
   }
 
   async function onGooglePasswordCsvSelected(event: ChangeEvent<HTMLInputElement>) {
@@ -2573,6 +3490,7 @@ export function useVaultApp() {
           note,
           securityQuestions: [],
           passwordExpiryDate: null,
+          excludeFromCloudSync: false,
         }
       })
 
@@ -2667,6 +3585,7 @@ export function useVaultApp() {
           note,
           securityQuestions: [],
           passwordExpiryDate: null,
+          excludeFromCloudSync: false,
         }
       })
 
@@ -3148,7 +4067,8 @@ export function useVaultApp() {
       setSyncAuthToken(authToken ?? null)
       setSyncState('syncing')
       setSyncMessage('Pushing vault save to cloud...')
-      const result = await pushRemoteSnapshot(vaultSession.file)
+      const cloudPushFile = await buildCloudPushFile(vaultSession)
+      const result = await pushRemoteSnapshot(cloudPushFile)
       if (result?.ok) {
         setSyncState('live')
         setSyncMessage(`Manual cloud push complete (${result.ownerSource})`)
@@ -3173,6 +4093,7 @@ export function useVaultApp() {
       vaultError,
       pendingVaultExists,
       items,
+      storageItems,
       folders,
       trash,
       vaultSettings,
@@ -3180,7 +4101,9 @@ export function useVaultApp() {
       themeSettingsDirty,
       query,
       homeSearchQuery,
+      workspaceSection,
       selectedId,
+      selectedStorageId,
       activePanel,
       mobileStep,
       syncState,
@@ -3218,10 +4141,12 @@ export function useVaultApp() {
       windowMaximized,
       contextMenu,
       itemContextMenu,
+      storageContextMenu,
       folderEditor,
       folderEditorOpen,
       folderInlineEditor,
       newFolderValue,
+      newStorageFolderValue,
       treeContextMenu,
       expiryAlerts,
       expiryAlertsDismissed,
@@ -3233,6 +4158,8 @@ export function useVaultApp() {
       autoFolderPreferencesDirty,
       autoFolderWarnings,
       draft,
+      storageDraft,
+      storageFileBusy,
     },
     derived: {
       cloudConnected,
@@ -3245,8 +4172,11 @@ export function useVaultApp() {
       homeRecentItems,
       homeSearchResults,
       filtered,
+      filteredStorage,
       selected,
+      selectedStorage,
       folderOptions,
+      storageFeatureEnabled,
       hasCapability,
       isFlagEnabled,
     },
@@ -3256,7 +4186,9 @@ export function useVaultApp() {
       setCreatePassword,
       setConfirmPassword,
       setQuery,
+      setWorkspaceSection: switchWorkspaceSection,
       setSelectedId,
+      setSelectedStorageId,
       setActivePanel,
       setMobileStep,
       setShowPassword,
@@ -3283,15 +4215,19 @@ export function useVaultApp() {
       setThemeMotionLevel,
       persistThemeSettings,
       setItemContextMenu,
+      setStorageContextMenu,
       setContextMenu,
       setFolderEditor,
       setFolderEditorOpen,
       setFolderInlineEditor,
       setNewFolderValue,
+      setNewStorageFolderValue,
       setTreeContextMenu,
       setShowAllCloudSnapshots,
       setDraftField,
+      setStorageDraftField,
       openHome,
+      openStorageWorkspace,
       openSmartView,
       updateHomeSearch,
       submitHomeSearch,
@@ -3308,6 +4244,7 @@ export function useVaultApp() {
       signInWithGoogle,
       signOutCloud,
       createItem,
+      createStorageItem,
       lockVault,
       closeOpenItem,
       createSubfolder,
@@ -3317,22 +4254,34 @@ export function useVaultApp() {
       commitFolderInlineEditor,
       openFolderEditor,
       saveFolderEditor,
+      setFolderCloudSyncExcluded,
       moveFolder,
       deleteFolderCascade,
       restoreTrashEntry,
       deleteTrashEntryPermanently,
       saveCurrentItem,
+      saveCurrentStorageItem,
+      setItemCloudSyncExcluded,
+      setStorageItemCloudSyncExcluded,
       removeCurrentItem,
       removeItemById,
+      removeCurrentStorageItem,
+      removeStorageItemById,
       duplicateItem,
       copyPassword,
+      attachFileToStorageDraft,
+      loadStorageBlobFile,
+      downloadStorageFile,
       autofillItem,
       updateSecurityQuestion,
       exportVaultFile,
+      exportVaultBackupBundle,
       triggerImport,
+      triggerBackupImport,
       triggerGooglePasswordImport,
       triggerKeePassImport,
       onImportFileSelected,
+      onBackupBundleSelected,
       onGooglePasswordCsvSelected,
       onKeePassCsvSelected,
       previewAutoFoldering,
@@ -3359,6 +4308,7 @@ export function useVaultApp() {
     },
     refs: {
       importFileInputRef,
+      backupImportInputRef,
       googlePasswordImportInputRef,
       keepassImportInputRef,
       folderLongPressTimerRef,

@@ -34,14 +34,16 @@ const ICON_OPTIONS = [
 ]
 
 export function EditFolderModal() {
-  const { folderEditorOpen, folderEditor, folders } = useVaultAppState()
-  const { folderPathById } = useVaultAppDerived()
+  const { folderEditorOpen, folderEditor, folders, syncProvider } = useVaultAppState()
+  const { folderPathById, hasCapability } = useVaultAppDerived()
   const { setFolderEditorOpen, setFolderEditor, saveFolderEditor } = useVaultAppActions()
   const [showCustomColor, setShowCustomColor] = useState(false)
 
   if (!folderEditorOpen || !folderEditor) return null
 
   const isPresetColor = PRESET_COLORS.includes(folderEditor.color)
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
   return (
     <div className="settings-overlay">
@@ -169,6 +171,25 @@ export function EditFolderModal() {
               onChange={(e) => setFolderEditor((prev) => (prev ? { ...prev, notes: e.target.value } : prev))}
             />
           </section>
+
+          {canManageCloudSyncExclusions && (
+            <section className="settings-section">
+              <h3>Cloud Sync</h3>
+              <label className="detail-toggle-row">
+                <input
+                  type="checkbox"
+                  className="detail-toggle-input"
+                  checked={Boolean(folderEditor.excludeFromCloudSync)}
+                  onChange={(e) => setFolderEditor((prev) => (prev ? { ...prev, excludeFromCloudSync: e.target.checked } : prev))}
+                />
+                <span className="detail-toggle-control" aria-hidden="true">
+                  <span className="detail-toggle-thumb" />
+                </span>
+                <span className="detail-toggle-label">Exclude from Cloud Sync</span>
+              </label>
+              <p className="muted">Items and subfolders under this folder stay on this device.</p>
+            </section>
+          )}
 
           {/* Actions */}
           <div className="fp-actions">

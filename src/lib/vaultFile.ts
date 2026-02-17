@@ -14,6 +14,7 @@ import {
   type VaultFolder,
   type VaultPayload,
   type VaultSettings,
+  type VaultStorageItem,
   type VaultStorageMode,
   type VaultSession,
   type VaultTrashEntry,
@@ -32,6 +33,7 @@ export function defaultVaultPayload(): VaultPayload {
   return {
     schemaVersion: VAULT_SCHEMA_VERSION,
     items: [],
+    storageItems: [],
     folders: [],
     trash: [],
     settings: defaultVaultSettings(),
@@ -149,6 +151,13 @@ function normalizeAutoFolderCustomMappings(input: unknown): AutoFolderCustomMapp
   return rows
 }
 
+function normalizeStorageKind(input: unknown): VaultStorageItem['kind'] {
+  if (input === 'document' || input === 'image' || input === 'key' || input === 'token' || input === 'secret') {
+    return input
+  }
+  return 'other'
+}
+
 function ensureTrashRetention(payload: VaultPayload) {
   const now = Date.now()
   payload.trash = payload.trash.filter((entry) => {
@@ -164,6 +173,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const now = new Date().toISOString()
   const base = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const rawItems = Array.isArray(base.items) ? base.items : []
+  const rawStorageItems = Array.isArray(base.storageItems) ? base.storageItems : []
 
   const migratedItems = rawItems.map((item): VaultPayload['items'][number] => {
     const source = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
@@ -191,13 +201,47 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
             })
             .filter((entry) => entry.question || entry.answer)
         : [],
+      excludeFromCloudSync: source.excludeFromCloudSync === true,
     }
   })
+
+  const migratedStorageItems = rawStorageItems.map((item): VaultStorageItem | null => {
+    const source = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
+    const id = typeof source.id === 'string' && source.id ? source.id : crypto.randomUUID()
+    const title = typeof source.title === 'string' ? source.title : 'Untitled Storage'
+    const folder = typeof source.folder === 'string' ? source.folder : ''
+    const folderId = typeof source.folderId === 'string' ? source.folderId : null
+    const updatedAt = typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : new Date().toLocaleString()
+    const blobRefSource = (source.blobRef && typeof source.blobRef === 'object' ? source.blobRef : null) as Record<string, unknown> | null
+    const blobRef = blobRefSource && typeof blobRefSource.blobId === 'string' && blobRefSource.blobId
+      ? {
+          blobId: blobRefSource.blobId,
+          fileName: typeof blobRefSource.fileName === 'string' ? blobRefSource.fileName : 'file',
+          mimeType: typeof blobRefSource.mimeType === 'string' ? blobRefSource.mimeType : 'application/octet-stream',
+          sizeBytes: Number.isFinite(Number(blobRefSource.sizeBytes)) ? Math.max(0, Number(blobRefSource.sizeBytes)) : 0,
+          sha256: typeof blobRefSource.sha256 === 'string' ? blobRefSource.sha256 : '',
+        }
+      : null
+
+    return {
+      id,
+      title,
+      kind: normalizeStorageKind(source.kind),
+      folder,
+      folderId,
+      tags: normalizeTagValues(source.tags, undefined),
+      note: typeof source.note === 'string' ? source.note : '',
+      updatedAt,
+      excludeFromCloudSync: source.excludeFromCloudSync === true,
+      textValue: typeof source.textValue === 'string' ? source.textValue : '',
+      blobRef,
+    }
+  }).filter((entry): entry is VaultStorageItem => Boolean(entry))
 
   const rawFolders = Array.isArray(base.folders) ? base.folders : []
 
   let folders: VaultFolder[] = rawFolders
-    .map((folder) => {
+    .map((folder): VaultFolder | null => {
       const source = (folder && typeof folder === 'object' ? folder : {}) as Record<string, unknown>
       const name = typeof source.name === 'string' ? source.name.trim() : ''
       if (!name) return null
@@ -211,6 +255,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
         notes: typeof source.notes === 'string' ? source.notes : '',
         createdAt: toIso(source.createdAt, now),
         updatedAt: toIso(source.updatedAt, now),
+        excludeFromCloudSync: source.excludeFromCloudSync === true,
       }
     })
     .filter((entry): entry is VaultFolder => Boolean(entry))
@@ -250,6 +295,18 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     }
   })
 
+  const storageItems = migratedStorageItems.map((item) => {
+    const nextFolderId = item.folderId && validFolderIds.has(item.folderId)
+      ? item.folderId
+      : folderByName.get(item.folder.trim().toLowerCase()) ?? null
+    const folderName = nextFolderId ? (folders.find((folder) => folder.id === nextFolderId)?.name ?? item.folder) : item.folder
+    return {
+      ...item,
+      folderId: nextFolderId,
+      folder: folderName || '',
+    }
+  })
+
   const settingsSource = (base.settings && typeof base.settings === 'object' ? base.settings : {}) as Record<string, unknown>
   const settings: VaultSettings = {
     trashRetentionDays: safeRetentionDays(settingsSource.trashRetentionDays),
@@ -264,7 +321,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const trash: VaultTrashEntry[] = []
   for (const entry of trashSource) {
     const source = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
-    if (source.kind !== 'folderTreeSnapshot' && source.kind !== 'itemSnapshot') {
+    if (source.kind !== 'folderTreeSnapshot' && source.kind !== 'itemSnapshot' && source.kind !== 'storageItemSnapshot') {
       continue
     }
     const deletedAt = toIso(source.deletedAt, now)
@@ -282,6 +339,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const normalized: VaultPayload = {
     schemaVersion: VAULT_SCHEMA_VERSION,
     items,
+    storageItems,
     folders,
     trash,
     settings,

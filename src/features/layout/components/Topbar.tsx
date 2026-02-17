@@ -4,8 +4,8 @@ import logoSrc from '../../../assets/armadillo.png'
 
 export function Topbar() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { syncState, syncMessage, authMessage, showSettings } = useVaultAppState()
-  const { createItem, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
+  const { syncState, syncMessage, authMessage, showSettings, workspaceSection } = useVaultAppState()
+  const { createItem, createStorageItem, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
   const showRefreshButton = effectivePlatform === 'desktop' || effectivePlatform === 'web'
 
   return (
@@ -28,8 +28,8 @@ export function Topbar() {
           </button>
         )}
         {!showSettings && (
-          <button className="solid" onClick={createItem}>
-            <span className="topbar-new-btn-text">+ New Credential</span>
+          <button className="solid" onClick={workspaceSection === 'storage' ? createStorageItem : createItem}>
+            <span className="topbar-new-btn-text">{workspaceSection === 'storage' ? '+ New Storage Item' : '+ New Credential'}</span>
             <span className="topbar-new-btn-icon"><Plus size={18} strokeWidth={2.2} /></span>
           </button>
         )}

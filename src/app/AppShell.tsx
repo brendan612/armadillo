@@ -7,9 +7,12 @@ import { SidebarPane } from '../features/nav/components/SidebarPane'
 import { ItemListPane } from '../features/items/components/ItemListPane'
 import { ItemDetailPane } from '../features/items/components/ItemDetailPane'
 import { HomePane } from '../features/home/components/HomePane'
+import { StorageListPane } from '../features/storage/components/StorageListPane'
+import { StorageDetailPane } from '../features/storage/components/StorageDetailPane'
 import { FolderContextMenu } from '../features/nav/components/FolderContextMenu'
 import { TreeContextMenu } from '../features/nav/components/TreeContextMenu'
 import { ItemContextMenu } from '../features/items/components/ItemContextMenu'
+import { StorageContextMenu } from '../features/storage/components/StorageContextMenu'
 import { EditFolderModal } from '../features/folders/components/EditFolderModal'
 import { SettingsPage } from '../features/settings/components/SettingsPage'
 import { MobileNav } from '../features/layout/components/MobileNav'
@@ -40,15 +43,23 @@ function findScrollableAncestor(target: EventTarget | null): HTMLElement | null 
 
 export function AppShell() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, showSettings, appBuildInfo, updateCheckResult } = useVaultAppState()
-  const { importFileInputRef, googlePasswordImportInputRef, keepassImportInputRef } = useVaultAppRefs()
-  const { onImportFileSelected, onGooglePasswordCsvSelected, onKeePassCsvSelected, dismissExpiryAlerts, refreshVaultFromCloudNow, openSettings } = useVaultAppActions()
+  const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, workspaceSection, showSettings, appBuildInfo, updateCheckResult } = useVaultAppState()
+  const { importFileInputRef, backupImportInputRef, googlePasswordImportInputRef, keepassImportInputRef } = useVaultAppRefs()
+  const {
+    onImportFileSelected,
+    onBackupBundleSelected,
+    onGooglePasswordCsvSelected,
+    onKeePassCsvSelected,
+    dismissExpiryAlerts,
+    refreshVaultFromCloudNow,
+    openSettings,
+  } = useVaultAppActions()
   const pullRefreshRef = useRef<PullRefreshGesture | null>(null)
 
   const expiredCount = expiryAlerts.filter((a) => a.status === 'expired').length
   const expiringCount = expiryAlerts.filter((a) => a.status === 'expiring').length
   const showExpiryBar = expiryAlerts.length > 0 && !expiryAlertsDismissed
-  const showHomePane = selectedNode === 'home'
+  const showHomePane = workspaceSection === 'passwords' && selectedNode === 'home'
   const showDetailPane = !showHomePane
   const updateRequired = appBuildInfo.channel === 'production' && updateCheckResult.status === 'required'
 
@@ -139,8 +150,8 @@ export function AppShell() {
           onTouchCancel={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
         >
           <SidebarPane />
-          {showHomePane ? <HomePane /> : <ItemListPane />}
-          {showDetailPane && <ItemDetailPane />}
+          {showHomePane ? <HomePane /> : workspaceSection === 'storage' ? <StorageListPane /> : <ItemListPane />}
+          {showDetailPane && (workspaceSection === 'storage' ? <StorageDetailPane /> : <ItemDetailPane />)}
         </main>
       )}
       <SettingsPage />
@@ -148,6 +159,7 @@ export function AppShell() {
       <FolderContextMenu />
       <TreeContextMenu />
       <ItemContextMenu />
+      <StorageContextMenu />
       <EditFolderModal />
 
       {!showSettings && !updateRequired && <MobileNav />}
@@ -158,6 +170,13 @@ export function AppShell() {
         accept=".armadillo,application/octet-stream,application/json"
         style={{ display: 'none' }}
         onChange={(event) => void onImportFileSelected(event)}
+      />
+      <input
+        ref={backupImportInputRef}
+        type="file"
+        accept=".zip,.armadillo-backup.zip,application/zip"
+        style={{ display: 'none' }}
+        onChange={(event) => void onBackupBundleSelected(event)}
       />
       <input
         ref={googlePasswordImportInputRef}
