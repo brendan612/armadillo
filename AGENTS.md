@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-18
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed workflow-dispatch branch targeting by clearing the `git_ref` default so manual fast-lane runs no longer silently build `main` unless explicitly requested.
+- 2026-02-18
   - Updated `AGENTS.md`, `android/app/build.gradle`
   - Fixed Android `devRelease` R8 minification failure in the Firebase fastlane lane by adding missing Tink annotation dependencies (`error_prone_annotations`, `jsr305`) so release shrinking can resolve referenced classes.
 - 2026-02-18
@@ -63,6 +66,12 @@
 - 2026-02-16
   - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`
   - Softened premium-lock messaging (removed blunt "Requires Premium plan" from unlock screen, replaced Cloud settings lock text with subtle "Available on Premium/Enterprise" hints), extracted Plans & Billing into its own settings category with a styled "Get Premium" upgrade card for free users and a clean "Current Plan" summary for paid users, and added org-member detection to hide billing controls when the user belongs to an organization.
+- 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed fast-lane Android CI Java toolchain mismatch by upgrading GitHub Actions Java setup from 17 to 21 to satisfy Capacitor Android `sourceCompatibility`/`--release 21`.
+- 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed Linux CI Gradle wrapper execution in fast-lane Android workflow by normalizing `android/gradlew` line endings and setting execute permission before running `assembleDevRelease`.
 - 2026-02-16
   - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
   - Added a dual-track device update implementation with update-manifest types/checking, Settings channel/build/update visibility, production-only minimum-version enforcement gate, Android `dev` flavor + CI-injected version/signing properties, and a Firebase App Distribution fast-lane workflow for non-store Android tester pushes.
