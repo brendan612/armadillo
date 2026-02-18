@@ -1014,7 +1014,7 @@ body.folder-dragging * {
 }
 
 /* ============================================
-   MIDDLE PANE — Item List
+   MIDDLE PANE — Home / At a Glance
    ============================================ */
 .home-pane {
   display: flex;
@@ -1027,151 +1027,173 @@ body.folder-dragging * {
   font-weight: 700;
 }
 
+/* ---- Body ---- */
 .home-body {
-  display: grid;
-  gap: 0.7rem;
-  padding: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem;
   overflow-y: auto;
 }
 
+/* ---- Search ---- */
 .home-search-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.5rem;
+  gap: 0.4rem;
+  padding: 0.38rem 0.5rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg-2);
+  border-radius: 8px;
+  background: var(--bg-1);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.home-search-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .home-search-row svg {
   color: var(--ink-muted);
+  flex-shrink: 0;
 }
 
 .home-search-row input {
   border: none;
   background: transparent;
   box-shadow: none;
-  padding: 0.2rem 0.1rem;
+  padding: 0.15rem 0;
+  font-size: 0.83rem;
 }
 
 .home-search-row input:focus {
   box-shadow: none;
 }
 
-.home-cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
+.home-search-btn {
+  font-size: 0.7rem;
+  padding: 0.22rem 0.5rem;
+  white-space: nowrap;
 }
 
-.home-card {
+/* ---- Stat strip ---- */
+.home-stats {
   display: grid;
-  justify-items: start;
-  gap: 0.16rem;
-  text-align: left;
-  padding: 0.62rem;
-  border-radius: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.home-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.18rem;
+  padding: 0.55rem 0.25rem;
+  border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--bg-2);
-  color: var(--ink);
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  color: var(--ink-muted);
+  text-align: center;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  cursor: pointer;
 }
 
-.home-card:hover {
+.home-stat:hover {
   background: var(--bg-3);
   border-color: var(--line-strong);
-  transform: none;
+  color: var(--ink);
 }
 
-.home-card-icon {
-  color: var(--accent);
-  opacity: 0.92;
+.home-stat svg {
+  flex-shrink: 0;
 }
 
-.home-card-value {
+.home-stat-value {
+  font-family: 'Bricolage Grotesque', sans-serif;
   font-size: 1.15rem;
   font-weight: 700;
-  font-family: 'Bricolage Grotesque', sans-serif;
+  line-height: 1;
+  color: var(--ink);
 }
 
-.home-card-label {
-  font-size: 0.74rem;
+.home-stat-label {
+  font-size: 0.6rem;
+  font-weight: 500;
   color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
+/* State: alert (expired) */
+.home-stat--alert svg         { color: var(--exposed); }
+.home-stat--alert .home-stat-value { color: var(--exposed); }
+
+/* State: warn (expiring soon) */
+.home-stat--warn svg          { color: var(--weak); }
+.home-stat--warn .home-stat-value  { color: var(--weak); }
+
+/* State: reused passwords */
+.home-stat--reused svg        { color: var(--reused); }
+.home-stat--reused .home-stat-value { color: var(--reused); }
+
+/* ---- Sections (search results / recent) ---- */
 .home-section {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-2) 88%, transparent);
-  padding: 0.55rem;
+  border-radius: 8px;
+  background: var(--bg-1);
+  overflow: hidden;
 }
 
 .home-section-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.35rem;
+  padding: 0.4rem 0.55rem;
+  border-bottom: 1px solid var(--line);
 }
 
 .home-section-head h3 {
   margin: 0;
-  font-size: 0.83rem;
-  font-weight: 650;
-}
-
-.home-section-head span {
   font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--ink-muted);
 }
 
-.home-inline-list,
-.home-recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.28rem;
-}
-
-.home-result-row,
-.home-recent-row {
-  width: 100%;
-  display: grid;
-  gap: 0.1rem;
-  text-align: left;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  padding: 0.38rem 0.42rem;
-  color: var(--ink);
-}
-
-.home-result-row:hover,
-.home-recent-row:hover {
-  background: var(--bg-3);
-  border-color: var(--line);
-  transform: none;
-}
-
-.home-result-row strong,
-.home-recent-row strong {
-  font-size: 0.78rem;
-  font-weight: 620;
-}
-
-.home-result-row span,
-.home-recent-row span {
+.home-section-count {
   font-size: 0.68rem;
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
+/* ---- Item lists — reuse .item-list styles, override only layout diffs ---- */
+.home-item-list {
+  overflow-y: unset;
+  flex: unset;
+  padding: 0.3rem;
+}
+
+.home-item-list li {
+  cursor: pointer;
+}
+
+/* ---- Empty state ---- */
 .home-empty {
-  margin: 0.2rem 0 0;
-  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.55rem;
   color: var(--ink-muted);
+}
+
+.home-empty svg { opacity: 0.4; flex-shrink: 0; }
+
+.home-empty p {
+  margin: 0;
+  font-size: 0.74rem;
 }
 
 .pane-head {
@@ -3625,8 +3647,8 @@ body.folder-dragging * {
     padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   }
 
-  .home-cards {
-    grid-template-columns: 1fr;
+  .home-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .pane-right {
