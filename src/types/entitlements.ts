@@ -3,6 +3,8 @@ export type PlanTier = 'free' | 'premium' | 'enterprise'
 export type CapabilityKey =
   | 'cloud.sync'
   | 'cloud.cloud_only'
+  | 'vault.storage'
+  | 'vault.storage.blobs'
   | 'enterprise.self_hosted'
   | 'enterprise.org_admin'
 

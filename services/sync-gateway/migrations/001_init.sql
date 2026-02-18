@@ -22,6 +22,21 @@ CREATE TABLE IF NOT EXISTS sync_snapshots (
   PRIMARY KEY (org_id, vault_id)
 );
 
+CREATE TABLE IF NOT EXISTS sync_blobs (
+  org_id TEXT NOT NULL,
+  vault_id TEXT NOT NULL,
+  blob_id TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  sha256 TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  updated_by TEXT,
+  PRIMARY KEY (org_id, vault_id, blob_id)
+);
+
 CREATE TABLE IF NOT EXISTS sync_audit_events (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL,
@@ -40,4 +55,5 @@ CREATE TABLE IF NOT EXISTS sync_idempotency (
 
 CREATE INDEX IF NOT EXISTS sync_members_by_member ON sync_members(member_id);
 CREATE INDEX IF NOT EXISTS sync_snapshots_by_org_updated ON sync_snapshots(org_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS sync_blobs_by_org_vault ON sync_blobs(org_id, vault_id);
 CREATE INDEX IF NOT EXISTS sync_audit_by_org_created ON sync_audit_events(org_id, created_at DESC);

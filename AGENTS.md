@@ -9,6 +9,54 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-17
+  - Updated `AGENTS.md`, `package.json`, `package-lock.json`, `scripts/entitlements/sign-token.mjs`, `convex/schema.ts`, `convex/sync.ts`, `convex/http.ts`, `services/sync-gateway/server.mjs`, `services/sync-gateway/migrations/001_init.sql`, `services/sync-gateway/README.md`, `services/sync-gateway/tests/server.test.mjs`, `src/types/entitlements.ts`, `src/features/flags/registry.ts`, `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/lib/crypto.ts`, `src/lib/blobStore/index.ts`, `src/lib/blobStore/types.ts`, `src/lib/blobStore/indexedDbBlobStore.ts`, `src/lib/syncTypes.ts`, `src/lib/syncClient.ts`, `src/lib/convexApi.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/nav/components/SidebarPane.tsx`, `src/features/nav/components/FolderTree.tsx`, `src/features/layout/components/Topbar.tsx`, `src/features/layout/components/MobileNav.tsx`, `src/features/settings/components/SettingsPage.tsx`, `src/features/storage/components/StorageListPane.tsx`, `src/features/storage/components/StorageDetailPane.tsx`, `src/features/storage/components/StorageContextMenu.tsx`
+  - Implemented a Premium-gated Storage workspace with schema v5 storage items, encrypted local blob cache + cloud blob sync APIs (Convex/self-hosted), backup-bundle zip import/export, and new Storage list/detail/context UI integrated into desktop/mobile navigation.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/folders/components/EditFolderModal.tsx`, `src/features/items/components/ItemContextMenu.tsx`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/features/nav/components/FolderContextMenu.tsx`, `src/features/nav/components/FolderTree.tsx`
+  - Gated all "Exclude from Cloud Sync" controls/indicators so they only show when the current plan/provider can actually use cloud sync, and added action-level guards to block exclusion toggles when cloud sync is unavailable.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/index.css`
+  - Standardized trailing action-button sizing to match input heights in detail rows (password inline action icons and security-question remove buttons) for cleaner alignment.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Fixed security-question input focus loss by using stable row keys, and improved the editor UX by adding per-question remove buttons plus clearer question/answer placeholders.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/index.css`
+  - Matched the credential password and confirm-password input typography by applying the same monospace font and size to the confirm-password field.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Moved the item-level "Exclude from Cloud Sync" toggle from the middle of the detail form to a dedicated row directly beneath the detail header action bar for faster access.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/folders/components/EditFolderModal.tsx`
+  - Simplified the local-only toggle label text to the consistent wording "Exclude from Cloud Sync" in item detail and folder properties.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/folders/components/EditFolderModal.tsx`, `src/index.css`
+  - Replaced local-only cloud-sync checkboxes with styled switch toggles in item detail and folder properties so the control matches the app's visual language.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/nav/components/FolderContextMenu.tsx`, `src/index.css`
+  - Tightened folder context-menu viewport positioning (stable height math, upward-open fallback, resize/scroll reclamp) and made the folder tree area fill available pane height instead of a fixed short cap.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/features/nav/components/FolderContextMenu.tsx`, `src/index.css`
+  - Fixed folder context-menu viewport clipping near the bottom by rendering via a body portal, recalculating/clamping on open/resize, and allowing internal menu scroll when height is constrained.
+- 2026-02-17
+  - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/folders/components/EditFolderModal.tsx`, `src/features/items/components/ItemContextMenu.tsx`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/features/nav/components/FolderContextMenu.tsx`, `src/features/nav/components/FolderTree.tsx`, `src/index.css`, `src/lib/vaultFile.ts`, `src/shared/utils/itemFactory.ts`, `src/types/vault.ts`
+  - Added local-only cloud-sync exclusions for credentials/folders with schema support, cloud push filtering + pull merge preservation, and UI toggles/badges so excluded data stays device-only.
+- 2026-02-16
+  - Updated `AGENTS.md`, `src/index.css`
+  - Fixed desktop main workspace center-pane scroll by changing `align-items: start` to `align-items: stretch` on `.platform-desktop .workspace` so panes fill the grid track height and item-list overflow scrolls internally.
+- 2026-02-16
+  - Updated `AGENTS.md`, `electron/main.cjs`, `services/sync-gateway/server.mjs`, `services/sync-gateway/README.md`, `.env.example`
+  - Standardized dev server port to 4000 everywhere: Electron dev URL, sync-gateway default CORS origins, and example env/docs.
+- 2026-02-16
+  - Updated `AGENTS.md`, `src/index.css`
+  - Fixed desktop settings content cutoff by changing `align-items: start` to `align-items: stretch` on `.platform-desktop .settings-page-workspace` so grid children fill the track height and the detail pane scrolls internally.
+- 2026-02-16
+  - Updated `AGENTS.md`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`
+  - Replaced the dev-override JSON textarea with interactive tier buttons, capability checkboxes, and flag toggles for easier local QA testing.
+- 2026-02-16
+  - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`
+  - Softened premium-lock messaging (removed blunt "Requires Premium plan" from unlock screen, replaced Cloud settings lock text with subtle "Available on Premium/Enterprise" hints), extracted Plans & Billing into its own settings category with a styled "Get Premium" upgrade card for free users and a clean "Current Plan" summary for paid users, and added org-member detection to hide billing controls when the user belongs to an organization.
 - 2026-02-16
   - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
   - Added a dual-track device update implementation with update-manifest types/checking, Settings channel/build/update visibility, production-only minimum-version enforcement gate, Android `dev` flavor + CI-injected version/signing properties, and a Firebase App Distribution fast-lane workflow for non-store Android tester pushes.

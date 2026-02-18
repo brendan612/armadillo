@@ -1,5 +1,12 @@
 import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
-import type { AuthContext, EntitlementFetchResponse } from './syncTypes'
+import type {
+  AuthContext,
+  BlobDeleteResponse,
+  BlobGetResponse,
+  BlobPutResponse,
+  EntitlementFetchResponse,
+  RemoteBlobRecord,
+} from './syncTypes'
 import { getOwnerHint } from './owner'
 
 function normalizeBaseUrl(url: string) {
@@ -161,6 +168,39 @@ export async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<Push
   } catch {
     return postJson<PushResponse>('/api/sync/push', payload, 'Convex push (legacy)')
   }
+}
+
+export async function putRemoteBlob(vaultId: string, blob: RemoteBlobRecord): Promise<BlobPutResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+  return postJson<BlobPutResponse>(
+    '/api/v2/sync/blobs/put',
+    { ...blob, vaultId },
+    'Convex blob put',
+  )
+}
+
+export async function getRemoteBlob(vaultId: string, blobId: string): Promise<BlobGetResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+  return postJson<BlobGetResponse>(
+    '/api/v2/sync/blobs/get',
+    { vaultId, blobId },
+    'Convex blob get',
+  )
+}
+
+export async function deleteRemoteBlob(vaultId: string, blobId: string): Promise<BlobDeleteResponse | null> {
+  if (!hasConvexConfig()) {
+    return null
+  }
+  return postJson<BlobDeleteResponse>(
+    '/api/v2/sync/blobs/delete',
+    { vaultId, blobId },
+    'Convex blob delete',
+  )
 }
 
 export async function getCloudAuthStatus(): Promise<CloudAuthStatus | null> {

@@ -1,5 +1,6 @@
 import { argon2id } from '@noble/hashes/argon2.js'
 import { utf8ToBytes } from '@noble/hashes/utils.js'
+import type { EncryptedBlob } from '../types/vault'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -34,6 +35,14 @@ function fromBase64(encoded: string) {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes
+}
+
+export function bytesToBase64(bytes: Uint8Array) {
+  return toBase64(bytes)
+}
+
+export function base64ToBytes(encoded: string) {
+  return fromBase64(encoded)
 }
 
 function randomBytes(length: number) {
@@ -130,6 +139,20 @@ async function decryptBytesWithKey(key: CryptoKey, encrypted: { nonce: string; c
     toArrayBuffer(ciphertext),
   )
   return new Uint8Array(decrypted)
+}
+
+export async function encryptBytesWithVaultKey(key: CryptoKey, bytes: Uint8Array): Promise<EncryptedBlob> {
+  return encryptBytesWithKey(key, bytes)
+}
+
+export async function decryptBytesWithVaultKey(key: CryptoKey, encrypted: EncryptedBlob) {
+  return decryptBytesWithKey(key, encrypted)
+}
+
+export async function sha256Base64(bytes: Uint8Array) {
+  const subtle = requireSubtleCrypto()
+  const hash = await subtle.digest('SHA-256', toArrayBuffer(bytes))
+  return toBase64(new Uint8Array(hash))
 }
 
 export async function createVaultKey() {

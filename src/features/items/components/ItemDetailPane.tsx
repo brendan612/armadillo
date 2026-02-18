@@ -24,6 +24,7 @@ function snapshotItemForDirtyCheck(item: VaultItem | null) {
       answer: entry.answer,
     })),
     passwordExpiryDate: item.passwordExpiryDate,
+    excludeFromCloudSync: item.excludeFromCloudSync === true,
   }
 }
 
@@ -35,8 +36,9 @@ export function ItemDetailPane() {
     newFolderValue,
     isSaving,
     vaultSettings,
+    syncProvider,
   } = useVaultAppState()
-  const { selected, folderOptions } = useVaultAppDerived()
+  const { selected, folderOptions, hasCapability } = useVaultAppDerived()
   const {
     closeOpenItem,
     setDraftField,
@@ -150,6 +152,8 @@ export function ItemDetailPane() {
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
   const passwordInputId = draft ? `item-password-${draft.id}` : 'item-password'
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
   const hasUnsavedChanges = useMemo(() => {
     if (!draft || !selected) return false
     return JSON.stringify(snapshotItemForDirtyCheck(draft)) !== JSON.stringify(snapshotItemForDirtyCheck(selected))
@@ -205,6 +209,23 @@ export function ItemDetailPane() {
           )}
         </div>
       </div>
+
+      {draft && canManageCloudSyncExclusions && (
+        <div className="detail-head-toggle">
+          <label className="detail-toggle-row">
+            <input
+              type="checkbox"
+              className="detail-toggle-input"
+              checked={Boolean(draft.excludeFromCloudSync)}
+              onChange={(event) => setDraftField('excludeFromCloudSync', event.target.checked)}
+            />
+            <span className="detail-toggle-control" aria-hidden="true">
+              <span className="detail-toggle-thumb" />
+            </span>
+            <span className="detail-toggle-label">Exclude from Cloud Sync</span>
+          </label>
+        </div>
+      )}
 
       {draft && (
         <div className="detail-grid">
@@ -465,9 +486,26 @@ export function ItemDetailPane() {
               <p className="muted">No security questions saved.</p>
             ) : (
               draft.securityQuestions.map((entry, index) => (
-                <div key={`${entry.question}-${index}`} className="qa-row">
-                  <input value={entry.question} onChange={(event) => updateSecurityQuestion(index, 'question', event.target.value)} />
-                  <input type="password" value={entry.answer} onChange={(event) => updateSecurityQuestion(index, 'answer', event.target.value)} />
+                <div key={`security-question-${index}`} className="qa-row">
+                  <input
+                    value={entry.question}
+                    placeholder="Question"
+                    onChange={(event) => updateSecurityQuestion(index, 'question', event.target.value)}
+                  />
+                  <input
+                    type="password"
+                    value={entry.answer}
+                    placeholder="Answer"
+                    onChange={(event) => updateSecurityQuestion(index, 'answer', event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="qa-remove-btn"
+                    title="Remove security question"
+                    onClick={() => setDraftField('securityQuestions', draft.securityQuestions.filter((_, i) => i !== index))}
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
               ))
             )}

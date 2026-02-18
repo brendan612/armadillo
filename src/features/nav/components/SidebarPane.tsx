@@ -2,9 +2,20 @@ import { FolderTree } from './FolderTree'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function SidebarPane() {
-  const { items, trash, selectedNode, mobileStep } = useVaultAppState()
-  const { expiredItems, expiringSoonItems } = useVaultAppDerived()
-  const { setSelectedNode, setMobileStep, createSubfolder, setTreeContextMenu, openHome, openSmartView } = useVaultAppActions()
+  const { items, storageItems, trash, selectedNode, mobileStep, workspaceSection } = useVaultAppState()
+  const { expiredItems, expiringSoonItems, storageFeatureEnabled } = useVaultAppDerived()
+  const {
+    setSelectedNode,
+    setMobileStep,
+    createSubfolder,
+    createStorageItem,
+    setTreeContextMenu,
+    openHome,
+    openStorageWorkspace,
+    openSmartView,
+  } = useVaultAppActions()
+  const isStorage = workspaceSection === 'storage'
+  const activeItems = isStorage ? storageItems : items
 
   function handleTreeContextMenu(event: React.MouseEvent) {
     // Only show tree context menu when clicking empty area (not on a folder node)
@@ -17,17 +28,31 @@ export function SidebarPane() {
   return (
     <aside className={`pane pane-left ${mobileStep === 'nav' ? 'mobile-active' : ''}`}>
       <div className="sidebar-header">
-        <h2>Vault</h2>
-        <span className="sidebar-count">{items.length} items</span>
+        <h2>{isStorage ? 'Storage' : 'Vault'}</h2>
+        <span className="sidebar-count">{activeItems.length} items</span>
+      </div>
+
+      <div className="tab-row">
+        <button className={workspaceSection === 'passwords' ? 'active' : ''} onClick={openHome}>Passwords</button>
+        <button
+          className={workspaceSection === 'storage' ? 'active' : ''}
+          onClick={openStorageWorkspace}
+          disabled={!storageFeatureEnabled}
+          title={storageFeatureEnabled ? 'Open Storage' : 'Requires Premium plan'}
+        >
+          Storage
+        </button>
       </div>
 
       <nav className="sidebar-nav">
-        <button
-          className={`sidebar-nav-item ${selectedNode === 'home' ? 'active' : ''}`}
-          onClick={openHome}
-        >
-          <span>Home</span>
-        </button>
+        {!isStorage && (
+          <button
+            className={`sidebar-nav-item ${selectedNode === 'home' ? 'active' : ''}`}
+            onClick={openHome}
+          >
+            <span>Home</span>
+          </button>
+        )}
         <button
           className={`sidebar-nav-item ${selectedNode === 'all' ? 'active' : ''}`}
           onClick={() => {
@@ -35,23 +60,27 @@ export function SidebarPane() {
             setMobileStep('list')
           }}
         >
-          <span>All Items</span>
-          <span className="sidebar-badge">{items.length}</span>
+          <span>{isStorage ? 'All Storage' : 'All Items'}</span>
+          <span className="sidebar-badge">{activeItems.length}</span>
         </button>
-        <button
-          className={`sidebar-nav-item ${selectedNode === 'expiring' ? 'active' : ''}`}
-          onClick={() => openSmartView('expiring')}
-        >
-          <span>Expiring Soon</span>
-          <span className="sidebar-badge">{expiringSoonItems.length}</span>
-        </button>
-        <button
-          className={`sidebar-nav-item ${selectedNode === 'expired' ? 'active' : ''}`}
-          onClick={() => openSmartView('expired')}
-        >
-          <span>Expired</span>
-          <span className="sidebar-badge">{expiredItems.length}</span>
-        </button>
+        {!isStorage && (
+          <>
+            <button
+              className={`sidebar-nav-item ${selectedNode === 'expiring' ? 'active' : ''}`}
+              onClick={() => openSmartView('expiring')}
+            >
+              <span>Expiring Soon</span>
+              <span className="sidebar-badge">{expiringSoonItems.length}</span>
+            </button>
+            <button
+              className={`sidebar-nav-item ${selectedNode === 'expired' ? 'active' : ''}`}
+              onClick={() => openSmartView('expired')}
+            >
+              <span>Expired</span>
+              <span className="sidebar-badge">{expiredItems.length}</span>
+            </button>
+          </>
+        )}
         <button
           className={`sidebar-nav-item ${selectedNode === 'unfiled' ? 'active' : ''}`}
           onClick={() => {
@@ -60,7 +89,7 @@ export function SidebarPane() {
           }}
         >
           <span>Unfiled</span>
-          <span className="sidebar-badge">{items.filter((item) => !item.folderId).length}</span>
+          <span className="sidebar-badge">{activeItems.filter((item) => !item.folderId).length}</span>
         </button>
         <button
           className={`sidebar-nav-item ${selectedNode === 'trash' ? 'active' : ''}`}
@@ -72,8 +101,8 @@ export function SidebarPane() {
           <span>Trash</span>
           <span className="sidebar-badge">{trash.length}</span>
         </button>
-        <button className="sidebar-nav-item" onClick={() => createSubfolder(null)}>
-          <span>+ New Folder</span>
+        <button className="sidebar-nav-item" onClick={isStorage ? createStorageItem : () => createSubfolder(null)}>
+          <span>{isStorage ? '+ New Storage Item' : '+ New Folder'}</span>
         </button>
       </nav>
 

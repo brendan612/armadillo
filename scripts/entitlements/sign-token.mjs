@@ -2,8 +2,8 @@ import crypto from 'node:crypto'
 
 const PLAN_CAPABILITIES = {
   free: [],
-  premium: ['cloud.sync', 'cloud.cloud_only'],
-  enterprise: ['cloud.sync', 'cloud.cloud_only', 'enterprise.self_hosted', 'enterprise.org_admin'],
+  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs'],
+  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'enterprise.self_hosted', 'enterprise.org_admin'],
 }
 
 function parseArgs(argv) {

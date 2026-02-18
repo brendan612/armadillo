@@ -18,5 +18,6 @@ export function buildEmptyItem(
     updatedAt: new Date().toLocaleString(),
     note: '',
     securityQuestions: [],
+    excludeFromCloudSync: false,
   }
 }

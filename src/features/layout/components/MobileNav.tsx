@@ -2,8 +2,8 @@ import { House, KeyRound, PenSquare } from 'lucide-react'
 import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function MobileNav() {
-  const { mobileStep, selectedNode } = useVaultAppState()
-  const { setMobileStep, setSelectedNode, openHome } = useVaultAppActions()
+  const { mobileStep, selectedNode, workspaceSection } = useVaultAppState()
+  const { setMobileStep, setSelectedNode, openHome, openStorageWorkspace } = useVaultAppActions()
 
   return (
     <>
@@ -15,14 +15,16 @@ export function MobileNav() {
         <button
           className={mobileStep === 'list' ? 'active' : ''}
           onClick={() => {
-            if (selectedNode === 'home') {
+            if (workspaceSection === 'storage') {
+              openStorageWorkspace()
+            } else if (selectedNode === 'home') {
               setSelectedNode('all')
             }
             setMobileStep('list')
           }}
         >
           <KeyRound size={20} strokeWidth={1.8} aria-hidden="true" />
-          Vault
+          {workspaceSection === 'storage' ? 'Storage' : 'Vault'}
         </button>
         <button className={mobileStep === 'detail' ? 'active' : ''} onClick={() => setMobileStep('detail')}>
           <PenSquare size={20} strokeWidth={1.8} aria-hidden="true" />

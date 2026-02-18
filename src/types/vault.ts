@@ -1,5 +1,5 @@
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
-export const VAULT_SCHEMA_VERSION = 4 as const
+export const VAULT_SCHEMA_VERSION = 5 as const
 
 export type SecurityQuestion = {
   question: string
@@ -21,6 +21,7 @@ export type VaultItem = {
   note: string
   securityQuestions: SecurityQuestion[]
   passwordExpiryDate?: string | null
+  excludeFromCloudSync?: boolean
 }
 
 export type VaultFolder = {
@@ -32,9 +33,34 @@ export type VaultFolder = {
   notes: string
   createdAt: string
   updatedAt: string
+  excludeFromCloudSync?: boolean
 }
 
-export type VaultTrashKind = 'folderTreeSnapshot' | 'itemSnapshot'
+export type StorageKind = 'document' | 'image' | 'key' | 'token' | 'secret' | 'other'
+
+export type VaultStorageBlobRef = {
+  blobId: string
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  sha256: string
+}
+
+export type VaultStorageItem = {
+  id: string
+  title: string
+  kind: StorageKind
+  folder: string
+  folderId?: string | null
+  tags: string[]
+  note: string
+  updatedAt: string
+  excludeFromCloudSync?: boolean
+  textValue?: string
+  blobRef?: VaultStorageBlobRef | null
+}
+
+export type VaultTrashKind = 'folderTreeSnapshot' | 'itemSnapshot' | 'storageItemSnapshot'
 
 export type VaultTrashEntry = {
   id: string
@@ -116,6 +142,7 @@ export type VaultSettings = {
 export type VaultPayload = {
   schemaVersion: number
   items: VaultItem[]
+  storageItems: VaultStorageItem[]
   folders: VaultFolder[]
   trash: VaultTrashEntry[]
   settings: VaultSettings

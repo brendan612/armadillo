@@ -1,5 +1,8 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import {
+  Cloud,
+  CloudOff,
   FolderOpen,
   FolderPlus,
   Pencil,
@@ -8,15 +11,17 @@ import {
   Trash2,
   SlidersHorizontal,
 } from 'lucide-react'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function FolderContextMenu() {
-  const { contextMenu, folders } = useVaultAppState()
+  const { contextMenu, folders, syncProvider } = useVaultAppState()
+  const { hasCapability } = useVaultAppDerived()
   const {
     setSelectedNode,
     setMobileStep,
     startFolderInlineRename,
     openFolderEditor,
+    setFolderCloudSyncExcluded,
     createSubfolder,
     deleteFolderCascade,
     moveFolder,
@@ -25,40 +30,66 @@ export function FolderContextMenu() {
   } = useVaultAppActions()
 
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const folder = contextMenu ? folders.find((f) => f.id === contextMenu.folderId) : undefined
+  const isNested = folder?.parentId !== null
+  const isLocalOnly = folder?.excludeFromCloudSync === true
+  const canManageCloudSyncExclusions = hasCapability('cloud.sync')
+    && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
   // Viewport-clamp the menu position after mount
   useEffect(() => {
     if (!contextMenu || !menuRef.current) return
     const el = menuRef.current
-    const rect = el.getBoundingClientRect()
     const pad = 8
-    let x = contextMenu.x
-    let y = contextMenu.y
 
-    if (x + rect.width > window.innerWidth - pad) {
-      x = window.innerWidth - rect.width - pad
-    }
-    if (y + rect.height > window.innerHeight - pad) {
-      y = window.innerHeight - rect.height - pad
-    }
-    if (x < pad) x = pad
-    if (y < pad) y = pad
+    const positionMenu = () => {
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+      const maxHeight = Math.max(120, viewportHeight - pad * 2)
+      el.style.maxHeight = `${maxHeight}px`
+      const menuWidth = el.offsetWidth
+      const menuHeight = Math.min(el.scrollHeight, maxHeight)
+      let x = contextMenu.x
+      let y = contextMenu.y
 
-    el.style.left = `${x}px`
-    el.style.top = `${y}px`
-    el.style.opacity = '1'
-  }, [contextMenu])
+      if (x + menuWidth > viewportWidth - pad) {
+        x = viewportWidth - menuWidth - pad
+      }
+      if (y + menuHeight > viewportHeight - pad) {
+        // Prefer opening upward when near the viewport bottom.
+        y = contextMenu.y - menuHeight
+      }
+      if (x < pad) x = pad
+      if (y < pad) {
+        y = viewportHeight - menuHeight - pad
+      }
+      if (y < pad) y = pad
+
+      el.style.left = `${Math.round(x)}px`
+      el.style.top = `${Math.round(y)}px`
+      el.style.opacity = '1'
+    }
+
+    const rafId = window.requestAnimationFrame(positionMenu)
+    const rafId2 = window.requestAnimationFrame(positionMenu)
+    const handleResize = () => positionMenu()
+    window.addEventListener('resize', handleResize)
+    window.addEventListener('scroll', handleResize, true)
+    return () => {
+      window.cancelAnimationFrame(rafId)
+      window.cancelAnimationFrame(rafId2)
+      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('scroll', handleResize, true)
+    }
+  }, [contextMenu, isNested, isLocalOnly])
 
   if (!contextMenu) return null
-
-  const folder = folders.find((f) => f.id === contextMenu.folderId)
-  const isNested = folder?.parentId !== null
 
   function dismiss() {
     setContextMenu(null)
   }
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       className="ctx-menu"
@@ -131,6 +162,19 @@ export function FolderContextMenu() {
         <span className="ctx-menu-label">Properties</span>
       </button>
 
+      {canManageCloudSyncExclusions && (
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            void setFolderCloudSyncExcluded(contextMenu.folderId, !isLocalOnly)
+            dismiss()
+          }}
+        >
+          {isLocalOnly ? <Cloud className="ctx-menu-icon" /> : <CloudOff className="ctx-menu-icon" />}
+          <span className="ctx-menu-label">{isLocalOnly ? 'Include in Cloud Sync' : 'Exclude from Cloud Sync'}</span>
+        </button>
+      )}
+
       <button
         className="ctx-menu-item"
         onClick={() => {
@@ -158,5 +202,7 @@ export function FolderContextMenu() {
         <span className="ctx-menu-label">Delete Folder</span>
       </button>
     </div>
+    ,
+    document.body,
   )
 }

@@ -2,6 +2,9 @@ import { mutation, query } from './_generated/server'
 import type { Id } from './_generated/dataModel'
 import { v } from 'convex/values'
 
+const DEFAULT_MAX_BLOB_FILE_BYTES = 20 * 1024 * 1024
+const DEFAULT_MAX_BLOB_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+
 export const getUserProfile = query({
   args: { tokenIdentifier: v.string() },
   handler: async (ctx, args) => {
@@ -153,6 +156,141 @@ export const pushByOwnerVault = mutation({
     })
 
     return { accepted: true }
+  },
+})
+
+export const getBlobByOwnerVault = query({
+  args: {
+    ownerId: v.string(),
+    vaultId: v.string(),
+    blobId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blob', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId).eq('blobId', args.blobId))
+      .unique()
+    if (!existing) return null
+    return {
+      blobId: existing.blobId,
+      vaultId: existing.vaultId,
+      nonce: existing.nonce,
+      ciphertext: existing.ciphertext,
+      sizeBytes: existing.sizeBytes,
+      sha256: existing.sha256,
+      mimeType: existing.mimeType,
+      fileName: existing.fileName,
+      updatedAt: existing.updatedAt,
+    }
+  },
+})
+
+export const listBlobByOwnerVault = query({
+  args: {
+    ownerId: v.string(),
+    vaultId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blobs', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+      .collect()
+  },
+})
+
+export const putBlobByOwnerVault = mutation({
+  args: {
+    ownerId: v.string(),
+    vaultId: v.string(),
+    blobId: v.string(),
+    nonce: v.string(),
+    ciphertext: v.string(),
+    sizeBytes: v.number(),
+    sha256: v.string(),
+    mimeType: v.string(),
+    fileName: v.string(),
+    updatedAt: v.string(),
+    maxFileBytes: v.optional(v.number()),
+    maxVaultBytes: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const maxFileBytes = args.maxFileBytes ?? DEFAULT_MAX_BLOB_FILE_BYTES
+    const maxVaultBytes = args.maxVaultBytes ?? DEFAULT_MAX_BLOB_TOTAL_BYTES
+    if (args.sizeBytes <= 0 || args.sizeBytes > maxFileBytes) {
+      throw new Error(`Blob exceeds file limit (${maxFileBytes})`)
+    }
+
+    const existing = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blob', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId).eq('blobId', args.blobId))
+      .unique()
+
+    const rows = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blobs', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+      .collect()
+    const usageWithoutCurrent = rows.reduce((total, row) => (
+      row.blobId === args.blobId ? total : total + Math.max(0, row.sizeBytes)
+    ), 0)
+    if (usageWithoutCurrent + args.sizeBytes > maxVaultBytes) {
+      throw new Error(`Vault blob quota exceeded (${maxVaultBytes})`)
+    }
+
+    if (!existing) {
+      await ctx.db.insert('vaultBlobs', {
+        ownerId: args.ownerId,
+        vaultId: args.vaultId,
+        blobId: args.blobId,
+        nonce: args.nonce,
+        ciphertext: args.ciphertext,
+        sizeBytes: args.sizeBytes,
+        sha256: args.sha256,
+        mimeType: args.mimeType,
+        fileName: args.fileName,
+        updatedAt: args.updatedAt,
+      })
+      return { accepted: true, usedBytes: usageWithoutCurrent + args.sizeBytes }
+    }
+
+    await ctx.db.patch(existing._id, {
+      nonce: args.nonce,
+      ciphertext: args.ciphertext,
+      sizeBytes: args.sizeBytes,
+      sha256: args.sha256,
+      mimeType: args.mimeType,
+      fileName: args.fileName,
+      updatedAt: args.updatedAt,
+    })
+    return { accepted: true, usedBytes: usageWithoutCurrent + args.sizeBytes }
+  },
+})
+
+export const deleteBlobByOwnerVault = mutation({
+  args: {
+    ownerId: v.string(),
+    vaultId: v.string(),
+    blobId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blob', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId).eq('blobId', args.blobId))
+      .unique()
+    if (!existing) {
+      const rows = await ctx.db
+        .query('vaultBlobs')
+        .withIndex('by_owner_vault_blobs', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+        .collect()
+      const usedBytes = rows.reduce((total, row) => total + Math.max(0, row.sizeBytes), 0)
+      return { deleted: false, usedBytes }
+    }
+    await ctx.db.delete(existing._id)
+    const rows = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blobs', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+      .collect()
+    const usedBytes = rows.reduce((total, row) => total + Math.max(0, row.sizeBytes), 0)
+    return { deleted: true, usedBytes }
   },
 })
 
