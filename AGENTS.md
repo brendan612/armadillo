@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-18
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed workflow-dispatch branch targeting by clearing the `git_ref` default so manual fast-lane runs no longer silently build `main` unless explicitly requested.
+- 2026-02-18
   - Updated `AGENTS.md`, `android/app/build.gradle`
   - Fixed Android `devRelease` R8 minification failure in the Firebase fastlane lane by adding missing Tink annotation dependencies (`error_prone_annotations`, `jsr305`) so release shrinking can resolve referenced classes.
 - 2026-02-16

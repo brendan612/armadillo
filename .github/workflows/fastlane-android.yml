@@ -12,7 +12,7 @@ on:
       git_ref:
         description: 'Branch, tag, or commit to build'
         required: false
-        default: 'main'
+        default: ''
         type: string
       release_notes:
         description: 'Optional extra release notes'
