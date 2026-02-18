@@ -78,6 +78,8 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation "androidx.security:security-crypto:1.1.0-alpha06"
+    implementation "com.google.errorprone:error_prone_annotations:2.28.0"
+    implementation "com.google.code.findbugs:jsr305:3.0.2"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
