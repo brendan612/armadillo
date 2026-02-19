@@ -1,13 +1,13 @@
 import { CloudAuthStatusCard } from './CloudAuthStatusCard'
-import { CloudSnapshotsCard } from './CloudSnapshotsCard'
+import { LocalVaultPickerCard } from './LocalVaultPickerCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import logoSrc from '../../../assets/armadillo.png'
 
 export function CreateVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { createPassword, confirmPassword, vaultError, pendingVaultExists, authMessage, localVaultPath, storageMode, cloudCacheExpiresAt } = useVaultAppState()
-  const { setCreatePassword, setConfirmPassword, createVault, setPhase, chooseLocalVaultLocation } = useVaultAppActions()
+  const { createPassword, confirmPassword, vaultError, unlockSourceAvailable, authMessage, storageMode, cloudCacheExpiresAt } = useVaultAppState()
+  const { setCreatePassword, setConfirmPassword, createVault, setPhase } = useVaultAppActions()
 
   return (
     <div className={`app-shell platform-${effectivePlatform}`}>
@@ -23,16 +23,8 @@ export function CreateVaultScreen() {
 
           <CloudAuthStatusCard />
           {authMessage && <p className="muted" style={{ margin: 0, textAlign: 'center' }}>{authMessage}</p>}
-          <CloudSnapshotsCard />
+          <LocalVaultPickerCard />
 
-          {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
-            <div className="auth-secondary">
-              <p className="muted" style={{ margin: 0 }}>
-                {localVaultPath || 'No vault file location set'}
-              </p>
-              <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
-            </div>
-          )}
           {storageMode === 'cloud_only' && (
             <div className="auth-secondary">
               <p className="muted" style={{ margin: 0 }}>
@@ -72,7 +64,7 @@ export function CreateVaultScreen() {
 
           <button className="solid auth-primary-btn" onClick={() => void createVault()}>Create Encrypted Vault</button>
 
-          {pendingVaultExists && (
+          {unlockSourceAvailable && (
             <>
               <div className="auth-divider" />
               <div className="auth-secondary">

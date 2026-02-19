@@ -591,6 +591,21 @@ app.whenReady().then(() => {
 
     return result.filePath.toLowerCase().endsWith('.armadillo') ? result.filePath : `${result.filePath}.armadillo`;
   });
+  ipcMain.handle('armadillo:choose-vault-open-path', async (_event, currentPath) => {
+    const fallbackPath = path.join(app.getPath('documents'), 'vault.armadillo');
+    const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
+      title: 'Open Existing Armadillo Vault',
+      defaultPath: typeof currentPath === 'string' && currentPath.trim() ? currentPath : fallbackPath,
+      properties: ['openFile'],
+      filters: [{ name: 'Armadillo Vault', extensions: ['armadillo'] }],
+    });
+
+    if (result.canceled || !result.filePaths?.[0]) {
+      return null;
+    }
+
+    return result.filePaths[0];
+  });
   ipcMain.handle('armadillo:window-minimize', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     mainWindow.minimize();

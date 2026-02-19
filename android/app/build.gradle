@@ -64,6 +64,13 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
         }
+        fastlane {
+            initWith(release)
+            matchingFallbacks = ['release']
+            minifyEnabled false
+            shrinkResources false
+            signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
+        }
     }
 }
 

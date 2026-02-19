@@ -23,11 +23,25 @@ import { defaultThemeSettings, normalizeThemeSettings } from '../shared/utils/th
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
 const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
+const LOCAL_VAULT_RECENT_PATHS_KEY = 'armadillo.local.vault.recent_paths'
 const VAULT_STORAGE_MODE_KEY = 'armadillo.vault.storage_mode'
 const CLOUD_CACHE_FILE_KEY = 'armadillo.cloud.cache.file'
 const CLOUD_CACHE_EXPIRES_AT_KEY = 'armadillo.cloud.cache.expires_at'
 const CLOUD_CACHE_TTL_HOURS_KEY = 'armadillo.cloud.cache.ttl_hours'
 const DEFAULT_CLOUD_CACHE_TTL_HOURS = 72
+const MAX_RECENT_LOCAL_VAULT_PATHS = 10
+
+export type RecentLocalVaultEntry = {
+  path: string
+  lastUsedAt: string
+}
+
+export type LocalVaultPathStatus = 'exists' | 'missing' | 'unknown'
+export type LocalVaultFileMeta = {
+  vaultId: string
+  revision: number
+  updatedAt: string
+}
 
 export function defaultVaultPayload(): VaultPayload {
   return {
@@ -416,36 +430,191 @@ export function clearCachedVaultSnapshot() {
   localStorage.removeItem(CLOUD_CACHE_EXPIRES_AT_KEY)
 }
 
-export function loadLocalVaultFile(): ArmadilloVaultFile | null {
-  const shell = window.armadilloShell
-  if (shell?.isElectron && shell.readVaultFile) {
-    const knownPath = localStorage.getItem(LOCAL_VAULT_PATH_KEY) || shell.getDefaultVaultPath?.()
-    if (knownPath) {
-      const rawFromFile = shell.readVaultFile(knownPath)
-      if (rawFromFile) {
-        try {
-          const parsed = JSON.parse(rawFromFile) as ArmadilloVaultFile
-          localStorage.setItem(LOCAL_VAULT_FILE_KEY, rawFromFile)
-          localStorage.setItem(LOCAL_VAULT_PATH_KEY, knownPath)
-          return parsed
-        } catch {
-          // Fall back to localStorage copy.
-        }
-      }
+function isWindowsPathMode() {
+  return window.armadilloShell?.isElectron && window.armadilloShell.platform === 'win32'
+}
+
+function normalizeVaultPathKey(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) return ''
+  return isWindowsPathMode() ? trimmed.toLowerCase() : trimmed
+}
+
+function readRecentLocalVaultEntriesFromStorage(): RecentLocalVaultEntry[] {
+  const raw = localStorage.getItem(LOCAL_VAULT_RECENT_PATHS_KEY)
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const deduped = new Set<string>()
+    const rows: RecentLocalVaultEntry[] = []
+    for (const entry of parsed) {
+      const source = (entry && typeof entry === 'object' ? entry : null) as Record<string, unknown> | null
+      if (!source || typeof source.path !== 'string') continue
+      const path = source.path.trim()
+      if (!path) continue
+      const key = normalizeVaultPathKey(path)
+      if (!key || deduped.has(key)) continue
+      deduped.add(key)
+      const lastUsedAt = typeof source.lastUsedAt === 'string' && source.lastUsedAt
+        ? source.lastUsedAt
+        : new Date().toISOString()
+      rows.push({ path, lastUsedAt })
+    }
+    return rows.slice(0, MAX_RECENT_LOCAL_VAULT_PATHS)
+  } catch {
+    return []
+  }
+}
+
+function writeRecentLocalVaultEntriesToStorage(entries: RecentLocalVaultEntry[]) {
+  localStorage.setItem(
+    LOCAL_VAULT_RECENT_PATHS_KEY,
+    JSON.stringify(entries.slice(0, MAX_RECENT_LOCAL_VAULT_PATHS)),
+  )
+}
+
+function seedRecentLocalVaultsFromActivePath() {
+  const recents = readRecentLocalVaultEntriesFromStorage()
+  if (recents.length > 0) return recents
+  const activePath = localStorage.getItem(LOCAL_VAULT_PATH_KEY)?.trim()
+  if (!activePath) return recents
+  const seeded = [{ path: activePath, lastUsedAt: new Date().toISOString() }]
+  writeRecentLocalVaultEntriesToStorage(seeded)
+  return seeded
+}
+
+export function listRecentLocalVaultPaths(): RecentLocalVaultEntry[] {
+  return seedRecentLocalVaultsFromActivePath()
+}
+
+export function rememberLocalVaultPath(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) return
+  const key = normalizeVaultPathKey(trimmed)
+  if (!key) return
+  const nowIso = new Date().toISOString()
+  const existing = listRecentLocalVaultPaths().filter((entry) => normalizeVaultPathKey(entry.path) !== key)
+  writeRecentLocalVaultEntriesToStorage([{ path: trimmed, lastUsedAt: nowIso }, ...existing])
+}
+
+export function removeRecentLocalVaultPath(path: string) {
+  const key = normalizeVaultPathKey(path)
+  if (!key) return
+  const filtered = listRecentLocalVaultPaths().filter((entry) => normalizeVaultPathKey(entry.path) !== key)
+  writeRecentLocalVaultEntriesToStorage(filtered)
+
+  const activePath = getActiveLocalVaultPath()
+  if (normalizeVaultPathKey(activePath) === key) {
+    if (filtered[0]?.path) {
+      setActiveLocalVaultPath(filtered[0].path)
+    } else {
+      localStorage.removeItem(LOCAL_VAULT_PATH_KEY)
     }
   }
+}
 
+export function getActiveLocalVaultPath() {
+  return localStorage.getItem(LOCAL_VAULT_PATH_KEY) || ''
+}
+
+export function setActiveLocalVaultPath(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) {
+    localStorage.removeItem(LOCAL_VAULT_PATH_KEY)
+    return
+  }
+  localStorage.setItem(LOCAL_VAULT_PATH_KEY, trimmed)
+}
+
+export function getLocalVaultPathStatus(path: string): LocalVaultPathStatus {
+  const trimmed = path.trim()
+  if (!trimmed) return 'unknown'
+  const shell = window.armadilloShell
+  if (shell?.isElectron && shell.readVaultFile) {
+    const raw = shell.readVaultFile(trimmed)
+    return raw ? 'exists' : 'missing'
+  }
+  return 'unknown'
+}
+
+export function loadLocalVaultFileAtPath(path: string): ArmadilloVaultFile | null {
+  const trimmed = path.trim()
+  if (!trimmed) return null
+  const shell = window.armadilloShell
+  if (shell?.isElectron && shell.readVaultFile) {
+    const rawFromFile = shell.readVaultFile(trimmed)
+    if (!rawFromFile) {
+      return null
+    }
+    try {
+      const parsed = JSON.parse(rawFromFile) as ArmadilloVaultFile
+      localStorage.setItem(LOCAL_VAULT_FILE_KEY, rawFromFile)
+      setActiveLocalVaultPath(trimmed)
+      rememberLocalVaultPath(trimmed)
+      return parsed
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+export function readLocalVaultFileMeta(path: string): LocalVaultFileMeta | null {
+  const trimmed = path.trim()
+  if (!trimmed) return null
+  const shell = window.armadilloShell
+  if (!shell?.isElectron || !shell.readVaultFile) return null
+  const raw = shell.readVaultFile(trimmed)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as ArmadilloVaultFile
+    if (parsed.format !== 'armadillo-v1' || typeof parsed.vaultId !== 'string' || !parsed.vaultId) {
+      return null
+    }
+    return {
+      vaultId: parsed.vaultId,
+      revision: Number.isFinite(parsed.revision) ? parsed.revision : 0,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+export function loadLocalVaultFile(): ArmadilloVaultFile | null {
+  const shell = window.armadilloShell
+  const activePath = getActiveLocalVaultPath()
+  if (activePath) {
+    const loaded = loadLocalVaultFileAtPath(activePath)
+    if (loaded) return loaded
+  }
+  if (shell?.isElectron) {
+    return null
+  }
   return parseVaultFileJson(localStorage.getItem(LOCAL_VAULT_FILE_KEY))
 }
 
 export function getLocalVaultPath() {
   const shell = window.armadilloShell
-  return localStorage.getItem(LOCAL_VAULT_PATH_KEY) || shell?.getDefaultVaultPath?.() || ''
+  const activePath = getActiveLocalVaultPath()
+  if (activePath) return activePath
+  const fallbackPath = shell?.getDefaultVaultPath?.() || ''
+  if (fallbackPath) {
+    setActiveLocalVaultPath(fallbackPath)
+    rememberLocalVaultPath(fallbackPath)
+  }
+  return fallbackPath
 }
 
 export function setLocalVaultPath(path: string) {
-  if (!path) return
-  localStorage.setItem(LOCAL_VAULT_PATH_KEY, path)
+  const trimmed = path.trim()
+  if (!trimmed) {
+    setActiveLocalVaultPath('')
+    return
+  }
+  setActiveLocalVaultPath(trimmed)
+  rememberLocalVaultPath(trimmed)
 }
 
 export function saveLocalVaultFile(file: ArmadilloVaultFile) {
@@ -456,7 +625,8 @@ export function saveLocalVaultFile(file: ArmadilloVaultFile) {
   if (shell?.isElectron && shell.writeVaultFile) {
     const knownPath = getLocalVaultPath()
     if (knownPath && shell.writeVaultFile(raw, knownPath)) {
-      localStorage.setItem(LOCAL_VAULT_PATH_KEY, knownPath)
+      setActiveLocalVaultPath(knownPath)
+      rememberLocalVaultPath(knownPath)
     }
   }
 }

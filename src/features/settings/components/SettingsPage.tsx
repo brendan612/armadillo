@@ -306,6 +306,7 @@ export function SettingsPage() {
   const cloudSyncLocked = !hasCapability('cloud.sync')
   const cloudOnlyLocked = !hasCapability('cloud.cloud_only')
   const selfHostedLocked = syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')
+  const showCloudSignIn = cloudSyncEnabled && !cloudSyncLocked && !selfHostedLocked
   const upgradeDisabled = !billingUrl
   const resolvedThemeTokens = useMemo(() => resolveThemeTokens(themeSettings), [themeSettings])
   const selectedCustomPreset = themeSettings.customPresets.find((preset) => preset.id === themeSettings.selectedPresetId) ?? null
@@ -600,15 +601,15 @@ export function SettingsPage() {
             </div>
             <div className="settings-action-list">
               {!cloudConnected ? (
-                <button
-                  className="ghost"
-                  onClick={() => void signInWithGoogle()}
-                  disabled={cloudAuthState === 'checking' || (syncProvider === 'self_hosted' && selfHostedLocked)}
-                >
-                  {syncProvider === 'self_hosted' && selfHostedLocked
-                    ? 'Authenticate (Locked)'
-                    : (cloudAuthState === 'checking' ? 'Checking Session...' : (syncProvider === 'self_hosted' ? 'Authenticate' : 'Sign in with Google'))}
-                </button>
+                showCloudSignIn ? (
+                  <button
+                    className="ghost"
+                    onClick={() => void signInWithGoogle()}
+                    disabled={cloudAuthState === 'checking'}
+                  >
+                    {cloudAuthState === 'checking' ? 'Checking Session...' : (syncProvider === 'self_hosted' ? 'Authenticate' : 'Sign in with Google')}
+                  </button>
+                ) : null
               ) : (
                 <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
               )}

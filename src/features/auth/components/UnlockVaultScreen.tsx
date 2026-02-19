@@ -2,16 +2,16 @@ import { Fingerprint } from 'lucide-react'
 import { biometricSupported } from '../../../lib/biometric'
 import { isNativeAndroid } from '../../../shared/utils/platform'
 import { CloudAuthStatusCard } from './CloudAuthStatusCard'
-import { CloudSnapshotsCard } from './CloudSnapshotsCard'
+import { LocalVaultPickerCard } from './LocalVaultPickerCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import logoSrc from '../../../assets/armadillo.png'
 
 export function UnlockVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { unlockPassword, isUnlocking, vaultError, pendingVaultExists, authMessage, localVaultPath, biometricEnabled, storageMode, cloudCacheExpiresAt } = useVaultAppState()
+  const { unlockPassword, isUnlocking, vaultError, authMessage, biometricEnabled, storageMode, cloudCacheExpiresAt, unlockSourceAvailable } = useVaultAppState()
   const { importFileInputRef } = useVaultAppRefs()
-  const { setUnlockPassword, unlockVault, unlockVaultBiometric, triggerImport, setPhase, chooseLocalVaultLocation, onImportFileSelected } = useVaultAppActions()
+  const { setUnlockPassword, unlockVault, unlockVaultBiometric, triggerImport, setPhase, onImportFileSelected } = useVaultAppActions()
 
   return (
     <div className={`app-shell platform-${effectivePlatform}`}>
@@ -62,7 +62,7 @@ export function UnlockVaultScreen() {
                   'Unlock'
                 )}
               </button>
-              {isNativeAndroid() && biometricSupported() && biometricEnabled && pendingVaultExists && (
+              {isNativeAndroid() && biometricSupported() && biometricEnabled && unlockSourceAvailable && (
                 <button
                   className="ghost biometric-inline-btn"
                   type="button"
@@ -86,19 +86,16 @@ export function UnlockVaultScreen() {
 
           <CloudAuthStatusCard />
           {authMessage && <p className="muted" style={{ margin: 0, textAlign: 'center' }}>{authMessage}</p>}
-          <CloudSnapshotsCard />
+          {storageMode === 'local_file' && !unlockSourceAvailable && (
+            <p className="muted" style={{ margin: 0, textAlign: 'center' }}>
+              Select a vault to unlock.
+            </p>
+          )}
+          <LocalVaultPickerCard />
 
           <div className="auth-divider" />
 
           <div className="auth-secondary">
-            {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
-              <>
-                <p className="muted" style={{ margin: 0 }}>
-                  {localVaultPath || 'No vault file selected'}
-                </p>
-                <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
-              </>
-            )}
             {storageMode === 'cloud_only' && (
               <p className="muted" style={{ margin: 0 }}>
                 {cloudCacheExpiresAt
@@ -107,7 +104,7 @@ export function UnlockVaultScreen() {
               </p>
             )}
             <button className="ghost" onClick={triggerImport}>Import .armadillo File</button>
-            {!pendingVaultExists && (
+            {!unlockSourceAvailable && (
               <button className="ghost" onClick={() => setPhase('create')}>Create New Vault</button>
             )}
           </div>

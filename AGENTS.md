@@ -10,6 +10,21 @@
 
 ## Recent Changes
 - 2026-02-19
+  - Updated `AGENTS.md`, `src/features/auth/components/LocalVaultPickerCard.tsx`, `src/features/auth/components/UnlockVaultScreen.tsx`, `src/features/auth/components/CreateVaultScreen.tsx`, `src/app/hooks/useVaultApp.ts`, `src/lib/vaultFile.ts`, `src/index.css`
+  - Unified local-vault and cloud-snapshot loading into a single same-size tabbed selector (Cloud/Local, defaulting to latest cloud snapshot), and mapped cloud snapshot labels to local vault names when vault IDs match.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/auth/components/LocalVaultPickerCard.tsx`, `src/index.css`
+  - Simplified and compacted the locked-screen local vault selector into a minimal status+path strip with concise actions and a single recent-vault dropdown to reduce vertical space.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/auth/components/CloudAuthStatusCard.tsx`, `src/features/settings/components/SettingsPage.tsx`
+  - Gated cloud sign-in/authenticate actions so they only render when cloud sync is enabled and the current plan/provider capabilities allow cloud sync.
+- 2026-02-19
+  - Updated `AGENTS.md`, `electron/main.cjs`, `electron/preload.cjs`, `src/vite-env.d.ts`, `src/lib/vaultFile.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/auth/components/LocalVaultPickerCard.tsx`, `src/features/auth/components/UnlockVaultScreen.tsx`, `src/features/auth/components/CreateVaultScreen.tsx`
+  - Implemented desktop locked-screen multi-vault selection (recent paths + browse/open + create-location picker), persisted local vault path recents for quick reselect, and fixed stale "existing vault" lock-screen state by deriving unlock/create availability from the currently selected vault path at runtime.
+- 2026-02-19
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Resolved merge conflicts by keeping the latest fast-lane workflow variant (`assembleDevRelease` with release-minify override) and restoring a conflict-free change log.
+- 2026-02-19
   - Updated `AGENTS.md`, `android/app/build.gradle`, `.github/workflows/fastlane-android.yml`
   - Added a configurable release-minify toggle and disabled minify/shrink for fast-lane `assembleDevRelease` builds to prevent Firebase-distributed dev APK black-screen regressions seen only in optimized release packaging.
 - 2026-02-19
