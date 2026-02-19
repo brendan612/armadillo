@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-19
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`
+  - Fixed CI-blocking ESLint errors by adjusting memo dependencies in password detail and replacing effect-based risk-filter reset with derived filtering logic in item list.
+- 2026-02-19
   - Updated `AGENTS.md`, `src/features/items/components/ItemListPane.tsx`
   - Changed risk-filter UX so top risk chips always pivot to all credentials for that risk, while clicking a row-level Reused badge drills into only credentials sharing that exact password.
 - 2026-02-19

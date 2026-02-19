@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { memo, useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { ChevronLeft, Copy, Keyboard, NotebookPen, UserRound } from 'lucide-react'
 import type { RiskState, VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
@@ -237,21 +237,19 @@ export function ItemListPane() {
     setRiskFilter((current) => (current === item.risk ? 'all' : item.risk))
   }, [setQuery, setSelectedNode])
 
-  useEffect(() => {
-    setRiskFilter('all')
-    setReusedPasswordFilter(null)
-  }, [selectedNode])
-
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
+  const effectiveRiskFilter: RiskState | 'all' = selectedNode === 'all' ? riskFilter : 'all'
+  const effectiveReusedPasswordFilter = selectedNode === 'all' ? reusedPasswordFilter : null
+
   const filteredByRisk = useMemo(() => {
-    const byRisk = riskFilter === 'all'
+    const byRisk = effectiveRiskFilter === 'all'
       ? filtered
-      : filtered.filter((item) => item.risk === riskFilter)
-    if (!reusedPasswordFilter) return byRisk
-    return byRisk.filter((item) => item.passwordMasked === reusedPasswordFilter)
-  }, [filtered, riskFilter, reusedPasswordFilter])
+      : filtered.filter((item) => item.risk === effectiveRiskFilter)
+    if (!effectiveReusedPasswordFilter) return byRisk
+    return byRisk.filter((item) => item.passwordMasked === effectiveReusedPasswordFilter)
+  }, [filtered, effectiveRiskFilter, effectiveReusedPasswordFilter])
 
   const itemRows = useMemo(() => filteredByRisk.map((item) => {
     const folderLabel = item.folderId ? (folderPathById.get(item.folderId) ?? item.folder) : 'Unfiled'

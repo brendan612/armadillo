@@ -217,7 +217,7 @@ export function ItemDetailPane() {
   const reusedPasswordItems = useMemo(() => {
     if (!draft?.passwordMasked) return []
     return items.filter((item) => item.id !== draft.id && item.passwordMasked === draft.passwordMasked)
-  }, [draft?.id, draft?.passwordMasked, items])
+  }, [draft, items])
   const hasReusedPassword = reusedPasswordItems.length > 0
   const debouncedGeneratorPreview = useDebouncedValue(genPreview, 150)
   const generatorStrength = useMemo(() => (
