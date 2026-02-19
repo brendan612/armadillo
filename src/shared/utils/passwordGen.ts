@@ -31,7 +31,7 @@ export function generatePassword(config: GeneratorConfig): string {
     pool = LOWERCASE + DIGITS
   }
 
-  const length = Math.max(4, Math.min(128, config.length))
+  const length = Math.max(4, Math.min(256, config.length))
   const randomBytes = new Uint8Array(length)
   crypto.getRandomValues(randomBytes)
   return Array.from(randomBytes, (byte) => pool[byte % pool.length]).join('')

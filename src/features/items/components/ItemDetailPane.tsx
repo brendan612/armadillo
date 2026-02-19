@@ -1,9 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
+import { ChevronLeft, CircleHelp, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
 import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
+import { analyzePassword, buildPasswordStrengthContextFromItem } from '../../../shared/utils/passwordStrength'
 import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+
+const GENERATOR_MIN_LENGTH = 8
+const GENERATOR_MAX_LENGTH = 256
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [value, delayMs])
+
+  return debouncedValue
+}
 
 function snapshotItemForDirtyCheck(item: VaultItem | null) {
   if (!item) return null
@@ -32,6 +47,7 @@ export function ItemDetailPane() {
   const {
     mobileStep,
     draft,
+    items,
     showPassword,
     newFolderValue,
     isSaving,
@@ -57,10 +73,13 @@ export function ItemDetailPane() {
   const [showGenerator, setShowGenerator] = useState(false)
   const [genConfig, setGenConfig] = useState<GeneratorConfig>({ ...DEFAULT_GENERATOR_CONFIG })
   const [genPreview, setGenPreview] = useState(() => generatePassword(DEFAULT_GENERATOR_CONFIG))
+  const [genLengthInput, setGenLengthInput] = useState(() => String(DEFAULT_GENERATOR_CONFIG.length))
   const [showGenEditor, setShowGenEditor] = useState(false)
   const [presetName, setPresetName] = useState('')
   const [showPresetSave, setShowPresetSave] = useState(false)
   const genPopoverRef = useRef<HTMLDivElement>(null)
+  const [showEntropyInfo, setShowEntropyInfo] = useState(false)
+  const entropyInfoRef = useRef<HTMLDivElement>(null)
 
   // Password confirm/save-error state keyed by item id to avoid effect-driven state resets.
   const [passwordConfirmById, setPasswordConfirmById] = useState<Record<string, string>>({})
@@ -68,17 +87,20 @@ export function ItemDetailPane() {
 
   // Close popover on outside click
   useEffect(() => {
-    if (!showGenerator) return
+    if (!showGenerator && !showEntropyInfo) return
     function handlePointerDown(event: PointerEvent) {
-      if (genPopoverRef.current && !genPopoverRef.current.contains(event.target as Node)) {
+      if (showGenerator && genPopoverRef.current && !genPopoverRef.current.contains(event.target as Node)) {
         setShowGenerator(false)
         setShowGenEditor(false)
         setShowPresetSave(false)
       }
+      if (showEntropyInfo && entropyInfoRef.current && !entropyInfoRef.current.contains(event.target as Node)) {
+        setShowEntropyInfo(false)
+      }
     }
     document.addEventListener('pointerdown', handlePointerDown)
     return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [showGenerator])
+  }, [showGenerator, showEntropyInfo])
 
   function regenerate(config: GeneratorConfig) {
     setGenPreview(generatePassword(config))
@@ -88,6 +110,39 @@ export function ItemDetailPane() {
     const next = { ...genConfig, ...patch }
     setGenConfig(next)
     regenerate(next)
+  }
+
+  function clampGeneratorLength(value: number) {
+    return Math.min(GENERATOR_MAX_LENGTH, Math.max(GENERATOR_MIN_LENGTH, value))
+  }
+
+  function updateLength(value: number) {
+    if (!Number.isFinite(value)) return
+    const next = clampGeneratorLength(Math.round(value))
+    updateConfig({ length: next })
+    setGenLengthInput(String(next))
+  }
+
+  function updateLengthFromInput(raw: string) {
+    setGenLengthInput(raw)
+    if (raw.trim() === '') return
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return
+    const nextLength = Math.min(GENERATOR_MAX_LENGTH, Math.max(1, Math.round(parsed)))
+    setGenConfig((current) => {
+      const next = { ...current, length: nextLength }
+      setGenPreview(generatePassword(next))
+      return next
+    })
+  }
+
+  function commitLengthInput() {
+    const parsed = Number(genLengthInput)
+    if (!Number.isFinite(parsed)) {
+      setGenLengthInput(String(genConfig.length))
+      return
+    }
+    updateLength(parsed)
   }
 
   function applyGeneratedPassword(password: string) {
@@ -152,6 +207,25 @@ export function ItemDetailPane() {
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
   const passwordInputId = draft ? `item-password-${draft.id}` : 'item-password'
+  const passwordStrengthContext = useMemo(() => (
+    draft ? buildPasswordStrengthContextFromItem(draft) : {}
+  ), [draft])
+  const debouncedPassword = useDebouncedValue(draft?.passwordMasked ?? '', 150)
+  const passwordStrength = useMemo(() => (
+    analyzePassword(debouncedPassword, passwordStrengthContext)
+  ), [debouncedPassword, passwordStrengthContext])
+  const reusedPasswordItems = useMemo(() => {
+    if (!draft?.passwordMasked) return []
+    return items.filter((item) => item.id !== draft.id && item.passwordMasked === draft.passwordMasked)
+  }, [draft, items])
+  const hasReusedPassword = reusedPasswordItems.length > 0
+  const debouncedGeneratorPreview = useDebouncedValue(genPreview, 150)
+  const generatorStrength = useMemo(() => (
+    analyzePassword(debouncedGeneratorPreview, passwordStrengthContext)
+  ), [debouncedGeneratorPreview, passwordStrengthContext])
+  const weakFeedback = useMemo(() => (
+    passwordStrength.score <= 2 ? passwordStrength.feedback.slice(0, 3) : []
+  ), [passwordStrength])
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
   const hasUnsavedChanges = useMemo(() => {
@@ -318,16 +392,36 @@ export function ItemDetailPane() {
                       </button>
                     ) : (
                       <div className="gen-config-panel">
-                        <label>
-                          Length: {genConfig.length}
-                          <input
-                            type="range"
-                            min={8}
-                            max={64}
-                            value={genConfig.length}
-                            onChange={(e) => updateConfig({ length: Number(e.target.value) })}
-                          />
-                        </label>
+                        <div className="gen-length-row">
+                          <span className="gen-length-title">Length</span>
+                          <div className="gen-length-stepper">
+                            <button type="button" className="gen-stepper-btn" onClick={() => updateLength(genConfig.length - 1)} disabled={genConfig.length <= GENERATOR_MIN_LENGTH} aria-label="Decrease length">&minus;</button>
+                            <input
+                              type="number"
+                              className="gen-length-input"
+                              min={GENERATOR_MIN_LENGTH}
+                              max={GENERATOR_MAX_LENGTH}
+                              step={1}
+                              value={genLengthInput}
+                              onChange={(e) => updateLengthFromInput(e.target.value)}
+                              onBlur={commitLengthInput}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  commitLengthInput()
+                                }
+                              }}
+                            />
+                            <button type="button" className="gen-stepper-btn" onClick={() => updateLength(genConfig.length + 1)} disabled={genConfig.length >= GENERATOR_MAX_LENGTH} aria-label="Increase length">+</button>
+                          </div>
+                        </div>
+                        <input
+                          type="range"
+                          min={GENERATOR_MIN_LENGTH}
+                          max={GENERATOR_MAX_LENGTH}
+                          value={genConfig.length}
+                          onChange={(e) => updateLength(Number(e.target.value))}
+                        />
 
                         <div className="gen-toggles">
                           <label className={`gen-toggle ${genConfig.uppercase ? 'active' : ''}`}>
@@ -349,6 +443,10 @@ export function ItemDetailPane() {
                         </div>
 
                         <div className="gen-preview">{genPreview}</div>
+                        <div className={`gen-strength-hint ${generatorStrength.score <= 2 ? 'weak' : 'ok'}`}>
+                          Preview strength: {generatorStrength.label} ({generatorStrength.entropyBits} bits)
+                          {generatorStrength.score <= 2 ? `, est. crack time: ${generatorStrength.crackTimeDisplay}` : ''}
+                        </div>
 
                         <div className="gen-popover-actions">
                           <button className="ghost" onClick={() => regenerate(genConfig)}>
@@ -382,6 +480,52 @@ export function ItemDetailPane() {
                 )}
                 </div>
               </div>
+            </div>
+            <div className="password-strength-meter" aria-live="polite">
+              <div className="password-strength-label-row">
+                <span>Password strength</span>
+                <div className="password-strength-meta">
+                  <strong className={`password-strength-label ${passwordStrength.level}`}>
+                    {passwordStrength.label} ({passwordStrength.entropyBits} bits)
+                  </strong>
+                  <div className="entropy-info-wrap" ref={entropyInfoRef}>
+                    <button
+                      type="button"
+                      className="entropy-info-trigger"
+                      aria-label="About entropy bits"
+                      aria-expanded={showEntropyInfo}
+                      onClick={() => setShowEntropyInfo((current) => !current)}
+                    >
+                      <CircleHelp size={13} strokeWidth={2.2} />
+                    </button>
+                    {showEntropyInfo && (
+                      <div className="entropy-info-popover" role="dialog" aria-label="Entropy bits help">
+                        <p>
+                          Entropy bits estimate how hard a password is to guess. Higher bits means more possible combinations.
+                        </p>
+                        <p>
+                          Each extra bit roughly doubles attacker work, so longer and more varied passwords are much stronger.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="password-strength-track" role="progressbar" aria-valuemin={0} aria-valuemax={4} aria-valuenow={passwordStrength.score}>
+                <span className={`password-strength-fill ${passwordStrength.level}`} style={{ width: `${(passwordStrength.score / 4) * 100}%` }} />
+              </div>
+              {weakFeedback.length > 0 && (
+                <ul className="password-strength-feedback">
+                  {weakFeedback.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+              {hasReusedPassword && (
+                <p className="password-reuse-warning">
+                  Password already used in {reusedPasswordItems.length} other {reusedPasswordItems.length === 1 ? 'item' : 'items'}.
+                </p>
+              )}
             </div>
           </div>
 

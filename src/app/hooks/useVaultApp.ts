@@ -42,6 +42,13 @@ import {
   type AutoFolderAssignment,
   type AutoFolderPlan,
 } from '../../shared/utils/autoFoldering'
+import {
+  analyzePassword,
+  buildPasswordStrengthContextFromItem,
+  computePasswordReuseCounts,
+  mapAnalysisToRisk,
+  recomputeItemRisks,
+} from '../../shared/utils/passwordStrength'
 import { LocalNotifications } from '@capacitor/local-notifications'
 import AutofillBridge, { type CapturedCredentialDTO } from '../../plugins/autofillBridge'
 import {
@@ -235,6 +242,10 @@ function buildEmptyStorageItem(folderName = '', folderId: string | null = null):
     textValue: '',
     blobRef: null,
   }
+}
+
+function applyComputedItemRisks(items: VaultItem[]) {
+  return recomputeItemRisks(items).nextItems
 }
 
 function inferStorageKindFromMime(mimeType: string, fallbackName = ''): StorageKind {
@@ -791,6 +802,7 @@ export function useVaultApp() {
   const nativeAutofillSyncRetryTimerRef = useRef<number | null>(null)
   const consumeCapturedAutofillCredentialsRef = useRef<() => Promise<void>>(async () => {})
   const appliedThemeOverrideKeysRef = useRef<string[]>([])
+  const riskBackfillRunIdRef = useRef(0)
   const { isAuthenticated } = useSafeConvexAuth()
   const { signIn, signOut } = useSafeAuthActions()
   const authToken = useSafeAuthToken()
@@ -1100,7 +1112,8 @@ export function useVaultApp() {
         return
       }
 
-      await persistPayload({ items: nextItems })
+      const scoredItems = applyComputedItemRisks(nextItems)
+      await persistPayload({ items: scoredItems })
       if (createdCount > 0 && updatedCount > 0) {
         setSyncMessage(`Imported ${createdCount} new and updated ${updatedCount} captured login(s) from Android autofill`)
       } else if (createdCount > 0) {
@@ -2084,6 +2097,86 @@ export function useVaultApp() {
     setStorageDraft(nextSelected)
   }, [selectedStorageId, storageItemById])
 
+  useEffect(() => {
+    if (phase !== 'ready' || !vaultSession || items.length === 0) return
+    const quickCheck = recomputeItemRisks(items)
+    if (!quickCheck.changed) return
+
+    type IdleWindow = Window & {
+      requestIdleCallback?: (callback: (deadline: IdleDeadline) => void, options?: IdleRequestOptions) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+
+    const win = window as IdleWindow
+    const runId = ++riskBackfillRunIdRef.current
+    let canceled = false
+    let timeoutId: number | null = null
+    let idleId: number | null = null
+    let cursor = 0
+    let changed = false
+    const working = [...items]
+    const reuseCounts = computePasswordReuseCounts(items)
+    const indexById = new Map(items.map((item, index) => [item.id, index]))
+    const prioritizedIndices: number[] = []
+    const prioritizedIds = [selectedId, ...filtered.map((item) => item.id)]
+    for (const id of prioritizedIds) {
+      if (!id) continue
+      const index = indexById.get(id)
+      if (typeof index === 'number' && !prioritizedIndices.includes(index)) {
+        prioritizedIndices.push(index)
+      }
+    }
+    const allIndices = items.map((_, index) => index)
+    const remainingIndices = allIndices.filter((index) => !prioritizedIndices.includes(index))
+    const queue = [...prioritizedIndices, ...remainingIndices]
+
+    const processSlice = () => {
+      if (canceled || runId !== riskBackfillRunIdRef.current) return
+      const end = Math.min(cursor + 50, queue.length)
+      for (; cursor < end; cursor += 1) {
+        const index = queue[cursor]
+        const item = working[index]
+        if (!item || item.risk === 'exposed' || item.risk === 'stale') continue
+        const analysis = analyzePassword(item.passwordMasked ?? '', buildPasswordStrengthContextFromItem(item))
+        const nextRisk = mapAnalysisToRisk(analysis, (reuseCounts.get(item.passwordMasked || '') ?? 0) > 1)
+        if (nextRisk !== item.risk) {
+          working[index] = { ...item, risk: nextRisk }
+          changed = true
+        }
+      }
+
+      if (cursor < queue.length) {
+        schedule()
+        return
+      }
+
+      if (changed) {
+        void persistPayload({ items: working })
+      }
+    }
+
+    const schedule = () => {
+      if (canceled || runId !== riskBackfillRunIdRef.current) return
+      if (typeof win.requestIdleCallback === 'function') {
+        idleId = win.requestIdleCallback(() => {
+          processSlice()
+        }, { timeout: 300 })
+      } else {
+        timeoutId = window.setTimeout(processSlice, 24)
+      }
+    }
+
+    schedule()
+
+    return () => {
+      canceled = true
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+      if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleId)
+      }
+    }
+  }, [phase, vaultSession, items, selectedId, filtered, persistPayload])
+
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
   }
@@ -2594,9 +2687,10 @@ export function useVaultApp() {
     if (!vaultSession) {
       return
     }
+    const nextItems = next.items ? applyComputedItemRisks(next.items) : items
     const payload: VaultPayload = {
       schemaVersion: vaultSession.payload.schemaVersion,
-      items: next.items ?? items,
+      items: nextItems,
       storageItems: next.storageItems ?? storageItems,
       folders: next.folders ?? folders,
       trash: purgeExpiredTrash(next.trash ?? trash),
@@ -2763,10 +2857,10 @@ export function useVaultApp() {
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
     const item = buildEmptyItem(selectedFolderPath, selectedFolderId)
-    const next = [item, ...items]
+    const next = applyComputedItemRisks([item, ...items])
     void persistPayload({ items: next })
     setSelectedId(item.id)
-    setDraft(item)
+    setDraft(next.find((entry) => entry.id === item.id) ?? item)
     setMobileStep('detail')
     setActivePanel('details')
   }
@@ -3087,7 +3181,7 @@ export function useVaultApp() {
       folderId: ensuredFolder.folder?.id ?? null,
       updatedAt: new Date().toLocaleString(),
     }
-    const nextItems = items.map((item) => (item.id === nextItem.id ? nextItem : item))
+    const nextItems = applyComputedItemRisks(items.map((item) => (item.id === nextItem.id ? nextItem : item)))
     setFolders(ensuredFolder.nextFolders)
     await persistPayload({
       items: nextItems,
@@ -3235,10 +3329,11 @@ export function useVaultApp() {
       title: `${source.title || 'Credential'} Copy`,
       updatedAt: new Date().toLocaleString(),
     }
-    const nextItems = [duplicated, ...items]
+    const nextItems = applyComputedItemRisks([duplicated, ...items])
     await persistPayload({ items: nextItems })
+    const nextSelected = nextItems.find((item) => item.id === duplicated.id) ?? duplicated
     setSelectedId(duplicated.id)
-    setDraft(duplicated)
+    setDraft(nextSelected)
     setMobileStep('detail')
     setItemContextMenu(null)
   }
@@ -3509,14 +3604,14 @@ export function useVaultApp() {
         }
       })
 
-      const nextItems = [...importedItems, ...items]
+      const nextItems = applyComputedItemRisks([...importedItems, ...items])
       await persistPayload({
         items: nextItems,
       })
 
       setSelectedNode('all')
       setSelectedId(importedItems[0].id)
-      setDraft(importedItems[0])
+      setDraft(nextItems.find((item) => item.id === importedItems[0].id) ?? importedItems[0])
       setMobileStep('detail')
       setActivePanel('details')
 
@@ -3604,12 +3699,12 @@ export function useVaultApp() {
         }
       })
 
-      const nextItems = [...importedItems, ...items]
+      const nextItems = applyComputedItemRisks([...importedItems, ...items])
       await persistPayload({ items: nextItems, folders: nextFolders })
 
       setSelectedNode('all')
       setSelectedId(importedItems[0].id)
-      setDraft(importedItems[0])
+      setDraft(nextItems.find((item) => item.id === importedItems[0].id) ?? importedItems[0])
       setMobileStep('detail')
       setActivePanel('details')
 
