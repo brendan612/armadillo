@@ -59,11 +59,17 @@ import {
   getCachedVaultStatus,
   getCloudCacheTtlHours,
   getLocalVaultPath,
+  getLocalVaultPathStatus,
   getVaultStorageMode,
+  listRecentLocalVaultPaths,
   loadCachedVaultSnapshot,
+  loadLocalVaultFileAtPath,
   loadLocalVaultFile,
   parseVaultFileFromText,
   readPayloadWithSessionKey,
+  readLocalVaultFileMeta,
+  rememberLocalVaultPath,
+  removeRecentLocalVaultPath as removeStoredRecentLocalVaultPath,
   rewriteVaultFile,
   saveCachedVaultSnapshot,
   saveLocalVaultFile,
@@ -71,6 +77,8 @@ import {
   setLocalVaultPath as setStoredLocalVaultPath,
   setVaultStorageMode as setStoredVaultStorageMode,
   serializeVaultFile,
+  type LocalVaultPathStatus,
+  type RecentLocalVaultEntry,
   unlockVaultFile,
 } from '../../lib/vaultFile'
 import {
@@ -546,6 +554,11 @@ function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
   return alerts
 }
 
+function fileNameFromPath(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path
+}
+
 function itemMatchesQuery(item: VaultItem, queryLower: string) {
   return (
     item.title.toLowerCase().includes(queryLower) ||
@@ -676,7 +689,9 @@ function hasUnlockableVault(mode: VaultStorageMode) {
   if (mode === 'cloud_only') {
     return Boolean(loadCachedVaultSnapshot())
   }
-  return Boolean(loadLocalVaultFile() || loadCachedVaultSnapshot())
+  const localPath = getLocalVaultPath()
+  const localFile = localPath ? loadLocalVaultFileAtPath(localPath) : loadLocalVaultFile()
+  return Boolean(localFile || loadCachedVaultSnapshot())
 }
 
 function useSafeConvexAuth() {
@@ -718,7 +733,6 @@ export function useVaultApp() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isUnlocking, setIsUnlocking] = useState(false)
   const [vaultError, setVaultError] = useState('')
-  const [pendingVaultExists] = useState(hasExistingVault)
 
   const [items, setItems] = useState<VaultItem[]>([])
   const [storageItems, setStorageItems] = useState<VaultStorageItem[]>([])
@@ -762,6 +776,8 @@ export function useVaultApp() {
   const [cloudIdentity, setCloudIdentity] = useState('')
   const [isOrgMember, setIsOrgMember] = useState(false)
   const [localVaultPath, setLocalVaultPath] = useState(() => (initialStorageMode === 'cloud_only' ? '' : getLocalVaultPath()))
+  const [recentLocalVaultPaths, setRecentLocalVaultPaths] = useState<RecentLocalVaultEntry[]>(() =>
+    initialStorageMode === 'cloud_only' ? [] : listRecentLocalVaultPaths())
   const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
   const [cloudVaultCandidates, setCloudVaultCandidates] = useState<ArmadilloVaultFile[]>([])
   const [showAllCloudSnapshots, setShowAllCloudSnapshots] = useState(false)
@@ -846,6 +862,44 @@ export function useVaultApp() {
     const parts = rawPath.split(/[\\/]/).filter(Boolean)
     return parts[parts.length - 1] || 'vault.armadillo'
   }, [localVaultPath, storageMode])
+  const selectedLocalVaultStatus = useMemo<LocalVaultPathStatus>(() => {
+    if (storageMode !== 'local_file') return 'unknown'
+    if (!localVaultPath.trim()) return 'unknown'
+    return getLocalVaultPathStatus(localVaultPath)
+  }, [localVaultPath, storageMode])
+  const recentLocalVaultPathStatuses = useMemo<Record<string, LocalVaultPathStatus>>(() => {
+    const statuses: Record<string, LocalVaultPathStatus> = {}
+    for (const entry of recentLocalVaultPaths) {
+      statuses[entry.path] = getLocalVaultPathStatus(entry.path)
+    }
+    return statuses
+  }, [recentLocalVaultPaths])
+  const unlockSourceAvailable = useMemo(() => {
+    if (storageMode === 'cloud_only') {
+      return Boolean(loadCachedVaultSnapshot())
+    }
+    return selectedLocalVaultStatus === 'exists' || Boolean(loadCachedVaultSnapshot())
+  }, [storageMode, selectedLocalVaultStatus])
+  const localVaultNameById = useMemo<Record<string, string>>(() => {
+    if (storageMode !== 'local_file') return {}
+    const map: Record<string, string> = {}
+    const orderedPaths = [localVaultPath, ...recentLocalVaultPaths.map((entry) => entry.path)]
+      .map((value) => value.trim())
+      .filter(Boolean)
+    const seen = new Set<string>()
+    for (const path of orderedPaths) {
+      if (seen.has(path)) continue
+      seen.add(path)
+      const status = recentLocalVaultPathStatuses[path] ?? getLocalVaultPathStatus(path)
+      if (status !== 'exists') continue
+      const meta = readLocalVaultFileMeta(path)
+      if (!meta?.vaultId) continue
+      if (!map[meta.vaultId]) {
+        map[meta.vaultId] = fileNameFromPath(path)
+      }
+    }
+    return map
+  }, [storageMode, localVaultPath, recentLocalVaultPaths, recentLocalVaultPathStatuses])
 
   const completeGoogleSignInFromCallback = useCallback(async (callbackUrl: string, source: 'desktop' | 'android') => {
     try {
@@ -1141,14 +1195,17 @@ export function useVaultApp() {
 
     saveLocalVaultFile(file)
     setLocalVaultPath(getLocalVaultPath())
+    setRecentLocalVaultPaths(listRecentLocalVaultPaths())
   }, [cloudCacheTtlHours, storageMode])
 
   const getUnlockSourceFile = useCallback(() => {
     if (storageMode === 'cloud_only') {
       return loadCachedVaultSnapshot()
     }
-    return loadLocalVaultFile() || loadCachedVaultSnapshot()
-  }, [storageMode])
+    const fromSelectedPath = localVaultPath.trim() ? loadLocalVaultFileAtPath(localVaultPath) : null
+    if (fromSelectedPath) return fromSelectedPath
+    return loadCachedVaultSnapshot()
+  }, [localVaultPath, storageMode])
 
   const buildEntitlementStateFromToken = useCallback(async (
     token: string,
@@ -1325,6 +1382,7 @@ export function useVaultApp() {
         setSyncMessage('Local file mode enabled.')
       }
       setLocalVaultPath(getLocalVaultPath())
+      setRecentLocalVaultPaths(listRecentLocalVaultPaths())
     }
 
     setStorageMode(nextMode)
@@ -1430,6 +1488,7 @@ export function useVaultApp() {
     if (activeFile) {
       saveLocalVaultFile(activeFile)
       setLocalVaultPath(getLocalVaultPath())
+      setRecentLocalVaultPaths(listRecentLocalVaultPaths())
     }
     setStorageMode('local_file')
     setStoredVaultStorageMode('local_file')
@@ -2257,8 +2316,10 @@ export function useVaultApp() {
           setVaultError('Cloud-only cache expired. Connect to the internet and refresh from cloud.')
         } else if (storageMode === 'cloud_only') {
           setVaultError('No cached cloud vault found on this device.')
+        } else if (selectedLocalVaultStatus === 'missing') {
+          setVaultError('Selected vault file not found. Choose another vault or create a new one.')
         } else {
-          setVaultError('No local vault file found.')
+          setVaultError('Select a vault to unlock.')
         }
         setPhase('create')
         return
@@ -4024,7 +4085,13 @@ export function useVaultApp() {
     }
     const file = getUnlockSourceFile()
     if (!file) {
-      setVaultError(storageMode === 'cloud_only' ? 'No cached cloud vault found.' : 'No local vault file found.')
+      if (storageMode === 'cloud_only') {
+        setVaultError('No cached cloud vault found.')
+      } else if (selectedLocalVaultStatus === 'missing') {
+        setVaultError('Selected vault file not found. Choose another vault or create a new one.')
+      } else {
+        setVaultError('Select a vault to unlock.')
+      }
       return
     }
 
@@ -4057,7 +4124,9 @@ export function useVaultApp() {
       }
 
       setStoredLocalVaultPath(selectedPath)
+      rememberLocalVaultPath(selectedPath)
       setLocalVaultPath(selectedPath)
+      setRecentLocalVaultPaths(listRecentLocalVaultPaths())
 
       if (vaultSession) {
         persistVaultSnapshot(vaultSession.file)
@@ -4066,6 +4135,53 @@ export function useVaultApp() {
       setSyncMessage(`Local vault path set: ${selectedPath}`)
     } catch {
       setSyncMessage('Could not choose local vault location')
+    }
+  }
+
+  async function browseExistingLocalVault() {
+    if (storageMode === 'cloud_only') {
+      setSyncMessage('Switch to Local File mode before browsing vault files')
+      return
+    }
+    const shell = window.armadilloShell
+    if (!shell?.isElectron || !shell.chooseVaultOpenPath) {
+      setSyncMessage('Browse existing vault is available in Electron desktop app')
+      return
+    }
+    try {
+      const selectedPath = await shell.chooseVaultOpenPath(localVaultPath || undefined)
+      if (!selectedPath) return
+      setStoredLocalVaultPath(selectedPath)
+      rememberLocalVaultPath(selectedPath)
+      setLocalVaultPath(selectedPath)
+      setRecentLocalVaultPaths(listRecentLocalVaultPaths())
+      setVaultError('')
+      setPhase('unlock')
+      setSyncMessage(`Selected existing vault: ${selectedPath}`)
+    } catch {
+      setSyncMessage('Could not browse for an existing vault file')
+    }
+  }
+
+  function selectRecentLocalVaultPath(path: string) {
+    if (!path.trim()) return
+    setStoredLocalVaultPath(path)
+    rememberLocalVaultPath(path)
+    setLocalVaultPath(path)
+    setRecentLocalVaultPaths(listRecentLocalVaultPaths())
+    setVaultError('')
+    setPhase('unlock')
+  }
+
+  function removeRecentLocalVaultPath(path: string) {
+    const removingActive = localVaultPath.trim() === path.trim()
+    removeStoredRecentLocalVaultPath(path)
+    const remaining = listRecentLocalVaultPaths()
+    setRecentLocalVaultPaths(remaining)
+    if (removingActive) {
+      const nextPath = remaining[0]?.path ?? ''
+      setStoredLocalVaultPath(nextPath)
+      setLocalVaultPath(nextPath)
     }
   }
 
@@ -4201,7 +4317,7 @@ export function useVaultApp() {
       confirmPassword,
       isUnlocking,
       vaultError,
-      pendingVaultExists,
+      unlockSourceAvailable,
       items,
       storageItems,
       folders,
@@ -4246,6 +4362,10 @@ export function useVaultApp() {
       cloudIdentity,
       isOrgMember,
       localVaultPath,
+      selectedLocalVaultStatus,
+      recentLocalVaultPaths,
+      recentLocalVaultPathStatuses,
+      localVaultNameById,
       cloudVaultCandidates,
       showAllCloudSnapshots,
       windowMaximized,
@@ -4351,7 +4471,10 @@ export function useVaultApp() {
       unlockVault,
       unlockVaultBiometric,
       loadVaultFromCloud,
+      browseExistingLocalVault,
       chooseLocalVaultLocation,
+      selectRecentLocalVaultPath,
+      removeRecentLocalVaultPath,
       signInWithGoogle,
       signOutCloud,
       createItem,

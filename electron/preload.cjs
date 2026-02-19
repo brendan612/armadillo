@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('armadilloShell', {
   deleteVaultFile,
   openExternal: (url) => shell.openExternal(url),
   chooseVaultSavePath: (currentPath) => ipcRenderer.invoke('armadillo:choose-vault-save-path', currentPath),
+  chooseVaultOpenPath: (currentPath) => ipcRenderer.invoke('armadillo:choose-vault-open-path', currentPath),
   getOAuthCallbackUrl: () => ipcRenderer.invoke('armadillo:get-oauth-callback-url'),
   autofillCredentials: (username, password) => ipcRenderer.invoke('armadillo:autofill-credentials', { username, password }),
   minimizeWindow: () => ipcRenderer.invoke('armadillo:window-minimize'),

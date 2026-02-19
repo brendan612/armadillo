@@ -1644,6 +1644,97 @@ body.folder-dragging * {
   gap: 0.45rem;
 }
 
+.vault-picker-card {
+  gap: 0.45rem;
+  padding: 0.55rem 0.6rem;
+}
+
+.vault-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.vault-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+
+.vault-tabs .ghost,
+.vault-tabs .solid {
+  font-size: 0.74rem;
+  padding: 0.32rem 0.5rem;
+}
+
+.vault-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  padding: 0.12rem 0.45rem;
+  color: var(--ink-secondary);
+  background: var(--bg-0);
+}
+
+.vault-status-pill.is-exists {
+  color: color-mix(in srgb, var(--success) 88%, var(--ink) 12%);
+  border-color: color-mix(in srgb, var(--success) 55%, var(--line) 45%);
+}
+
+.vault-status-pill.is-missing {
+  color: color-mix(in srgb, var(--exposed) 88%, var(--ink) 12%);
+  border-color: color-mix(in srgb, var(--exposed) 55%, var(--line) 45%);
+}
+
+.vault-picker-path {
+  font-size: 0.76rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-picker-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+
+.vault-picker-actions .ghost {
+  font-size: 0.74rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.vault-picker-recent {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.vault-picker-recent-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+}
+
+.vault-picker-recent-row select {
+  min-width: 0;
+  font-size: 0.74rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+}
+
+.vault-picker-remove {
+  font-size: 0.74rem;
+  padding: 0.35rem 0.5rem;
+}
+
 /* ============================================
    AUTH SCREENS (Unlock / Create)
    ============================================ */

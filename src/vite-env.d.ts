@@ -22,6 +22,7 @@ interface Window {
     writeVaultFile?: (contents: string, path?: string) => boolean
     deleteVaultFile?: (path?: string) => boolean
     chooseVaultSavePath?: (currentPath?: string) => Promise<string | null>
+    chooseVaultOpenPath?: (currentPath?: string) => Promise<string | null>
     openExternal?: (url: string) => Promise<void>
     getOAuthCallbackUrl?: () => Promise<string>
     autofillCredentials?: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>
