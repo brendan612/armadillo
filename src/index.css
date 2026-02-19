@@ -1215,6 +1215,37 @@ body.folder-dragging * {
   color: var(--accent);
 }
 
+.risk-filter-row {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.risk-filter-chip {
+  border-radius: 999px;
+  padding: 0.2rem 0.48rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--ink-muted);
+}
+
+.risk-filter-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.risk-filter-pill {
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+
+.risk-filter-pill:hover {
+  filter: brightness(1.08);
+}
+
 .item-list {
   overflow-y: auto;
   padding: 0.3rem;
@@ -2197,7 +2228,85 @@ body.folder-dragging * {
   letter-spacing: 0.01em;
 }
 
-.gen-config-panel > label input[type="range"] {
+.gen-length-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.gen-length-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.gen-length-stepper {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+
+.gen-stepper-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.gen-stepper-btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
+.gen-stepper-btn:active:not(:disabled) {
+  background: var(--line);
+}
+
+.gen-stepper-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.gen-length-input {
+  width: 44px;
+  min-width: 44px;
+  padding: 0.15rem 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  outline: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.gen-length-input::-webkit-inner-spin-button,
+.gen-length-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.gen-config-panel input[type="range"] {
   width: 100%;
   margin: 0;
   accent-color: var(--accent);
@@ -2269,6 +2378,20 @@ body.folder-dragging * {
   min-height: 2.2rem;
 }
 
+.gen-strength-hint {
+  margin-top: -0.05rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.gen-strength-hint.ok {
+  color: var(--ink-muted);
+}
+
+.gen-strength-hint.weak {
+  color: var(--weak);
+}
+
 .gen-popover-actions {
   display: flex;
   gap: 0.35rem;
@@ -2315,6 +2438,157 @@ body.folder-dragging * {
   font-size: 0.72rem;
   color: var(--exposed);
   font-weight: 500;
+}
+
+.password-strength-meter {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.password-strength-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+
+.password-strength-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.password-strength-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.entropy-info-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.entropy-info-trigger {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entropy-info-trigger:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--bg-3);
+}
+
+.entropy-info-popover {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 35;
+  width: min(280px, 76vw);
+  padding: 0.55rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--surface-solid) 90%, var(--bg-1));
+  box-shadow: var(--shadow-md);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.entropy-info-popover p {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.password-strength-track {
+  width: 100%;
+  height: 0.4rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+}
+
+.password-strength-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  transition: width 0.18s ease;
+}
+
+.password-strength-label.very-weak {
+  color: var(--exposed);
+}
+
+.password-strength-fill.very-weak {
+  background: var(--exposed);
+}
+
+.password-strength-label.weak {
+  color: var(--reused);
+}
+
+.password-strength-fill.weak {
+  background: var(--reused);
+}
+
+.password-strength-label.fair {
+  color: var(--weak);
+}
+
+.password-strength-fill.fair {
+  background: var(--weak);
+}
+
+.password-strength-label.good {
+  color: var(--accent);
+}
+
+.password-strength-fill.good {
+  background: var(--accent);
+}
+
+.password-strength-label.strong {
+  color: var(--accent);
+}
+
+.password-strength-fill.strong {
+  background: color-mix(in srgb, var(--accent) 75%, #22c55e);
+}
+
+.password-reuse-warning {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--reused);
+}
+
+.password-strength-feedback {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.password-strength-feedback li {
+  font-size: 0.7rem;
+  line-height: 1.3;
+  color: var(--ink-secondary);
 }
 
 /* ---- Expiry Date ---- */
@@ -3834,6 +4108,10 @@ body.folder-dragging * {
   .tab-row button,
   .toggle-row button {
     flex: 1;
+  }
+
+  .risk-filter-row {
+    width: 100%;
   }
 
   /* ---- Context menus — bottom sheet ---- */

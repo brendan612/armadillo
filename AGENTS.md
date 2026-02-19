@@ -9,6 +9,33 @@
   - One-line summary of what changed and why
 
 ## Recent Changes
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/items/components/ItemListPane.tsx`
+  - Changed risk-filter UX so top risk chips always pivot to all credentials for that risk, while clicking a row-level Reused badge drills into only credentials sharing that exact password.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/items/components/ItemListPane.tsx`, `src/index.css`
+  - Added list-level risk filters (All/Safe/Weak/Reused/Exposed/Stale) plus clickable row risk badges that instantly filter credentials by that risk state.
+- 2026-02-19
+  - Updated `AGENTS.md`, `package.json`, `package-lock.json`, `src/shared/utils/passwordStrength.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/index.css`
+  - Implemented zxcvbn-based password quality analysis (patterns/dictionaries/common passwords + contextual matching), integrated live detail/generator feedback, persisted computed weak/reused risk states, list risk badges, and idle chunked risk backfill for existing items.
+- 2026-02-19
+ - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`
+ - Fixed generator length typing so entering multi-digit values no longer snaps to min on each keypress; min/max now enforce on blur/Enter.
+- 2026-02-19
+ - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+ - Redesigned the password generator length input into a polished stepper control with minus/plus buttons flanking a centered value, hidden browser spinners, and consistent styling.
+- 2026-02-19
+ - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+ - Updated the password generator length control to support both a slider and direct numeric input so users can set length either way.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Added an entropy-bits info popup next to the password-strength label so users can understand what bits mean and why higher entropy improves password resistance.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/shared/utils/passwordGen.ts`, `src/features/items/components/ItemDetailPane.tsx`
+  - Increased generated password max length to 256 and added estimated entropy bits in parentheses beside the password-strength label.
+- 2026-02-19
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Added a password strength meter beneath credential password input plus a live reused-password warning that flags when the entered password already exists on other saved items.
 - 2026-02-17
   - Updated `AGENTS.md`, `package.json`, `package-lock.json`, `scripts/entitlements/sign-token.mjs`, `convex/schema.ts`, `convex/sync.ts`, `convex/http.ts`, `services/sync-gateway/server.mjs`, `services/sync-gateway/migrations/001_init.sql`, `services/sync-gateway/README.md`, `services/sync-gateway/tests/server.test.mjs`, `src/types/entitlements.ts`, `src/features/flags/registry.ts`, `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/lib/crypto.ts`, `src/lib/blobStore/index.ts`, `src/lib/blobStore/types.ts`, `src/lib/blobStore/indexedDbBlobStore.ts`, `src/lib/syncTypes.ts`, `src/lib/syncClient.ts`, `src/lib/convexApi.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/nav/components/SidebarPane.tsx`, `src/features/nav/components/FolderTree.tsx`, `src/features/layout/components/Topbar.tsx`, `src/features/layout/components/MobileNav.tsx`, `src/features/settings/components/SettingsPage.tsx`, `src/features/storage/components/StorageListPane.tsx`, `src/features/storage/components/StorageDetailPane.tsx`, `src/features/storage/components/StorageContextMenu.tsx`
   - Implemented a Premium-gated Storage workspace with schema v5 storage items, encrypted local blob cache + cloud blob sync APIs (Convex/self-hosted), backup-bundle zip import/export, and new Storage list/detail/context UI integrated into desktop/mobile navigation.

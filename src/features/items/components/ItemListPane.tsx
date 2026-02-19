@@ -1,9 +1,23 @@
-import { memo, useCallback, useMemo, useRef, type MutableRefObject } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { ChevronLeft, Copy, Keyboard, NotebookPen, UserRound } from 'lucide-react'
-import type { VaultItem } from '../../../types/vault'
+import type { RiskState, VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 const ITEM_CONTEXT_LONG_PRESS_MS = 520
+const riskLabelByState: Record<VaultItem['risk'], string> = {
+  safe: 'Safe',
+  weak: 'Weak',
+  reused: 'Reused',
+  exposed: 'Exposed',
+  stale: 'Stale',
+}
+const riskFilterOptions: Array<{ key: RiskState; label: string }> = [
+  { key: 'safe', label: 'Safe' },
+  { key: 'weak', label: 'Weak' },
+  { key: 'reused', label: 'Reused' },
+  { key: 'exposed', label: 'Exposed' },
+  { key: 'stale', label: 'Stale' },
+]
 
 function clearLongPressTimer(timerRef: MutableRefObject<number | null>) {
   if (timerRef.current !== null) {
@@ -25,6 +39,7 @@ type ItemListRowProps = {
   onCopyUsername: (username: string) => void
   onCopyPassword: (password: string) => void
   onAutofillItem: (item: VaultItem) => void
+  onSelectRiskFilter: (item: VaultItem) => void
 }
 
 const ItemListRow = memo(function ItemListRow({
@@ -40,6 +55,7 @@ const ItemListRow = memo(function ItemListRow({
   onCopyUsername,
   onCopyPassword,
   onAutofillItem,
+  onSelectRiskFilter,
 }: ItemListRowProps) {
   const maskedPassword = item.passwordMasked ? '*'.repeat(Math.min(24, Math.max(8, item.passwordMasked.length))) : 'No password'
 
@@ -125,6 +141,17 @@ const ItemListRow = memo(function ItemListRow({
             <Keyboard size={14} aria-hidden="true" />
           </button>
         </div>
+        <button
+          type="button"
+          className={`risk risk-${item.risk} risk-filter-pill`}
+          onClick={(event) => {
+            event.stopPropagation()
+            onSelectRiskFilter(item)
+          }}
+          title={`Filter by ${riskLabelByState[item.risk]} risk`}
+        >
+          {riskLabelByState[item.risk]}
+        </button>
         <span className="folder-tag">{folderLabel}</span>
       </div>
     </li>
@@ -139,6 +166,8 @@ const ItemListRow = memo(function ItemListRow({
 export function ItemListPane() {
   const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items, syncProvider } = useVaultAppState()
   const { filtered, folderPathById, effectivePlatform, hasCapability } = useVaultAppDerived()
+  const [riskFilter, setRiskFilter] = useState<RiskState | 'all'>('all')
+  const [reusedPasswordFilter, setReusedPasswordFilter] = useState<string | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
   const {
     setQuery,
@@ -147,6 +176,7 @@ export function ItemListPane() {
     deleteTrashEntryPermanently,
     createItem,
     setSelectedId,
+    setSelectedNode,
     setMobileStep,
     setItemContextMenu,
     setActivePanel,
@@ -195,11 +225,35 @@ export function ItemListPane() {
   const handleAutofillItem = useCallback((item: VaultItem) => {
     void autofillItem(item)
   }, [autofillItem])
+  const handleSelectRiskFilterFromItem = useCallback((item: VaultItem) => {
+    setSelectedNode('all')
+    setQuery('')
+    if (item.risk === 'reused' && item.passwordMasked) {
+      setRiskFilter('reused')
+      setReusedPasswordFilter(item.passwordMasked)
+      return
+    }
+    setReusedPasswordFilter(null)
+    setRiskFilter((current) => (current === item.risk ? 'all' : item.risk))
+  }, [setQuery, setSelectedNode])
+
+  useEffect(() => {
+    setRiskFilter('all')
+    setReusedPasswordFilter(null)
+  }, [selectedNode])
 
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
-  const itemRows = useMemo(() => filtered.map((item) => {
+  const filteredByRisk = useMemo(() => {
+    const byRisk = riskFilter === 'all'
+      ? filtered
+      : filtered.filter((item) => item.risk === riskFilter)
+    if (!reusedPasswordFilter) return byRisk
+    return byRisk.filter((item) => item.passwordMasked === reusedPasswordFilter)
+  }, [filtered, riskFilter, reusedPasswordFilter])
+
+  const itemRows = useMemo(() => filteredByRisk.map((item) => {
     const folderLabel = item.folderId ? (folderPathById.get(item.folderId) ?? item.folder) : 'Unfiled'
     return (
       <ItemListRow
@@ -216,10 +270,11 @@ export function ItemListPane() {
         onCopyUsername={handleCopyUsername}
         onCopyPassword={handleCopyPassword}
         onAutofillItem={handleAutofillItem}
+        onSelectRiskFilter={handleSelectRiskFilterFromItem}
       />
     )
   }), [
-    filtered,
+    filteredByRisk,
     selectedId,
     folderPathById,
     handleSelectItem,
@@ -230,6 +285,7 @@ export function ItemListPane() {
     handleCopyUsername,
     handleCopyPassword,
     handleAutofillItem,
+    handleSelectRiskFilterFromItem,
     canManageCloudSyncExclusions,
   ])
 
@@ -268,6 +324,35 @@ export function ItemListPane() {
             <button className={folderFilterMode === 'recursive' ? 'active' : ''} onClick={() => setFolderFilterMode('recursive')}>Include Subfolders</button>
           </div>
         )}
+        {selectedNode !== 'trash' && (
+          <div className="risk-filter-row">
+            <button
+              className={`risk-filter-chip ${riskFilter === 'all' ? 'active' : ''}`}
+              onClick={() => {
+                setSelectedNode('all')
+                setQuery('')
+                setReusedPasswordFilter(null)
+                setRiskFilter('all')
+              }}
+            >
+              All ({items.length})
+            </button>
+            {riskFilterOptions.map((option) => (
+              <button
+                key={option.key}
+                className={`risk-filter-chip risk-${option.key} ${riskFilter === option.key ? 'active' : ''}`}
+                onClick={() => {
+                  setSelectedNode('all')
+                  setQuery('')
+                  setReusedPasswordFilter(null)
+                  setRiskFilter(option.key)
+                }}
+              >
+                {option.label} ({items.filter((item) => item.risk === option.key).length})
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {selectedNode === 'trash' ? (
@@ -289,10 +374,14 @@ export function ItemListPane() {
             ))
           )}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filteredByRisk.length === 0 ? (
         <div className="detail-grid">
-          <h3>{emptyState.title}</h3>
-          <p className="muted">{emptyState.message}</p>
+          <h3>{riskFilter === 'all' ? emptyState.title : `No ${riskLabelByState[riskFilter]} Credentials`}</h3>
+          <p className="muted">
+            {reusedPasswordFilter
+              ? 'No credentials match the selected reused password group.'
+              : (riskFilter === 'all' ? emptyState.message : `No credentials match the ${riskLabelByState[riskFilter]} filter in this view.`)}
+          </p>
           {noCredentialsInVault && (
             <button className="solid" style={{ alignSelf: 'start' }} onClick={createItem}>+ Create First Credential</button>
           )}
