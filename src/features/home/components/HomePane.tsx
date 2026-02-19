@@ -1,15 +1,15 @@
-import { AlertTriangle, Clock3, FolderOpen, Search, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, Clock3, Copy, FolderOpen, KeyRound, Search, ShieldCheck } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
-function formatUpdatedAt(updatedAtRaw: string) {
-  const parsed = Date.parse(updatedAtRaw)
-  if (!Number.isFinite(parsed)) return updatedAtRaw
-  return new Date(parsed).toLocaleString()
+function getInitials(title: string) {
+  const words = title.trim().split(/\s+/)
+  if (words.length >= 2) return (words[0][0]! + words[1][0]!).toUpperCase()
+  return title.trim().slice(0, 2).toUpperCase() || '??'
 }
 
 export function HomePane() {
   const { items, mobileStep, homeSearchQuery } = useVaultAppState()
-  const { folderPathById, homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems } = useVaultAppDerived()
+  const { homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems, reusedItems } = useVaultAppDerived()
   const { updateHomeSearch, submitHomeSearch, openSmartView, setSelectedNode, setMobileStep, setQuery, openItemFromHome } = useVaultAppActions()
 
   const unfiledCount = items.filter((item) => !item.folderId).length
@@ -19,12 +19,14 @@ export function HomePane() {
     <section className={`pane pane-middle home-pane ${mobileStep === 'home' ? 'mobile-active' : ''}`}>
       <div className="pane-head home-head">
         <h2>At a Glance</h2>
-        <p className="muted">Search credentials and monitor vault health.</p>
+        <p className="muted">Vault overview and quick credential search.</p>
       </div>
 
       <div className="home-body">
+
+        {/* Search */}
         <div className="home-search-row">
-          <Search size={15} aria-hidden="true" />
+          <Search size={14} aria-hidden="true" />
           <input
             value={homeSearchQuery}
             onChange={(event) => updateHomeSearch(event.target.value)}
@@ -35,27 +37,36 @@ export function HomePane() {
               }
             }}
             placeholder="Search credentials..."
+            aria-label="Search credentials"
           />
-          <button className="ghost" onClick={submitHomeSearch}>Open List</button>
+          <button className="ghost home-search-btn" onClick={submitHomeSearch}>
+            Browse all
+          </button>
         </div>
 
+        {/* Quick Search Results */}
         {queryActive && (
           <div className="home-section">
             <div className="home-section-head">
-              <h3>Quick Search</h3>
-              <span>{homeSearchResults.length} shown</span>
+              <h3>Quick Results</h3>
+              <span className="home-section-count">{homeSearchResults.length}</span>
             </div>
             {homeSearchResults.length === 0 ? (
-              <p className="home-empty">No credentials match your search.</p>
+              <div className="home-empty">
+                <p>No credentials match your search.</p>
+              </div>
             ) : (
-              <ul className="home-inline-list">
+              <ul className="item-list home-item-list">
                 {homeSearchResults.map((item) => (
-                  <li key={item.id}>
-                    <button className="home-result-row" onClick={() => openItemFromHome(item.id)}>
-                      <strong>{item.title || 'Untitled'}</strong>
-                      <span>{item.username || 'No username'}</span>
-                      <span>{item.folderId ? (folderPathById.get(item.folderId) ?? item.folder) : 'Unfiled'}</span>
-                    </button>
+                  <li key={item.id} onClick={() => openItemFromHome(item.id)}>
+                    <div className="item-info">
+                      <strong className="item-title">{item.title || 'Untitled'}</strong>
+                      {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
+                      <p className="item-secondary">
+                        <span className="item-username">{item.username || 'No username'}</span>
+                      </p>
+                    </div>
+                    <div className="item-avatar" aria-hidden="true">{getInitials(item.title || 'U')}</div>
                   </li>
                 ))}
               </ul>
@@ -63,50 +74,83 @@ export function HomePane() {
           </div>
         )}
 
-        <div className="home-cards">
-          <button className="home-card" onClick={() => { setQuery(''); setSelectedNode('all'); setMobileStep('list') }}>
-            <span className="home-card-icon"><ShieldCheck size={16} /></span>
-            <span className="home-card-value">{items.length}</span>
-            <span className="home-card-label">Total Credentials</span>
+        {/* Vault Stats */}
+        <div className="home-stats">
+          <button
+            className="home-stat"
+            onClick={() => { setQuery(''); setSelectedNode('all'); setMobileStep('list') }}
+          >
+            <ShieldCheck size={13} />
+            <span className="home-stat-value">{items.length}</span>
+            <span className="home-stat-label">Total</span>
           </button>
-          <button className="home-card" onClick={() => openSmartView('expired')}>
-            <span className="home-card-icon"><AlertTriangle size={16} /></span>
-            <span className="home-card-value">{expiredItems.length}</span>
-            <span className="home-card-label">Expired</span>
+
+          <button
+            className={`home-stat${expiredItems.length > 0 ? ' home-stat--alert' : ''}`}
+            onClick={() => openSmartView('expired')}
+          >
+            <AlertTriangle size={13} />
+            <span className="home-stat-value">{expiredItems.length}</span>
+            <span className="home-stat-label">Expired</span>
           </button>
-          <button className="home-card" onClick={() => openSmartView('expiring')}>
-            <span className="home-card-icon"><Clock3 size={16} /></span>
-            <span className="home-card-value">{expiringSoonItems.length}</span>
-            <span className="home-card-label">Expiring Soon (7d)</span>
+
+          <button
+            className={`home-stat${expiringSoonItems.length > 0 ? ' home-stat--warn' : ''}`}
+            onClick={() => openSmartView('expiring')}
+          >
+            <Clock3 size={13} />
+            <span className="home-stat-value">{expiringSoonItems.length}</span>
+            <span className="home-stat-label">Expiring</span>
           </button>
-          <button className="home-card" onClick={() => { setQuery(''); setSelectedNode('unfiled'); setMobileStep('list') }}>
-            <span className="home-card-icon"><FolderOpen size={16} /></span>
-            <span className="home-card-value">{unfiledCount}</span>
-            <span className="home-card-label">Unfiled</span>
+
+          <button
+            className={`home-stat${reusedItems.length > 0 ? ' home-stat--reused' : ''}`}
+            onClick={() => openSmartView('reused')}
+          >
+            <Copy size={13} />
+            <span className="home-stat-value">{reusedItems.length}</span>
+            <span className="home-stat-label">Reused</span>
+          </button>
+
+          <button
+            className="home-stat"
+            onClick={() => { setQuery(''); setSelectedNode('unfiled'); setMobileStep('list') }}
+          >
+            <FolderOpen size={13} />
+            <span className="home-stat-value">{unfiledCount}</span>
+            <span className="home-stat-label">Unfiled</span>
           </button>
         </div>
 
+        {/* Recent Updates */}
         <div className="home-section">
           <div className="home-section-head">
-            <h3>Recent Updates</h3>
-            <span>{homeRecentItems.length}</span>
+            <h3>Recently Updated</h3>
+            <span className="home-section-count">{homeRecentItems.length}</span>
           </div>
           {homeRecentItems.length === 0 ? (
-            <p className="home-empty">No credentials yet. Create your first item to get started.</p>
+            <div className="home-empty">
+              <KeyRound size={18} aria-hidden="true" />
+              <p>No credentials yet. Create your first item to get started.</p>
+            </div>
           ) : (
-            <ul className="home-recent-list">
+            <ul className="item-list home-item-list">
               {homeRecentItems.map((item) => (
-                <li key={item.id}>
-                  <button className="home-recent-row" onClick={() => openItemFromHome(item.id)}>
-                    <strong>{item.title || 'Untitled'}</strong>
-                    <span>{item.username || 'No username'}</span>
-                    <span>{formatUpdatedAt(item.updatedAt)}</span>
-                  </button>
+                <li key={item.id} onClick={() => openItemFromHome(item.id)}>
+                  <div className="item-info">
+                    <strong className="item-title">{item.title || 'Untitled'}</strong>
+                    {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
+                    <p className="item-secondary">
+                      <span className="item-username">{item.username || 'No username'}</span>
+                    </p>
+                  </div>
+                  <div className="item-avatar" aria-hidden="true">{getInitials(item.title || 'U')}</div>
                 </li>
               ))}
             </ul>
           )}
         </div>
+
       </div>
     </section>
   )

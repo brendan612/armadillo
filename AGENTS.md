@@ -19,14 +19,14 @@
   - Updated `AGENTS.md`, `package.json`, `package-lock.json`, `src/shared/utils/passwordStrength.ts`, `src/app/hooks/useVaultApp.ts`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`, `src/index.css`
   - Implemented zxcvbn-based password quality analysis (patterns/dictionaries/common passwords + contextual matching), integrated live detail/generator feedback, persisted computed weak/reused risk states, list risk badges, and idle chunked risk backfill for existing items.
 - 2026-02-19
- - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`
- - Fixed generator length typing so entering multi-digit values no longer snaps to min on each keypress; min/max now enforce on blur/Enter.
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`
+  - Fixed generator length typing so entering multi-digit values no longer snaps to min on each keypress; min/max now enforce on blur/Enter.
 - 2026-02-19
- - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
- - Redesigned the password generator length input into a polished stepper control with minus/plus buttons flanking a centered value, hidden browser spinners, and consistent styling.
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Redesigned the password generator length input into a polished stepper control with minus/plus buttons flanking a centered value, hidden browser spinners, and consistent styling.
 - 2026-02-19
- - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
- - Updated the password generator length control to support both a slider and direct numeric input so users can set length either way.
+  - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
+  - Updated the password generator length control to support both a slider and direct numeric input so users can set length either way.
 - 2026-02-19
   - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
   - Added an entropy-bits info popup next to the password-strength label so users can understand what bits mean and why higher entropy improves password resistance.
@@ -36,6 +36,15 @@
 - 2026-02-19
   - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/index.css`
   - Added a password strength meter beneath credential password input plus a live reused-password warning that flags when the entered password already exists on other saved items.
+- 2026-02-18
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed workflow-dispatch branch targeting by clearing the `git_ref` default so manual fast-lane runs no longer silently build `main` unless explicitly requested.
+- 2026-02-18
+  - Updated `AGENTS.md`, `android/app/build.gradle`
+  - Fixed Android `devRelease` R8 minification failure in the Firebase fastlane lane by adding missing Tink annotation dependencies (`error_prone_annotations`, `jsr305`) so release shrinking can resolve referenced classes.
+- 2026-02-18
+  - Updated `AGENTS.md`, `convex/http.ts`
+  - Fixed Convex browser CORS/preflight failures by adding missing v2 auth/sync/entitlement HTTP routes and OPTIONS handlers, expanding allowed methods to include GET, and wiring `/api/v2/entitlements/me` responses.
 - 2026-02-17
   - Updated `AGENTS.md`, `package.json`, `package-lock.json`, `scripts/entitlements/sign-token.mjs`, `convex/schema.ts`, `convex/sync.ts`, `convex/http.ts`, `services/sync-gateway/server.mjs`, `services/sync-gateway/migrations/001_init.sql`, `services/sync-gateway/README.md`, `services/sync-gateway/tests/server.test.mjs`, `src/types/entitlements.ts`, `src/features/flags/registry.ts`, `src/types/vault.ts`, `src/lib/vaultFile.ts`, `src/lib/crypto.ts`, `src/lib/blobStore/index.ts`, `src/lib/blobStore/types.ts`, `src/lib/blobStore/indexedDbBlobStore.ts`, `src/lib/syncTypes.ts`, `src/lib/syncClient.ts`, `src/lib/convexApi.ts`, `src/lib/providers/convexProvider.ts`, `src/lib/providers/selfHostedProvider.ts`, `src/app/hooks/useVaultApp.ts`, `src/app/AppShell.tsx`, `src/features/nav/components/SidebarPane.tsx`, `src/features/nav/components/FolderTree.tsx`, `src/features/layout/components/Topbar.tsx`, `src/features/layout/components/MobileNav.tsx`, `src/features/settings/components/SettingsPage.tsx`, `src/features/storage/components/StorageListPane.tsx`, `src/features/storage/components/StorageDetailPane.tsx`, `src/features/storage/components/StorageContextMenu.tsx`
   - Implemented a Premium-gated Storage workspace with schema v5 storage items, encrypted local blob cache + cloud blob sync APIs (Convex/self-hosted), backup-bundle zip import/export, and new Storage list/detail/context UI integrated into desktop/mobile navigation.
@@ -84,6 +93,12 @@
 - 2026-02-16
   - Updated `AGENTS.md`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`
   - Softened premium-lock messaging (removed blunt "Requires Premium plan" from unlock screen, replaced Cloud settings lock text with subtle "Available on Premium/Enterprise" hints), extracted Plans & Billing into its own settings category with a styled "Get Premium" upgrade card for free users and a clean "Current Plan" summary for paid users, and added org-member detection to hide billing controls when the user belongs to an organization.
+- 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed fast-lane Android CI Java toolchain mismatch by upgrading GitHub Actions Java setup from 17 to 21 to satisfy Capacitor Android `sourceCompatibility`/`--release 21`.
+- 2026-02-16
+  - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
+  - Fixed Linux CI Gradle wrapper execution in fast-lane Android workflow by normalizing `android/gradlew` line endings and setting execute permission before running `assembleDevRelease`.
 - 2026-02-16
   - Updated `AGENTS.md`, `.env.example`, `.github/workflows/fastlane-android.yml`, `README.md`, `android/app/build.gradle`, `package.json`, `public/update-manifest.json`, `src/app/AppShell.tsx`, `src/app/hooks/useVaultApp.ts`, `src/features/settings/components/SettingsPage.tsx`, `src/index.css`, `src/lib/updateManifest.ts`, `src/vite-env.d.ts`, `vite.config.ts`
   - Added a dual-track device update implementation with update-manifest types/checking, Settings channel/build/update visibility, production-only minimum-version enforcement gate, Android `dev` flavor + CI-injected version/signing properties, and a Firebase App Distribution fast-lane workflow for non-store Android tester pushes.

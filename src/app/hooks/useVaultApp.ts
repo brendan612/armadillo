@@ -137,7 +137,7 @@ type SyncState = 'local' | 'syncing' | 'live' | 'error'
 type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
 type FolderFilterMode = 'direct' | 'recursive'
 type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'billing' | 'danger'
-type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'unfiled' | 'trash' | `folder:${string}`
+type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'reused' | 'unfiled' | 'trash' | `folder:${string}`
 type WorkspaceSection = 'passwords' | 'storage'
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type StorageContextMenuState = { itemId: string; x: number; y: number } | null
@@ -1969,6 +1969,18 @@ export function useVaultApp() {
     () => items.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring'),
     [items],
   )
+  const reusedItems = useMemo(() => {
+    const passwordCount = new Map<string, number>()
+    for (const item of items) {
+      const pw = item.passwordMasked?.trim()
+      if (!pw) continue
+      passwordCount.set(pw, (passwordCount.get(pw) ?? 0) + 1)
+    }
+    return items.filter((item) => {
+      const pw = item.passwordMasked?.trim()
+      return !!pw && (passwordCount.get(pw) ?? 0) > 1
+    })
+  }, [items])
   const homeRecentItems = useMemo(() => {
     const ranked = items
       .map((item, index) => ({ item, index, parsedUpdatedAt: Date.parse(item.updatedAt) }))
@@ -2002,6 +2014,9 @@ export function useVaultApp() {
     if (selectedNode === 'expired') {
       return expiredItems
     }
+    if (selectedNode === 'reused') {
+      return reusedItems
+    }
     if (selectedNode === 'unfiled') {
       return items.filter((item) => !item.folderId)
     }
@@ -2015,7 +2030,7 @@ export function useVaultApp() {
       return items.filter((item) => item.folderId && ids.has(item.folderId))
     }
     return items.filter((item) => item.folderId === folderId)
-  }, [items, selectedNode, folderFilterMode, folders, expiringSoonItems, expiredItems])
+  }, [items, selectedNode, folderFilterMode, folders, expiringSoonItems, expiredItems, reusedItems])
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -2027,7 +2042,7 @@ export function useVaultApp() {
   }, [scopedItems, query])
 
   const scopedStorageItems = useMemo(() => {
-    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired' || selectedNode === 'trash') {
+    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired' || selectedNode === 'reused' || selectedNode === 'trash') {
       return []
     }
     if (selectedNode === 'all') return storageItems
@@ -3123,7 +3138,7 @@ export function useVaultApp() {
     }
   }
 
-  function openSmartView(view: 'expired' | 'expiring') {
+  function openSmartView(view: 'expired' | 'expiring' | 'reused') {
     setWorkspaceSection('passwords')
     setQuery('')
     setSelectedNode(view)
@@ -4264,6 +4279,7 @@ export function useVaultApp() {
       folderPathById,
       expiredItems,
       expiringSoonItems,
+      reusedItems,
       homeRecentItems,
       homeSearchResults,
       filtered,
