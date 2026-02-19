@@ -153,6 +153,7 @@ jobs:
           ./gradlew --no-daemon assembleDevRelease \
             -ParmadilloVersionName="${{ steps.version.outputs.version_name }}" \
             -ParmadilloVersionCode="${{ steps.version.outputs.version_code }}" \
+            -ParmadilloDisableReleaseMinify=true \
             -ParmadilloKeystoreFile="$RUNNER_TEMP/armadillo-upload.jks" \
             -ParmadilloKeystorePassword="${ANDROID_KEYSTORE_PASSWORD}" \
             -ParmadilloKeyAlias="${ANDROID_KEY_ALIAS}" \
