@@ -17,7 +17,7 @@
     "sync:android": "npm run build:android:web && npx cap sync android",
     "apk:debug": "npm run sync:android && cd android && gradlew.bat assembleDebug",
     "apk:release": "npm run sync:android && cd android && gradlew.bat assembleRelease",
-    "apk:fastlane": "npm run sync:android && cd android && gradlew.bat assembleDevRelease",
+    "apk:fastlane": "npm run sync:android && cd android && gradlew.bat assembleDevFastlane",
     "lint": "eslint .",
     "test": "node --test services/sync-gateway/tests/*.test.mjs",
     "release:check-signing": "node scripts/release/check-signing-env.mjs",

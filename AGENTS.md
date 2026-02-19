@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-18
+  - Updated `AGENTS.md`, `android/app/build.gradle`, `package.json`, `.github/workflows/fastlane-android.yml`
+  - Switched Firebase tester builds from `devRelease` to a dedicated non-minified `devFastlane` variant to avoid release-only blank-screen regressions while preserving signed CI distribution.
+- 2026-02-18
   - Updated `AGENTS.md`, `.github/workflows/fastlane-android.yml`
   - Fixed workflow-dispatch branch targeting by clearing the `git_ref` default so manual fast-lane runs no longer silently build `main` unless explicitly requested.
 - 2026-02-18

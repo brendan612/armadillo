@@ -141,7 +141,7 @@ jobs:
           sed -i 's/\r$//' android/gradlew
           chmod +x android/gradlew
 
-      - name: Build signed dev flavor APK
+      - name: Build signed dev fastlane APK
         shell: bash
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -150,7 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           cd android
-          ./gradlew --no-daemon assembleDevRelease \
+          ./gradlew --no-daemon assembleDevFastlane \
             -ParmadilloVersionName="${{ steps.version.outputs.version_name }}" \
             -ParmadilloVersionCode="${{ steps.version.outputs.version_code }}" \
             -ParmadilloKeystoreFile="$RUNNER_TEMP/armadillo-upload.jks" \
@@ -163,9 +163,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk_path="$(find android/app/build/outputs/apk -type f -name '*dev-release*.apk' | head -n 1)"
+          apk_path="$(find android/app/build/outputs/apk -type f -name '*dev-fastlane*.apk' | head -n 1)"
           if [[ -z "${apk_path}" ]]; then
-            echo "Could not locate dev release APK output"
+            echo "Could not locate dev fastlane APK output"
             exit 1
           fi
           echo "apk_path=${apk_path}" >> "$GITHUB_OUTPUT"
