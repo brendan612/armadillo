@@ -10,6 +10,9 @@
 
 ## Recent Changes
 - 2026-02-19
+  - Updated `AGENTS.md`, `android/app/build.gradle`, `.github/workflows/fastlane-android.yml`
+  - Added a configurable release-minify toggle and disabled minify/shrink for fast-lane `assembleDevRelease` builds to prevent Firebase-distributed dev APK black-screen regressions seen only in optimized release packaging.
+- 2026-02-19
   - Updated `AGENTS.md`, `src/features/items/components/ItemDetailPane.tsx`, `src/features/items/components/ItemListPane.tsx`
   - Fixed CI-blocking ESLint errors by adjusting memo dependencies in password detail and replacing effect-based risk-filter reset with derived filtering logic in item list.
 - 2026-02-19
