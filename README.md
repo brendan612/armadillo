@@ -12,7 +12,7 @@ Current version: `1.0.0-beta.1`
 - Local-file mode or cloud-only mode
 - Desktop (Electron), Web (Vite), and Android support
 - Import support for Google Password CSV + KeePass XML/CSV
-- Biometric unlock + Android autofill bridge
+- Passkey quick unlock (desktop/web) + biometric quick unlock (Android) + Android autofill bridge
 - Enterprise-ready foundations: org-scoped auth context, RBAC, audit endpoints, health/metrics endpoints
 
 ## App Preview
@@ -162,7 +162,7 @@ Keep `public/update-manifest.json` aligned with each production release and fast
 
 - Local vault KDF: Argon2id (legacy PBKDF2 unlock compatibility retained)
 - Cloud stores encrypted saves only
-- Biometric quick unlock is device-local
+- Passkey and biometric quick unlock are device-local
 - Self-hosted v2 API includes org-scoped auth context, RBAC, audit, and ops endpoints
 
 ## Quality Gate

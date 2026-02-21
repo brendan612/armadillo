@@ -3,6 +3,16 @@ import { decryptJsonWithKey } from './crypto'
 import BiometricBridge from '../plugins/biometricBridge'
 import type { ArmadilloVaultFile, VaultPayload, VaultSession } from '../types/vault'
 
+export type QuickUnlockMethod = 'android-native' | 'webauthn-platform'
+
+export type QuickUnlockCapabilities = {
+  supported: boolean
+  method: QuickUnlockMethod | null
+  enrollmentLabel: string
+  unlockLabel: string
+  unavailableReason?: string
+}
+
 type WrappedKey = {
   nonce: string
   ciphertext: string
@@ -80,6 +90,87 @@ function fromBase64(encoded: string) {
 
 function isNativeAndroidRuntime() {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+}
+
+function isWebAuthnPlatformSupported() {
+  if (typeof window === 'undefined') return false
+  return Boolean(window.isSecureContext)
+    && Boolean(window.PublicKeyCredential)
+    && typeof indexedDB !== 'undefined'
+    && typeof navigator !== 'undefined'
+    && 'credentials' in navigator
+}
+
+async function ensureUserVerifyingPlatformAuthenticatorAvailable() {
+  if (!isWebAuthnPlatformSupported()) {
+    throw new Error('Passkey quick unlock is not supported on this device/browser.')
+  }
+
+  if (typeof PublicKeyCredential === 'undefined' || typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') {
+    return
+  }
+
+  const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+  if (!available) {
+    throw new Error('Platform passkeys (Windows Hello) are not available in this runtime. Use the web app or master password/recovery key on this device.')
+  }
+}
+
+function normalizeWebAuthnError(error: unknown, context: 'setup' | 'unlock') {
+  const fallback = context === 'setup'
+    ? 'Passkey setup failed on this device.'
+    : 'Passkey unlock failed. Use master password.'
+  if (!(error instanceof DOMException)) {
+    return new Error(fallback)
+  }
+  switch (error.name) {
+    case 'NotAllowedError':
+      return new Error(context === 'setup'
+        ? 'Passkey setup was canceled. Try again when ready.'
+        : 'Passkey unlock was canceled. Use master password or try again.')
+    case 'InvalidStateError':
+      return new Error('Passkey enrollment is unavailable in this app context. Unlock with master password and re-enroll.')
+    case 'SecurityError':
+      return new Error('Passkey quick unlock requires a secure app context.')
+    default:
+      return new Error(error.message || fallback)
+  }
+}
+
+export function getQuickUnlockCapabilities(): QuickUnlockCapabilities {
+  if (isNativeAndroidRuntime()) {
+    return {
+      supported: true,
+      method: 'android-native',
+      enrollmentLabel: 'Enable Biometric',
+      unlockLabel: 'Unlock with Biometrics',
+    }
+  }
+
+  if (isWebAuthnPlatformSupported()) {
+    return {
+      supported: true,
+      method: 'webauthn-platform',
+      enrollmentLabel: 'Enable Passkey / Windows Hello',
+      unlockLabel: 'Use Passkey',
+    }
+  }
+
+  const unavailableReason = typeof window !== 'undefined' && !window.isSecureContext
+    ? 'Passkey quick unlock requires a secure app context.'
+    : 'Passkey quick unlock is not supported on this device/browser.'
+
+  return {
+    supported: false,
+    method: null,
+    enrollmentLabel: 'Enable Passkey / Windows Hello',
+    unlockLabel: 'Use Passkey',
+    unavailableReason,
+  }
+}
+
+export function quickUnlockSupported() {
+  return getQuickUnlockCapabilities().supported
 }
 
 function isWrappedKey(value: unknown): value is WrappedKey {
@@ -207,54 +298,64 @@ async function getOrCreateBiometricCredential() {
     return existing.credentialId
   }
 
-  const credential = await navigator.credentials.create({
-    publicKey: {
-      challenge: randomBytes(32),
-      rp: { name: 'Armadillo' },
-      user: {
-        id: randomBytes(16),
-        name: 'armadillo-biometric',
-        displayName: 'Armadillo Biometric Unlock',
+  await ensureUserVerifyingPlatformAuthenticatorAvailable()
+
+  let credential: Credential | null
+  try {
+    credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: randomBytes(32),
+        rp: { name: 'Armadillo' },
+        user: {
+          id: randomBytes(16),
+          name: 'armadillo-biometric',
+          displayName: 'Armadillo Biometric Unlock',
+        },
+        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+        timeout: 60_000,
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required',
+          residentKey: 'preferred',
+        },
+        attestation: 'none',
       },
-      pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      timeout: 60_000,
-      authenticatorSelection: {
-        authenticatorAttachment: 'platform',
-        userVerification: 'required',
-        residentKey: 'preferred',
-      },
-      attestation: 'none',
-    },
-  })
+    })
+  } catch (error) {
+    throw normalizeWebAuthnError(error, 'setup')
+  }
 
   if (!(credential instanceof PublicKeyCredential)) {
-    throw new Error('Failed to create biometric credential')
+    throw new Error('Failed to create passkey credential')
   }
 
   return toBase64Url(new Uint8Array(credential.rawId))
 }
 
 async function authenticateCredential(credentialId: string) {
+  await ensureUserVerifyingPlatformAuthenticatorAvailable()
   const rawId = fromBase64Url(credentialId)
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: randomBytes(32),
-      timeout: 60_000,
-      userVerification: 'required',
-      allowCredentials: [{ id: rawId, type: 'public-key' }],
-    },
-  })
+  let assertion: Credential | null
+  try {
+    assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: randomBytes(32),
+        timeout: 60_000,
+        userVerification: 'required',
+        allowCredentials: [{ id: rawId, type: 'public-key' }],
+      },
+    })
+  } catch (error) {
+    throw normalizeWebAuthnError(error, 'unlock')
+  }
 
   if (!(assertion instanceof PublicKeyCredential)) {
-    throw new Error('Biometric assertion failed')
+    throw new Error('Passkey assertion failed')
   }
 }
 
 export function biometricSupported() {
-  if (isNativeAndroidRuntime()) {
-    return true
-  }
-  return typeof window !== 'undefined' && Boolean(window.PublicKeyCredential) && typeof indexedDB !== 'undefined'
+  return quickUnlockSupported()
 }
 
 export async function enrollBiometricQuickUnlock(session: VaultSession) {
@@ -275,8 +376,8 @@ export async function enrollBiometricQuickUnlock(session: VaultSession) {
     return
   }
 
-  if (!biometricSupported()) {
-    throw new Error('Biometric quick unlock is not supported on this device')
+  if (!quickUnlockSupported()) {
+    throw new Error(getQuickUnlockCapabilities().unavailableReason || 'Passkey quick unlock is not supported on this device/browser.')
   }
 
   const credentialId = await getOrCreateBiometricCredential()
@@ -299,7 +400,7 @@ export async function enrollBiometricQuickUnlock(session: VaultSession) {
 export async function unlockWithBiometric(file: ArmadilloVaultFile): Promise<VaultSession> {
   const meta = loadMeta()
   if (!meta) {
-    throw new Error('Biometric quick unlock is not enrolled for this vault')
+    throw new Error('Quick unlock is not enrolled for this vault')
   }
 
   let rawVaultKey: Uint8Array
@@ -319,7 +420,7 @@ export async function unlockWithBiometric(file: ArmadilloVaultFile): Promise<Vau
     await authenticateCredential(meta.credentialId)
     const deviceKey = await getDeviceKey(meta.keyId)
     if (!deviceKey) {
-      throw new Error('Biometric device key is unavailable')
+      throw new Error('Passkey enrollment is unavailable on this device. Unlock with master password and re-enroll passkey quick unlock.')
     }
 
     rawVaultKey = await unwrapRawVaultKeyWithDeviceKey(deviceKey, meta.wrappedVaultKey)
@@ -333,4 +434,12 @@ export async function unlockWithBiometric(file: ArmadilloVaultFile): Promise<Vau
     payload,
     vaultKey,
   }
+}
+
+export async function enrollQuickUnlock(session: VaultSession) {
+  return enrollBiometricQuickUnlock(session)
+}
+
+export async function unlockWithQuickUnlock(file: ArmadilloVaultFile): Promise<VaultSession> {
+  return unlockWithBiometric(file)
 }

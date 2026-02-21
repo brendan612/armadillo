@@ -4,12 +4,15 @@ import {
   decryptJsonWithKey,
   deriveMasterKeyFromPassword,
   encryptJsonWithKey,
+  unwrapVaultKeyWithRecoveryKey,
   unwrapVaultKey,
   wrapVaultKey,
 } from './crypto'
 import {
   VAULT_SCHEMA_VERSION,
   type ArmadilloVaultFile,
+  type RecoveryKdfConfig,
+  type VaultRecoveryConfig,
   type AutoFolderCustomMapping,
   type VaultFolder,
   type VaultPayload,
@@ -365,10 +368,126 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
 function parseVaultFileJson(raw: string | null): ArmadilloVaultFile | null {
   if (!raw) return null
   try {
-    return JSON.parse(raw) as ArmadilloVaultFile
+    return normalizeVaultFileShape(JSON.parse(raw))
   } catch {
     return null
   }
+}
+
+function normalizeRecoveryKdf(raw: unknown): RecoveryKdfConfig | null {
+  const source = (raw && typeof raw === 'object' ? raw : null) as Record<string, unknown> | null
+  if (!source || source.algorithm !== 'ARGON2ID') return null
+  const iterations = Number(source.iterations)
+  const memoryKiB = Number(source.memoryKiB)
+  const parallelism = Number(source.parallelism)
+  const salt = typeof source.salt === 'string' ? source.salt : ''
+  if (!Number.isFinite(iterations) || iterations < 1) return null
+  if (!Number.isFinite(memoryKiB) || memoryKiB < 8 * 1024) return null
+  if (!Number.isFinite(parallelism) || parallelism < 1) return null
+  if (!salt) return null
+  return {
+    algorithm: 'ARGON2ID',
+    iterations: Math.round(iterations),
+    memoryKiB: Math.round(memoryKiB),
+    parallelism: Math.round(parallelism),
+    salt,
+  }
+}
+
+function normalizeRecoveryConfig(raw: unknown): VaultRecoveryConfig | undefined {
+  const source = (raw && typeof raw === 'object' ? raw : null) as Record<string, unknown> | null
+  if (!source || Number(source.version) !== 1) return undefined
+  const kdf = normalizeRecoveryKdf(source.kdf)
+  if (!kdf) return undefined
+  const wrappedSource = (source.wrappedVaultKeyRecovery && typeof source.wrappedVaultKeyRecovery === 'object'
+    ? source.wrappedVaultKeyRecovery
+    : null) as Record<string, unknown> | null
+  if (!wrappedSource || typeof wrappedSource.nonce !== 'string' || typeof wrappedSource.ciphertext !== 'string') {
+    return undefined
+  }
+  const enabledAt = typeof source.enabledAt === 'string' ? source.enabledAt : ''
+  const recoveryKeyFingerprint = typeof source.recoveryKeyFingerprint === 'string' ? source.recoveryKeyFingerprint : ''
+  if (!enabledAt || !recoveryKeyFingerprint) return undefined
+  const rotatedAt = typeof source.rotatedAt === 'string' && source.rotatedAt ? source.rotatedAt : undefined
+  return {
+    version: 1,
+    kdf,
+    wrappedVaultKeyRecovery: {
+      nonce: wrappedSource.nonce,
+      ciphertext: wrappedSource.ciphertext,
+    },
+    recoveryKeyFingerprint,
+    enabledAt,
+    ...(rotatedAt ? { rotatedAt } : {}),
+  }
+}
+
+function normalizeVaultFileShape(raw: unknown): ArmadilloVaultFile {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  if (source.format !== 'armadillo-v1') {
+    throw new Error('Unsupported vault file format')
+  }
+  const kdfSource = source.kdf as Record<string, unknown> | undefined
+  if (!kdfSource || typeof kdfSource !== 'object' || typeof kdfSource.algorithm !== 'string') {
+    throw new Error('Unsupported vault file format')
+  }
+  const normalizedKdf = kdfSource.algorithm === 'ARGON2ID'
+    ? {
+        algorithm: 'ARGON2ID' as const,
+        iterations: Number(kdfSource.iterations),
+        memoryKiB: Number(kdfSource.memoryKiB),
+        parallelism: Number(kdfSource.parallelism),
+        salt: typeof kdfSource.salt === 'string' ? kdfSource.salt : '',
+      }
+    : {
+        algorithm: 'PBKDF2-SHA256' as const,
+        iterations: Number(kdfSource.iterations),
+        salt: typeof kdfSource.salt === 'string' ? kdfSource.salt : '',
+      }
+  if (!normalizedKdf.salt || !Number.isFinite(normalizedKdf.iterations) || normalizedKdf.iterations < 1) {
+    throw new Error('Unsupported vault file format')
+  }
+  if (normalizedKdf.algorithm === 'ARGON2ID' && (
+    !Number.isFinite(normalizedKdf.memoryKiB)
+    || normalizedKdf.memoryKiB < 8 * 1024
+    || !Number.isFinite(normalizedKdf.parallelism)
+    || normalizedKdf.parallelism < 1
+  )) {
+    throw new Error('Unsupported vault file format')
+  }
+  const wrappedVaultKey = (source.wrappedVaultKey && typeof source.wrappedVaultKey === 'object'
+    ? source.wrappedVaultKey
+    : null) as Record<string, unknown> | null
+  const vaultData = (source.vaultData && typeof source.vaultData === 'object'
+    ? source.vaultData
+    : null) as Record<string, unknown> | null
+  if (
+    !wrappedVaultKey
+    || !vaultData
+    || typeof wrappedVaultKey.nonce !== 'string'
+    || typeof wrappedVaultKey.ciphertext !== 'string'
+    || typeof vaultData.nonce !== 'string'
+    || typeof vaultData.ciphertext !== 'string'
+  ) {
+    throw new Error('Unsupported vault file format')
+  }
+  return {
+    ...source,
+    format: 'armadillo-v1',
+    vaultId: typeof source.vaultId === 'string' && source.vaultId ? source.vaultId : crypto.randomUUID(),
+    revision: Number.isFinite(Number(source.revision)) ? Number(source.revision) : 1,
+    updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : new Date().toISOString(),
+    kdf: normalizedKdf,
+    wrappedVaultKey: {
+      nonce: wrappedVaultKey.nonce,
+      ciphertext: wrappedVaultKey.ciphertext,
+    },
+    vaultData: {
+      nonce: vaultData.nonce,
+      ciphertext: vaultData.ciphertext,
+    },
+    recovery: normalizeRecoveryConfig(source.recovery),
+  } as ArmadilloVaultFile
 }
 
 export function getVaultStorageMode(): VaultStorageMode {
@@ -548,7 +667,7 @@ export function loadLocalVaultFileAtPath(path: string): ArmadilloVaultFile | nul
       return null
     }
     try {
-      const parsed = JSON.parse(rawFromFile) as ArmadilloVaultFile
+      const parsed = normalizeVaultFileShape(JSON.parse(rawFromFile))
       localStorage.setItem(LOCAL_VAULT_FILE_KEY, rawFromFile)
       setActiveLocalVaultPath(trimmed)
       rememberLocalVaultPath(trimmed)
@@ -642,11 +761,7 @@ export function clearLocalVaultFile() {
 }
 
 export function parseVaultFileFromText(text: string) {
-  const parsed = JSON.parse(text) as ArmadilloVaultFile
-  if (parsed.format !== 'armadillo-v1') {
-    throw new Error('Unsupported vault file format')
-  }
-  return parsed
+  return normalizeVaultFileShape(JSON.parse(text))
 }
 
 export function serializeVaultFile(file: ArmadilloVaultFile) {
@@ -698,6 +813,24 @@ export async function unlockVaultFile(file: ArmadilloVaultFile, masterPassword: 
   const rawPayload = await decryptJsonWithKey<unknown>(vaultKey, file.vaultData)
   const payload = normalizeVaultPayload(rawPayload)
 
+  return {
+    file,
+    payload,
+    vaultKey,
+  }
+}
+
+export async function unlockVaultFileWithRecoveryKey(file: ArmadilloVaultFile, recoveryKeyBytes: Uint8Array): Promise<VaultSession> {
+  if (!file.recovery) {
+    throw new Error('Recovery kit is not enabled for this vault')
+  }
+  const vaultKey = await unwrapVaultKeyWithRecoveryKey({
+    recoveryKeyBytes,
+    kdf: file.recovery.kdf,
+    wrappedVaultKeyRecovery: file.recovery.wrappedVaultKeyRecovery,
+  })
+  const rawPayload = await decryptJsonWithKey<unknown>(vaultKey, file.vaultData)
+  const payload = normalizeVaultPayload(rawPayload)
   return {
     file,
     payload,

@@ -1,6 +1,5 @@
+import { useState } from 'react'
 import { Fingerprint } from 'lucide-react'
-import { biometricSupported } from '../../../lib/biometric'
-import { isNativeAndroid } from '../../../shared/utils/platform'
 import { CloudAuthStatusCard } from './CloudAuthStatusCard'
 import { LocalVaultPickerCard } from './LocalVaultPickerCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
@@ -8,10 +7,23 @@ import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppSta
 import logoSrc from '../../../assets/armadillo.png'
 
 export function UnlockVaultScreen() {
+  const [showRecoveryKeyBox, setShowRecoveryKeyBox] = useState(false)
   const { effectivePlatform } = useVaultAppDerived()
-  const { unlockPassword, isUnlocking, vaultError, authMessage, biometricEnabled, storageMode, cloudCacheExpiresAt, unlockSourceAvailable } = useVaultAppState()
+  const {
+    unlockPassword,
+    unlockRecoveryKey,
+    isUnlocking,
+    vaultError,
+    authMessage,
+    quickUnlockEnabled,
+    quickUnlockCapabilities,
+    storageMode,
+    cloudCacheExpiresAt,
+    unlockSourceAvailable,
+  } = useVaultAppState()
   const { importFileInputRef } = useVaultAppRefs()
-  const { setUnlockPassword, unlockVault, unlockVaultBiometric, triggerImport, setPhase, onImportFileSelected } = useVaultAppActions()
+  const { setUnlockPassword, setUnlockRecoveryKey, unlockVault, unlockVaultQuickUnlock, unlockVaultWithRecoveryKey, triggerImport, setPhase, onImportFileSelected } = useVaultAppActions()
+  const showQuickUnlock = quickUnlockCapabilities.supported && quickUnlockEnabled && unlockSourceAvailable
 
   return (
     <div className={`app-shell platform-${effectivePlatform}`}>
@@ -62,25 +74,75 @@ export function UnlockVaultScreen() {
                   'Unlock'
                 )}
               </button>
-              {isNativeAndroid() && biometricSupported() && biometricEnabled && unlockSourceAvailable && (
+              {showQuickUnlock && quickUnlockCapabilities.method === 'android-native' && (
                 <button
-                  className="ghost biometric-inline-btn"
+                  className="ghost quick-unlock-inline-btn"
                   type="button"
-                  aria-label="Unlock with Biometrics"
-                  title="Unlock with Biometrics"
+                  aria-label={quickUnlockCapabilities.unlockLabel}
+                  title={quickUnlockCapabilities.unlockLabel}
                   disabled={isUnlocking}
-                  onClick={() => void unlockVaultBiometric()}
+                  onClick={() => void unlockVaultQuickUnlock()}
                 >
                   <Fingerprint size={16} strokeWidth={2} aria-hidden="true" />
                 </button>
               )}
             </div>
+            {showQuickUnlock && quickUnlockCapabilities.method === 'webauthn-platform' && (
+              <button className="ghost" type="button" disabled={isUnlocking} onClick={() => void unlockVaultQuickUnlock()}>
+                {quickUnlockCapabilities.unlockLabel}
+              </button>
+            )}
             {isUnlocking && (
               <p className="auth-unlock-status" role="status" aria-live="polite">
                 Decrypting vault and preparing workspace...
               </p>
             )}
           </form>
+
+          <div className="auth-form-section" style={{ paddingTop: 0, marginTop: '-0.7rem' }}>
+            {!showRecoveryKeyBox ? (
+              <button
+                type="button"
+                disabled={isUnlocking}
+                onClick={() => setShowRecoveryKeyBox(true)}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  padding: 0,
+                  margin: 0,
+                  fontSize: '0.78rem',
+                  color: 'var(--ink-muted)',
+                  textDecoration: 'underline',
+                  cursor: isUnlocking ? 'default' : 'pointer',
+                  alignSelf: 'flex-start',
+                }}
+              >
+                Use recovery key
+              </button>
+            ) : (
+              <>
+                <label htmlFor="armadillo_unlock_recovery_key">Recovery Key</label>
+                <div className="auth-input-group">
+                  <input
+                    id="armadillo_unlock_recovery_key"
+                    type="text"
+                    name="armadillo_unlock_recovery_key"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    placeholder="XXXX-XXXX-... recovery key"
+                    value={unlockRecoveryKey}
+                    onChange={(event) => setUnlockRecoveryKey(event.target.value)}
+                    disabled={isUnlocking}
+                  />
+                  <button className="ghost unlock-submit-btn" type="button" disabled={isUnlocking} onClick={() => void unlockVaultWithRecoveryKey()}>
+                    Unlock
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
 
           {vaultError && <p className="auth-error">{vaultError}</p>}
 

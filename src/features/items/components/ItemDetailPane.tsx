@@ -84,6 +84,8 @@ export function ItemDetailPane() {
   // Password confirm/save-error state keyed by item id to avoid effect-driven state resets.
   const [passwordConfirmById, setPasswordConfirmById] = useState<Record<string, string>>({})
   const [saveErrorById, setSaveErrorById] = useState<Record<string, string>>({})
+  const [tagInputById, setTagInputById] = useState<Record<string, string>>({})
+  const [showUsernameSuggestions, setShowUsernameSuggestions] = useState(false)
 
   // Close popover on outside click
   useEffect(() => {
@@ -104,6 +106,20 @@ export function ItemDetailPane() {
 
   function regenerate(config: GeneratorConfig) {
     setGenPreview(generatePassword(config))
+  }
+
+  function normalizeTagsFromInput(raw: string) {
+    const deduped = new Set<string>()
+    const tags: string[] = []
+    for (const token of raw.split(/[,;\n]+/)) {
+      const value = token.trim()
+      if (!value) continue
+      const key = value.toLowerCase()
+      if (deduped.has(key)) continue
+      deduped.add(key)
+      tags.push(value)
+    }
+    return tags
   }
 
   function updateConfig(patch: Partial<GeneratorConfig>) {
@@ -187,6 +203,10 @@ export function ItemDetailPane() {
     if (draft) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
     }
+    if (draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0) {
+      setSaveErrorById((current) => ({ ...current, [draft.id]: 'Confirm password is required' }))
+      return false
+    }
     if (passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: 'Passwords do not match' }))
       return false
@@ -203,7 +223,9 @@ export function ItemDetailPane() {
   }
 
   const passwordConfirm = draft ? (passwordConfirmById[draft.id] ?? draft.passwordMasked ?? '') : ''
+  const tagInputValue = draft ? (tagInputById[draft.id] ?? draft.tags.join(', ')) : ''
   const saveError = draft ? (saveErrorById[draft.id] ?? '') : ''
+  const passwordConfirmMissing = Boolean(draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0)
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
   const passwordInputId = draft ? `item-password-${draft.id}` : 'item-password'
@@ -226,6 +248,28 @@ export function ItemDetailPane() {
   const weakFeedback = useMemo(() => (
     passwordStrength.score <= 2 ? passwordStrength.feedback.slice(0, 3) : []
   ), [passwordStrength])
+  const usernameSuggestions = useMemo(() => {
+    if (!draft) return []
+    const query = draft.username.trim().toLowerCase()
+    const counts = new Map<string, { value: string; count: number }>()
+    for (const item of items) {
+      if (item.id === draft.id) continue
+      const value = item.username.trim()
+      if (!value) continue
+      if (query && !value.toLowerCase().includes(query)) continue
+      const key = value.toLowerCase()
+      const current = counts.get(key)
+      if (current) {
+        current.count += 1
+      } else {
+        counts.set(key, { value, count: 1 })
+      }
+    }
+    return [...counts.values()]
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
+      .slice(0, 6)
+      .map((entry) => entry.value)
+  }, [draft, items])
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
   const hasUnsavedChanges = useMemo(() => {
@@ -256,6 +300,20 @@ export function ItemDetailPane() {
     }
   }
 
+  function commitTagInput(raw: string, options?: { keepTrailingDelimiter?: boolean }) {
+    if (!draft) return
+    const nextTags = normalizeTagsFromInput(raw)
+    setDraftField('tags', nextTags)
+    const formatted = nextTags.join(', ')
+    const nextValue = options?.keepTrailingDelimiter && formatted ? `${formatted}, ` : formatted
+    setTagInputById((current) => ({ ...current, [draft.id]: nextValue }))
+  }
+
+  function applyUsernameSuggestion(value: string) {
+    setDraftField('username', value)
+    setShowUsernameSuggestions(false)
+  }
+
   return (
     <section className={`pane pane-right ${mobileStep === 'detail' ? 'mobile-active' : ''}`}>
       <div className="detail-head">
@@ -270,7 +328,7 @@ export function ItemDetailPane() {
         <div className="detail-head-actions">
           {selected && (
             <>
-              <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving}>
+              <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving || passwordConfirmMissing}>
                 {isSaving ? 'Saving...' : 'Save'}
               </button>
               <button className="ghost detail-delete-btn" onClick={() => void removeCurrentItem()} disabled={isSaving} title="Delete item">
@@ -307,10 +365,45 @@ export function ItemDetailPane() {
             Title
             <input value={draft.title} onChange={(event) => setDraftField('title', event.target.value)} />
           </label>
-          <label>
-            Username
-            <input value={draft.username} onChange={(event) => setDraftField('username', event.target.value)} />
-          </label>
+          <div className="detail-field">
+            <label htmlFor={`item-username-${draft.id}`}>Username</label>
+            <div className="username-suggest-container">
+              <input
+                id={`item-username-${draft.id}`}
+                value={draft.username}
+                onFocus={() => setShowUsernameSuggestions(true)}
+                onBlur={() => setShowUsernameSuggestions(false)}
+                onChange={(event) => setDraftField('username', event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setShowUsernameSuggestions(false)
+                  }
+                  if (event.key === 'Enter' && showUsernameSuggestions && usernameSuggestions.length > 0) {
+                    event.preventDefault()
+                    applyUsernameSuggestion(usernameSuggestions[0])
+                  }
+                }}
+              />
+              {showUsernameSuggestions && usernameSuggestions.length > 0 && (
+                <div className="username-suggest-menu" role="listbox" aria-label="Suggested usernames">
+                  {usernameSuggestions.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="username-suggest-item"
+                      role="option"
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        applyUsernameSuggestion(value)
+                      }}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Password + Generator */}
           <div className="detail-field">
@@ -320,7 +413,14 @@ export function ItemDetailPane() {
                 id={passwordInputId}
                 type={showPassword ? 'text' : 'password'}
                 value={draft.passwordMasked}
-                onChange={(event) => setDraftField('passwordMasked', event.target.value)}
+                onChange={(event) => {
+                  const nextValue = event.target.value
+                  setDraftField('passwordMasked', nextValue)
+                  if (!nextValue.trim()) {
+                    setPasswordConfirmById((current) => ({ ...current, [draft.id]: '' }))
+                    setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+                  }
+                }}
               />
               <div className="inline-field-actions">
                 <button
@@ -545,6 +645,7 @@ export function ItemDetailPane() {
                 placeholder="Retype password to verify"
               />
             </label>
+            {passwordConfirmMissing && <span className="password-mismatch-msg">Confirm password is required</span>}
             {passwordMismatch && <span className="password-mismatch-msg">Passwords do not match</span>}
           </div>
 
@@ -579,44 +680,49 @@ export function ItemDetailPane() {
                 ))}
               </datalist>
             </label>
+            <label>
+              Password Expiry Date
+              <div className="expiry-field">
+                <input
+                  type="date"
+                  value={draft.passwordExpiryDate ?? ''}
+                  onChange={(e) => setDraftField('passwordExpiryDate', e.target.value || null)}
+                />
+                {draft.passwordExpiryDate && (
+                  <button
+                    className="expiry-clear-btn"
+                    title="Clear expiry date"
+                    onClick={() => setDraftField('passwordExpiryDate', null)}
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+                {expiryStatus === 'expired' && <span className="expiry-badge expired">Expired</span>}
+                {expiryStatus === 'expiring' && <span className="expiry-badge expiring-soon">Expiring Soon</span>}
+              </div>
+            </label>
           </div>
           <label>
             Tags (comma separated)
             <input
-              value={draft.tags.join(', ')}
-              onChange={(event) =>
-                setDraftField(
-                  'tags',
-                  event.target.value
-                    .split(',')
-                    .map((tag) => tag.trim())
-                    .filter(Boolean),
-                )
-              }
+              value={tagInputValue}
+              onChange={(event) => {
+                if (!draft) return
+                setTagInputById((current) => ({ ...current, [draft.id]: event.target.value }))
+              }}
+              onBlur={(event) => commitTagInput(event.target.value)}
+              onKeyDown={(event) => {
+                const isComma = event.key === ',' || event.key === 'Comma' || event.key === ';'
+                const isEnter = event.key === 'Enter' || event.key === 'NumpadEnter'
+                const isTab = event.key === 'Tab'
+                if (!isComma && !isEnter && !isTab) return
+                if (!isTab) {
+                  event.preventDefault()
+                }
+                const target = event.currentTarget
+                commitTagInput(target.value, { keepTrailingDelimiter: isComma || isEnter })
+              }}
             />
-          </label>
-
-          {/* Password Expiry Date */}
-          <label>
-            Password Expiry Date
-            <div className="expiry-field">
-              <input
-                type="date"
-                value={draft.passwordExpiryDate ?? ''}
-                onChange={(e) => setDraftField('passwordExpiryDate', e.target.value || null)}
-              />
-              {draft.passwordExpiryDate && (
-                <button
-                  className="expiry-clear-btn"
-                  title="Clear expiry date"
-                  onClick={() => setDraftField('passwordExpiryDate', null)}
-                >
-                  <X size={14} />
-                </button>
-              )}
-              {expiryStatus === 'expired' && <span className="expiry-badge expired">Expired</span>}
-              {expiryStatus === 'expiring' && <span className="expiry-badge expiring-soon">Expiring Soon</span>}
-            </div>
           </label>
 
           <label>

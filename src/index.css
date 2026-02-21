@@ -558,6 +558,37 @@ kbd {
   animation: unlock-spin 0.85s linear infinite;
 }
 
+.topbar-quick-create {
+  position: relative;
+}
+
+.topbar-quick-create-trigger {
+  min-width: 2.1rem;
+  padding: 0.45rem 0.55rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.topbar-quick-create-menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 25;
+  min-width: 10rem;
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.4rem;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-lg);
+}
+
+.topbar-quick-create-menu button {
+  justify-content: flex-start;
+  text-align: left;
+}
+
 .topbar-new-btn-icon { display: none; }
 
 /* ============================================
@@ -1034,6 +1065,45 @@ body.folder-dragging * {
   gap: 0.5rem;
   padding: 0.6rem;
   overflow-y: auto;
+}
+
+.home-welcome {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-1);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.home-welcome-head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.home-welcome-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.home-welcome-btn {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  padding: 0.42rem 0.7rem;
+}
+
+.home-entry-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.home-entry-type-grid .ghost {
+  font-size: 0.74rem;
+  padding: 0.35rem 0.45rem;
 }
 
 /* ---- Search ---- */
@@ -1557,6 +1627,36 @@ body.folder-dragging * {
   color: var(--ink-secondary);
 }
 
+.username-suggest-container {
+  position: relative;
+}
+
+.username-suggest-menu {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  z-index: 22;
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.3rem;
+  border-radius: 9px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.username-suggest-item {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.76rem;
+  padding: 0.38rem 0.5rem;
+}
+
 .detail-toggle-row {
   position: relative;
   display: inline-flex !important;
@@ -1644,6 +1744,44 @@ body.folder-dragging * {
   gap: 0.45rem;
 }
 
+.google-signin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.38rem 0.72rem;
+  border-radius: 8px;
+  border: 1px solid #d9dce6;
+  background: #ffffff;
+  color: #1f2937;
+  font-size: 0.78rem;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.google-signin-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #cfd4e0;
+}
+
+.google-signin-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.28);
+}
+
+.google-signin-btn:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.google-signin-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
 .vault-picker-card {
   gap: 0.45rem;
   padding: 0.55rem 0.6rem;
@@ -1691,6 +1829,11 @@ body.folder-dragging * {
   border-color: color-mix(in srgb, var(--exposed) 55%, var(--line) 45%);
 }
 
+.vault-status-pill.is-pending {
+  color: color-mix(in srgb, var(--weak) 90%, var(--ink) 10%);
+  border-color: color-mix(in srgb, var(--weak) 55%, var(--line) 45%);
+}
+
 .vault-picker-path {
   font-size: 0.76rem;
   line-height: 1.25;
@@ -1713,6 +1856,21 @@ body.folder-dragging * {
 .vault-picker-recent {
   display: grid;
   gap: 0.3rem;
+}
+
+.vault-picker-create-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+}
+
+.vault-picker-create-row input {
+  min-width: 0;
+  font-size: 0.74rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
 }
 
 .vault-picker-recent-row {
@@ -1909,7 +2067,8 @@ body.folder-dragging * {
 }
 
 /* ---- Biometric button inside input group ---- */
-.biometric-inline-btn {
+.biometric-inline-btn,
+.quick-unlock-inline-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1918,7 +2077,8 @@ body.folder-dragging * {
   line-height: 1;
 }
 
-.biometric-inline-btn svg {
+.biometric-inline-btn svg,
+.quick-unlock-inline-btn svg {
   display: block;
 }
 

@@ -1,6 +1,6 @@
 import { argon2id } from '@noble/hashes/argon2.js'
 import { utf8ToBytes } from '@noble/hashes/utils.js'
-import type { EncryptedBlob } from '../types/vault'
+import type { EncryptedBlob, RecoveryKdfConfig } from '../types/vault'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -59,6 +59,15 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 async function deriveKeyBytesArgon2id(password: string, salt: Uint8Array, iterations: number, memoryKiB: number, parallelism: number) {
   return argon2id(utf8ToBytes(password), salt, {
+    t: iterations,
+    m: memoryKiB,
+    p: parallelism,
+    dkLen: 32,
+  })
+}
+
+async function deriveKeyBytesArgon2idFromBytes(secret: Uint8Array, salt: Uint8Array, iterations: number, memoryKiB: number, parallelism: number) {
+  return argon2id(secret, salt, {
     t: iterations,
     m: memoryKiB,
     p: parallelism,
@@ -208,5 +217,131 @@ export function createKdfConfig() {
     parallelism: 1,
     salt: toBase64(salt),
   }
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes).map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function hexToBytes(hex: string) {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Invalid recovery key')
+  }
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < bytes.length; i += 1) {
+    const offset = i * 2
+    const pair = hex.slice(offset, offset + 2)
+    const value = Number.parseInt(pair, 16)
+    if (!Number.isFinite(value)) {
+      throw new Error('Invalid recovery key')
+    }
+    bytes[i] = value
+  }
+  return bytes
+}
+
+function formatHexGroups(hex: string) {
+  const groups: string[] = []
+  for (let i = 0; i < hex.length; i += 4) {
+    groups.push(hex.slice(i, i + 4))
+  }
+  return groups.join('-').toUpperCase()
+}
+
+async function recoveryKeyChecksumHex(bytes: Uint8Array) {
+  const subtle = requireSubtleCrypto()
+  const hash = await subtle.digest('SHA-256', toArrayBuffer(bytes))
+  return bytesToHex(new Uint8Array(hash).slice(0, 2))
+}
+
+export function generateRecoveryKey() {
+  return randomBytes(32)
+}
+
+export async function formatRecoveryKeyForDisplay(bytes: Uint8Array) {
+  if (bytes.length !== 32) {
+    throw new Error('Recovery key must be 32 bytes')
+  }
+  const checksum = await recoveryKeyChecksumHex(bytes)
+  return formatHexGroups(`${bytesToHex(bytes)}${checksum}`)
+}
+
+export async function parseRecoveryKeyFromDisplay(input: string) {
+  const compact = input.replace(/[^a-fA-F0-9]/g, '').toLowerCase()
+  if (compact.length !== 68) {
+    throw new Error('Invalid recovery key')
+  }
+  const secretHex = compact.slice(0, 64)
+  const checksumHex = compact.slice(64)
+  const bytes = hexToBytes(secretHex)
+  const expectedChecksum = await recoveryKeyChecksumHex(bytes)
+  if (checksumHex !== expectedChecksum) {
+    bytes.fill(0)
+    throw new Error('Invalid recovery key')
+  }
+  return bytes
+}
+
+export function createRecoveryKdfConfig(): RecoveryKdfConfig {
+  const salt = randomBytes(16)
+  return {
+    algorithm: 'ARGON2ID',
+    iterations: 3,
+    memoryKiB: 64 * 1024,
+    parallelism: 1,
+    salt: toBase64(salt),
+  }
+}
+
+export async function deriveRecoveryKeyEncryptionKey(params: {
+  recoveryKeyBytes: Uint8Array
+  kdf: RecoveryKdfConfig
+}) {
+  const salt = fromBase64(params.kdf.salt)
+  const rawBytes = await deriveKeyBytesArgon2idFromBytes(
+    params.recoveryKeyBytes,
+    salt,
+    params.kdf.iterations,
+    params.kdf.memoryKiB,
+    params.kdf.parallelism,
+  )
+  try {
+    return await importAesKeyFromBytes(rawBytes)
+  } finally {
+    rawBytes.fill(0)
+  }
+}
+
+export async function fingerprintRecoveryKey(recoveryKeyBytes: Uint8Array) {
+  const subtle = requireSubtleCrypto()
+  const hash = await subtle.digest('SHA-256', toArrayBuffer(recoveryKeyBytes))
+  return toBase64(new Uint8Array(hash))
+}
+
+export async function wrapVaultKeyWithRecoveryKey(params: {
+  vaultKey: CryptoKey
+  recoveryKeyBytes: Uint8Array
+  kdf?: RecoveryKdfConfig
+}) {
+  const kdf = params.kdf ?? createRecoveryKdfConfig()
+  const recoveryWrapKey = await deriveRecoveryKeyEncryptionKey({
+    recoveryKeyBytes: params.recoveryKeyBytes,
+    kdf,
+  })
+  const wrappedVaultKeyRecovery = await wrapVaultKey(recoveryWrapKey, params.vaultKey)
+  const recoveryKeyFingerprint = await fingerprintRecoveryKey(params.recoveryKeyBytes)
+  return { kdf, wrappedVaultKeyRecovery, recoveryKeyFingerprint }
+}
+
+export async function unwrapVaultKeyWithRecoveryKey(params: {
+  recoveryKeyBytes: Uint8Array
+  kdf: RecoveryKdfConfig
+  wrappedVaultKeyRecovery: EncryptedBlob
+}) {
+  const recoveryWrapKey = await deriveRecoveryKeyEncryptionKey({
+    recoveryKeyBytes: params.recoveryKeyBytes,
+    kdf: params.kdf,
+  })
+  return unwrapVaultKey(recoveryWrapKey, params.wrappedVaultKeyRecovery)
 }
 

@@ -1,12 +1,48 @@
+import { useEffect, useRef, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import logoSrc from '../../../assets/armadillo.png'
 
+const QUICK_ENTRY_TYPES = [
+  { key: 'password', label: 'Password' },
+  { key: 'file', label: 'File' },
+  { key: 'key', label: 'Key' },
+  { key: 'token', label: 'Token' },
+  { key: 'secret', label: 'Secret' },
+  { key: 'image', label: 'Image' },
+  { key: 'note', label: 'Note' },
+] as const
+
 export function Topbar() {
   const { effectivePlatform } = useVaultAppDerived()
   const { syncState, syncMessage, authMessage, showSettings, workspaceSection } = useVaultAppState()
-  const { createItem, createStorageItem, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
+  const { createStorageItem, createEntry, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
+  const [showEntryTypeMenu, setShowEntryTypeMenu] = useState(false)
+  const quickCreateRef = useRef<HTMLDivElement | null>(null)
   const showRefreshButton = effectivePlatform === 'desktop' || effectivePlatform === 'web'
+
+  useEffect(() => {
+    if (!showEntryTypeMenu) return
+    function onPointerDown(event: PointerEvent) {
+      if (!quickCreateRef.current?.contains(event.target as Node)) {
+        setShowEntryTypeMenu(false)
+      }
+    }
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowEntryTypeMenu(false)
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onEscape)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onEscape)
+    }
+  }, [showEntryTypeMenu])
+
+  function handleQuickCreate(type: (typeof QUICK_ENTRY_TYPES)[number]['key']) {
+    createEntry(type)
+    setShowEntryTypeMenu(false)
+  }
 
   return (
     <header className="topbar">
@@ -28,10 +64,40 @@ export function Topbar() {
           </button>
         )}
         {!showSettings && (
-          <button className="solid" onClick={workspaceSection === 'storage' ? createStorageItem : createItem}>
-            <span className="topbar-new-btn-text">{workspaceSection === 'storage' ? '+ New Storage Item' : '+ New Credential'}</span>
-            <span className="topbar-new-btn-icon"><Plus size={18} strokeWidth={2.2} /></span>
-          </button>
+          workspaceSection === 'storage' ? (
+            <button className="solid" onClick={createStorageItem}>
+              <span className="topbar-new-btn-text">+ New Storage Item</span>
+              <span className="topbar-new-btn-icon"><Plus size={18} strokeWidth={2.2} /></span>
+            </button>
+          ) : (
+            <div className="topbar-quick-create" ref={quickCreateRef}>
+              <button
+                className="solid topbar-quick-create-trigger"
+                aria-haspopup="menu"
+                aria-expanded={showEntryTypeMenu}
+                aria-label="Create new entry"
+                title="Create new entry"
+                onClick={() => setShowEntryTypeMenu((current) => !current)}
+              >
+                +
+              </button>
+              {showEntryTypeMenu && (
+                <div className="topbar-quick-create-menu" role="menu" aria-label="New entry type">
+                  {QUICK_ENTRY_TYPES.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className="ghost"
+                      role="menuitem"
+                      onClick={() => handleQuickCreate(option.key)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
         )}
         <button className="icon-btn" onClick={lockVault} title="Lock vault">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>

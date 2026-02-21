@@ -7,6 +7,7 @@ import { BUILT_IN_THEME_PRESETS, THEME_COLOR_TOKEN_KEYS, resolveThemeTokens } fr
 import type { ThemeEditableTokenKey, VaultThemeSettings } from '../../../types/vault'
 import type { CapabilityKey, DevFlagOverride, PlanTier } from '../../../types/entitlements'
 import { ALL_CAPABILITIES, DEFAULT_ROLLOUT_FLAGS } from '../../../features/flags/registry'
+import { GoogleSignInButton } from '../../auth/components/GoogleSignInButton'
 
 const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
   accent: 'Accent',
@@ -49,7 +50,7 @@ const TIER_OPTIONS: PlanTier[] = ['free', 'premium', 'enterprise']
 const SETTINGS_CATEGORIES = [
   { id: 'general', label: 'General', description: 'Appearance, account, and updates' },
   { id: 'cloud', label: 'Cloud', description: 'Storage and sync options' },
-  { id: 'security', label: 'Security', description: 'Biometric and autofill controls' },
+  { id: 'security', label: 'Security', description: 'Quick unlock, recovery, and autofill controls' },
   { id: 'vault', label: 'Vault', description: 'Import, export, and trash settings' },
   { id: 'billing', label: 'Plans & Billing', description: 'Manage your subscription and entitlements' },
   { id: 'danger', label: 'Danger Zone', description: 'Testing and reset actions' },
@@ -110,7 +111,13 @@ export function SettingsPage() {
     cloudCacheTtlHours,
     cloudCacheExpiresAt,
     syncProvider,
-    biometricEnabled,
+    quickUnlockEnabled,
+    quickUnlockCapabilities,
+    recoveryKeyDisplay,
+    recoveryKitEnabled,
+    recoveryKeyFingerprintSuffix,
+    recoveryEnabledAt,
+    recoveryRotatedAt,
     syncMessage,
     vaultSettings,
     themeSettings,
@@ -150,7 +157,11 @@ export function SettingsPage() {
     clearManualEntitlementToken,
     applyDevFlagOverrides,
     clearDevFlagOverrides,
-    enableBiometricUnlock,
+    enableQuickUnlock,
+    enableRecoveryKit,
+    rotateRecoveryKit,
+    disableRecoveryKit,
+    acknowledgeRecoveryKeyStored,
     emptyVaultForTesting,
     exportVaultFile,
     exportVaultBackupBundle,
@@ -602,19 +613,27 @@ export function SettingsPage() {
             <div className="settings-action-list">
               {!cloudConnected ? (
                 showCloudSignIn ? (
-                  <button
-                    className="ghost"
-                    onClick={() => void signInWithGoogle()}
-                    disabled={cloudAuthState === 'checking'}
-                  >
-                    {cloudAuthState === 'checking' ? 'Checking Session...' : (syncProvider === 'self_hosted' ? 'Authenticate' : 'Sign in with Google')}
-                  </button>
+                  syncProvider === 'self_hosted' ? (
+                    <button
+                      className="ghost"
+                      onClick={() => void signInWithGoogle()}
+                      disabled={cloudAuthState === 'checking'}
+                    >
+                      {cloudAuthState === 'checking' ? 'Checking Session...' : 'Authenticate'}
+                    </button>
+                  ) : (
+                    <GoogleSignInButton
+                      onClick={() => void signInWithGoogle()}
+                      disabled={cloudAuthState === 'checking'}
+                      label={cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                    />
+                  )
                 ) : null
               ) : (
                 <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
               )}
               {syncProvider !== 'self_hosted' && (
-                <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Passkey Identity</button>
+                <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Cloud Passkey Identity</button>
               )}
             </div>
             {syncProvider === 'self_hosted' && selfHostedLocked && (
@@ -748,17 +767,56 @@ export function SettingsPage() {
           <section className="settings-section" hidden={!isSecurity}>
             <h3>Security</h3>
             <div className="settings-action-list">
-              {isNativeAndroid() ? (
-                <button className={biometricEnabled ? 'solid' : 'ghost'} onClick={() => void enableBiometricUnlock()}>
-                  {biometricEnabled ? 'Biometric Enabled' : 'Enable Biometric'}
+              {quickUnlockCapabilities.supported ? (
+                <button className={quickUnlockEnabled ? 'solid' : 'ghost'} onClick={() => void enableQuickUnlock()}>
+                  {quickUnlockCapabilities.method === 'android-native'
+                    ? (quickUnlockEnabled ? 'Biometric Enabled' : 'Enable Biometric')
+                    : (quickUnlockEnabled ? 'Passkey Enabled' : quickUnlockCapabilities.enrollmentLabel)}
                 </button>
               ) : (
                 <p className="muted" style={{ margin: 0 }}>
-                  Biometric quick unlock is available in the Android app.
+                  {quickUnlockCapabilities.unavailableReason || 'Passkey quick unlock is not supported on this device/browser.'}
                 </p>
               )}
             </div>
-            {isNativeAndroid() && syncMessage.toLowerCase().includes('biometric') && (
+            <div className="settings-divider" />
+            <div className="settings-identity">
+              <span className={`dot-status ${recoveryKitEnabled ? 'connected' : 'disconnected'}`} />
+              <span>
+                {recoveryKitEnabled
+                  ? `Recovery Kit enabled (${recoveryKeyFingerprintSuffix || 'fingerprint unavailable'})`
+                  : 'Recovery Kit not enabled'}
+              </span>
+            </div>
+            <p className="muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
+              Enabled: {formatDateTime(recoveryEnabledAt)}{recoveryRotatedAt ? ` · Rotated: ${formatDateTime(recoveryRotatedAt)}` : ''}
+            </p>
+            <div className="settings-action-list" style={{ marginTop: '0.6rem' }}>
+              {!recoveryKitEnabled ? (
+                <button className="ghost" onClick={() => void enableRecoveryKit()}>
+                  Enable Recovery Kit
+                </button>
+              ) : (
+                <>
+                  <button className="ghost" onClick={() => void rotateRecoveryKit()}>
+                    Rotate Recovery Key
+                  </button>
+                  <button className="ghost" onClick={() => void disableRecoveryKit()}>
+                    Disable Recovery Kit
+                  </button>
+                </>
+              )}
+            </div>
+            {recoveryKeyDisplay && (
+              <div className="settings-card" style={{ marginTop: '0.6rem' }}>
+                <p style={{ marginTop: 0 }}><strong>Store this recovery key offline now.</strong></p>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '0 0 0.5rem 0' }}>{recoveryKeyDisplay}</pre>
+                <div className="settings-action-list">
+                  <button className="solid" onClick={acknowledgeRecoveryKeyStored}>I Stored This Offline</button>
+                </div>
+              </div>
+            )}
+            {(syncMessage.toLowerCase().includes('biometric') || syncMessage.toLowerCase().includes('passkey') || syncMessage.toLowerCase().includes('quick unlock')) && (
               <p className="muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
                 {syncMessage}
               </p>

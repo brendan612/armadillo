@@ -22,13 +22,22 @@ import {
 } from '../../lib/syncClient'
 import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
-import { biometricEnrollmentExists, enrollBiometricQuickUnlock, unlockWithBiometric } from '../../lib/biometric'
+import {
+  biometricEnrollmentExists,
+  enrollQuickUnlock,
+  getQuickUnlockCapabilities,
+  unlockWithQuickUnlock,
+} from '../../lib/biometric'
 import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
 import { parseGooglePasswordCsv } from '../../shared/utils/googlePasswordCsv'
 import { parseKeePassCsv } from '../../shared/utils/keePassCsv'
 import { parseKeePassXml } from '../../shared/utils/keePassXml'
 import { getPasswordExpiryStatus } from '../../shared/utils/passwordExpiry'
 import {
+  formatRecoveryKeyForDisplay,
+  generateRecoveryKey,
+  parseRecoveryKeyFromDisplay,
+  wrapVaultKeyWithRecoveryKey,
   decryptBytesWithVaultKey,
   encryptBytesWithVaultKey,
   encryptJsonWithKey,
@@ -80,6 +89,7 @@ import {
   type LocalVaultPathStatus,
   type RecentLocalVaultEntry,
   unlockVaultFile,
+  unlockVaultFileWithRecoveryKey,
 } from '../../lib/vaultFile'
 import {
   BUILT_IN_THEME_PRESETS,
@@ -150,6 +160,7 @@ type WorkspaceSection = 'passwords' | 'storage'
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type StorageContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
+type QuickCreateEntryType = 'password' | 'file' | 'key' | 'token' | 'secret' | 'image' | 'note'
 type FolderInlineEditorState =
   | { mode: 'create'; parentId: string | null; value: string }
   | { mode: 'rename'; folderId: string; parentId: string | null; value: string }
@@ -559,6 +570,37 @@ function fileNameFromPath(path: string) {
   return parts[parts.length - 1] || path
 }
 
+function sanitizeVaultFileName(input: string) {
+  const invalid = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+  const filtered = input
+    .trim()
+    .split('')
+    .filter((char) => {
+      const code = char.charCodeAt(0)
+      return code >= 32 && !invalid.has(char)
+    })
+    .join('')
+  const normalized = filtered.replace(/\s+/g, '-')
+  return normalized.replace(/^-+|-+$/g, '')
+}
+
+function buildNamedVaultPath(basePath: string, vaultName: string) {
+  const trimmedBase = basePath.trim()
+  const safeName = sanitizeVaultFileName(vaultName) || 'vault'
+  const fileName = safeName.toLowerCase().endsWith('.armadillo') ? safeName : `${safeName}.armadillo`
+  if (!trimmedBase) {
+    return fileName
+  }
+  const separatorMatch = trimmedBase.match(/[\\/](?=[^\\/]*$)/)
+  if (!separatorMatch || separatorMatch.index === undefined) {
+    return fileName
+  }
+  const separatorIndex = separatorMatch.index
+  const dir = trimmedBase.slice(0, separatorIndex)
+  const sep = separatorMatch[0]
+  return `${dir}${sep}${fileName}`
+}
+
 function itemMatchesQuery(item: VaultItem, queryLower: string) {
   return (
     item.title.toLowerCase().includes(queryLower) ||
@@ -729,6 +771,7 @@ export function useVaultApp() {
   const [phase, setPhase] = useState<AppPhase>(hasExistingVault ? 'unlock' : 'create')
   const [vaultSession, setVaultSession] = useState<VaultSession | null>(null)
   const [unlockPassword, setUnlockPassword] = useState('')
+  const [unlockRecoveryKey, setUnlockRecoveryKey] = useState('')
   const [createPassword, setCreatePassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isUnlocking, setIsUnlocking] = useState(false)
@@ -757,6 +800,7 @@ export function useVaultApp() {
   const [mobileStep, setMobileStep] = useState<MobileStep>('home')
   const [syncState, setSyncState] = useState<SyncState>('local')
   const [syncMessage, setSyncMessage] = useState('Offline mode')
+  const [recoveryKeyDisplay, setRecoveryKeyDisplay] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -770,7 +814,7 @@ export function useVaultApp() {
   const [entitlementState, setEntitlementState] = useState<EntitlementState>(() => defaultEntitlementState())
   const [devFlagOverrideState, setDevFlagOverrideState] = useState<DevFlagOverride | null>(() => getDevFlagOverride())
   const [entitlementStatusMessage, setEntitlementStatusMessage] = useState('Free plan active')
-  const [biometricEnabled, setBiometricEnabled] = useState(() => biometricEnrollmentExists())
+  const [quickUnlockEnabled, setQuickUnlockEnabled] = useState(() => biometricEnrollmentExists())
   const [authMessage, setAuthMessage] = useState('')
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
   const [cloudIdentity, setCloudIdentity] = useState('')
@@ -880,6 +924,7 @@ export function useVaultApp() {
     }
     return selectedLocalVaultStatus === 'exists' || Boolean(loadCachedVaultSnapshot())
   }, [storageMode, selectedLocalVaultStatus])
+  const quickUnlockCapabilities = useMemo(() => getQuickUnlockCapabilities(), [])
   const localVaultNameById = useMemo<Record<string, string>>(() => {
     if (storageMode !== 'local_file') return {}
     const map: Record<string, string> = {}
@@ -900,6 +945,13 @@ export function useVaultApp() {
     }
     return map
   }, [storageMode, localVaultPath, recentLocalVaultPaths, recentLocalVaultPathStatuses])
+  const recoveryConfig = vaultSession?.file.recovery
+  const recoveryKitEnabled = Boolean(recoveryConfig)
+  const recoveryKeyFingerprintSuffix = recoveryConfig?.recoveryKeyFingerprint
+    ? recoveryConfig.recoveryKeyFingerprint.slice(-10)
+    : ''
+  const recoveryEnabledAt = recoveryConfig?.enabledAt ?? ''
+  const recoveryRotatedAt = recoveryConfig?.rotatedAt ?? ''
 
   const completeGoogleSignInFromCallback = useCallback(async (callbackUrl: string, source: 'desktop' | 'android') => {
     try {
@@ -1635,14 +1687,9 @@ export function useVaultApp() {
           setCloudVaultSnapshot(latest)
           setCloudVaultCandidates(snapshots)
 
-          // On the create screen (no local vault), auto-restore immediately
-          if (phase === 'create') {
-            persistVaultSnapshot(latest)
-            setAuthMessage('Found your cloud vault! Enter your master password to unlock it.')
-            setPhase('unlock')
-          } else {
-            setAuthMessage('Cloud vault found! You can load it below.')
-          }
+          // Keep create mode stable so users can create a new local vault even
+          // when cloud snapshots are available; loading from cloud is explicit.
+          setAuthMessage('Cloud vault found! You can load it below.')
         } else {
           setCloudVaultSnapshot(null)
           setCloudVaultCandidates([])
@@ -2262,6 +2309,83 @@ export function useVaultApp() {
     return candidates
   }
 
+  async function reauthenticateWithMasterPassword(reason: string) {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before changing recovery settings')
+      return null
+    }
+    const entered = window.prompt(`Confirm your master password to ${reason}.`)
+    if (entered === null) {
+      return null
+    }
+    const passwordCandidates = buildPasswordCandidates(entered)
+    for (const passwordCandidate of passwordCandidates) {
+      try {
+        await unlockVaultFile(vaultSession.file, passwordCandidate)
+        return true
+      } catch {
+        // Try next password candidate.
+      }
+    }
+    setSyncMessage('Master password verification failed')
+    return false
+  }
+
+  async function enableOrRotateRecoveryKit(mode: 'enable' | 'rotate') {
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before configuring recovery')
+      return
+    }
+    if (mode === 'enable' && vaultSession.file.recovery) {
+      setSyncMessage('Recovery kit is already enabled')
+      return
+    }
+    if (mode === 'rotate' && !vaultSession.file.recovery) {
+      setSyncMessage('Enable recovery kit before rotating it')
+      return
+    }
+
+    const reauthed = await reauthenticateWithMasterPassword(mode === 'enable' ? 'enable the recovery kit' : 'rotate the recovery kit')
+    if (!reauthed) return
+
+    const confirmed = window.confirm('This recovery key will be shown once. Store it offline before continuing.')
+    if (!confirmed) return
+
+    const recoveryKeyBytes = generateRecoveryKey()
+    try {
+      const display = await formatRecoveryKeyForDisplay(recoveryKeyBytes)
+      const wrapped = await wrapVaultKeyWithRecoveryKey({
+        vaultKey: vaultSession.vaultKey,
+        recoveryKeyBytes,
+      })
+      const nowIso = new Date().toISOString()
+      const nextRecovery = {
+        version: 1 as const,
+        kdf: wrapped.kdf,
+        wrappedVaultKeyRecovery: wrapped.wrappedVaultKeyRecovery,
+        recoveryKeyFingerprint: wrapped.recoveryKeyFingerprint,
+        enabledAt: vaultSession.file.recovery?.enabledAt ?? nowIso,
+        ...(mode === 'rotate' ? { rotatedAt: nowIso } : {}),
+      }
+      const nextSeedSession: VaultSession = {
+        ...vaultSession,
+        file: {
+          ...vaultSession.file,
+          recovery: nextRecovery,
+        },
+      }
+      const nextSession = await rewriteVaultFile(nextSeedSession, vaultSession.payload)
+      persistVaultSnapshot(nextSession.file)
+      applySession(nextSession)
+      setRecoveryKeyDisplay(display)
+      setSyncMessage(mode === 'enable' ? 'Recovery kit enabled. Store the key offline now.' : 'Recovery key rotated. Store the new key offline now.')
+    } catch {
+      setSyncMessage(mode === 'enable' ? 'Failed to enable recovery kit' : 'Failed to rotate recovery key')
+    } finally {
+      recoveryKeyBytes.fill(0)
+    }
+  }
+
   async function createVault() {
     setVaultError('')
 
@@ -2344,6 +2468,7 @@ export function useVaultApp() {
         setPhase('ready')
         setSyncMessage(storageMode === 'cloud_only' ? 'Vault unlocked from encrypted cloud cache' : 'Vault unlocked locally')
         setUnlockPassword('')
+        setUnlockRecoveryKey('')
       } catch (initialError) {
         const cloudSyncAllowed = hasCapability('cloud.sync') && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
         if (cloudConnected && syncConfigured() && cloudSyncAllowed) {
@@ -2379,6 +2504,7 @@ export function useVaultApp() {
                 setSyncMessage('Vault unlocked from cloud save')
                 setAuthMessage('Recovered using a matching cloud vault save')
                 setUnlockPassword('')
+                setUnlockRecoveryKey('')
                 return
               } catch {
                 // Try next candidate.
@@ -2425,6 +2551,8 @@ export function useVaultApp() {
     setWorkspaceSection('passwords')
     setThemeSettings(normalizeThemeSettings(vaultSettings.theme))
     setThemeSettingsDirty(false)
+    setUnlockRecoveryKey('')
+    setRecoveryKeyDisplay('')
     setPhase('unlock')
     setSyncMessage('Vault locked')
     clearNativeCredentials()
@@ -2919,11 +3047,16 @@ export function useVaultApp() {
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
     const item = buildEmptyItem(selectedFolderPath, selectedFolderId)
     const next = applyComputedItemRisks([item, ...items])
-    void persistPayload({ items: next })
     setSelectedId(item.id)
     setDraft(next.find((entry) => entry.id === item.id) ?? item)
     setMobileStep('detail')
     setActivePanel('details')
+    void persistPayload({ items: next }).then(() => {
+      setSelectedId(item.id)
+      setDraft((current) => current?.id === item.id ? current : (next.find((entry) => entry.id === item.id) ?? item))
+      setMobileStep('detail')
+      setActivePanel('details')
+    })
   }
 
   function createStorageItem() {
@@ -2939,11 +3072,73 @@ export function useVaultApp() {
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
     const item = buildEmptyStorageItem(selectedFolderPath, selectedFolderId)
     const next = [item, ...storageItems]
-    void persistPayload({ storageItems: next })
     setSelectedStorageId(item.id)
     setStorageDraft(item)
     setMobileStep('detail')
     setActivePanel('details')
+    void persistPayload({ storageItems: next }).then(() => {
+      setSelectedStorageId(item.id)
+      setStorageDraft((current) => current?.id === item.id ? current : item)
+      setMobileStep('detail')
+      setActivePanel('details')
+    })
+  }
+
+  function createStorageItemOfKind(kind: StorageKind, title?: string) {
+    if (!hasCapability('vault.storage') || !isFlagEnabled('experiments.storage_tab')) {
+      setSyncMessage(capabilityLockReasons['vault.storage'] ?? 'Requires Premium plan')
+      return
+    }
+    setWorkspaceSection('storage')
+    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+      setSelectedNode('all')
+    }
+    const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
+    const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
+    const item = {
+      ...buildEmptyStorageItem(selectedFolderPath, selectedFolderId),
+      kind,
+      title: title?.trim() || 'New Storage Item',
+    }
+    const next = [item, ...storageItems]
+    setSelectedStorageId(item.id)
+    setStorageDraft(item)
+    setMobileStep('detail')
+    setActivePanel('details')
+    void persistPayload({ storageItems: next }).then(() => {
+      setSelectedStorageId(item.id)
+      setStorageDraft((current) => current?.id === item.id ? current : item)
+      setMobileStep('detail')
+      setActivePanel('details')
+    })
+  }
+
+  function createEntry(type: QuickCreateEntryType) {
+    if (type === 'password') {
+      createItem()
+      return
+    }
+    if (type === 'file') {
+      createStorageItemOfKind('document', 'New File')
+      return
+    }
+    if (type === 'key') {
+      createStorageItemOfKind('key', 'New Key')
+      return
+    }
+    if (type === 'token') {
+      createStorageItemOfKind('token', 'New Token')
+      return
+    }
+    if (type === 'secret') {
+      createStorageItemOfKind('secret', 'New Secret')
+      return
+    }
+    if (type === 'image') {
+      createStorageItemOfKind('image', 'New Image')
+      return
+    }
+    createStorageItemOfKind('other', 'New Note')
   }
 
   function storageItemExcludedFromCloud(item: VaultStorageItem) {
@@ -4050,39 +4245,62 @@ export function useVaultApp() {
     }
   }
 
-  async function enableBiometricUnlock() {
-    if (!isNativeAndroid()) {
-      setSyncMessage('Biometric quick unlock is available in the Android app')
+  async function enableQuickUnlock() {
+    if (!quickUnlockCapabilities.supported) {
+      setSyncMessage(quickUnlockCapabilities.unavailableReason || 'Quick unlock is not supported on this device')
       return
     }
     if (!vaultSession) {
-      setSyncMessage('Unlock vault before enabling biometrics')
+      setSyncMessage('Unlock vault before enabling quick unlock')
       return
     }
     try {
-      await enrollBiometricQuickUnlock(vaultSession)
-      setBiometricEnabled(true)
-      setSyncMessage('Biometric quick unlock enabled on this device')
+      await enrollQuickUnlock(vaultSession)
+      setQuickUnlockEnabled(true)
+      setSyncMessage(
+        quickUnlockCapabilities.method === 'android-native'
+          ? 'Biometric quick unlock enabled on this device'
+          : 'Passkey / Windows Hello quick unlock enabled on this device',
+      )
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       const normalized = detail.toLowerCase()
       if (normalized.includes('not extractable')) {
-        setSyncMessage('Vault key was loaded in a legacy session. Lock and unlock once, then try enabling biometrics again.')
+        setSyncMessage('Vault key was loaded in a legacy session. Lock and unlock once, then try enabling quick unlock again.')
         return
       }
       if (normalized.includes('not implemented')) {
         setSyncMessage('Biometric plugin is unavailable in this app build. Rebuild/reinstall the Android app.')
         return
       }
-      setSyncMessage(detail ? `Biometric enrollment failed: ${detail}` : 'Biometric enrollment failed on this device')
+      const prefix = quickUnlockCapabilities.method === 'android-native' ? 'Biometric enrollment failed' : 'Passkey enrollment failed'
+      setSyncMessage(detail ? `${prefix}: ${detail}` : `${prefix} on this device`)
     }
   }
 
-  async function unlockVaultBiometric() {
-    if (!isNativeAndroid()) {
-      setVaultError('Biometric unlock is available in the Android app')
+  async function unlockVaultQuickUnlock() {
+    if (isUnlocking) return
+    if (!quickUnlockCapabilities.supported) {
+      setVaultError(quickUnlockCapabilities.unavailableReason || 'Quick unlock is not supported on this device')
       return
     }
+    const unlockStartedAt = Date.now()
+    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+    const ensureUnlockVisualFeedback = async () => {
+      const elapsed = Date.now() - unlockStartedAt
+      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
+        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
+      }
+    }
+    setIsUnlocking(true)
+    setVaultError('')
+    await new Promise<void>((resolve) => {
+      if (typeof window.requestAnimationFrame !== 'function') {
+        resolve()
+        return
+      }
+      window.requestAnimationFrame(() => resolve())
+    })
     const file = getUnlockSourceFile()
     if (!file) {
       if (storageMode === 'cloud_only') {
@@ -4092,19 +4310,28 @@ export function useVaultApp() {
       } else {
         setVaultError('Select a vault to unlock.')
       }
+      setIsUnlocking(false)
       return
     }
 
     try {
-      const session = await unlockWithBiometric(file)
+      const session = await unlockWithQuickUnlock(file)
       applySession(session, { resetNavigation: true })
+      await ensureUnlockVisualFeedback()
       setPhase('ready')
-      setSyncMessage('Vault unlocked with biometrics')
+      setUnlockPassword('')
+      setUnlockRecoveryKey('')
+      setSyncMessage(quickUnlockCapabilities.method === 'android-native' ? 'Vault unlocked with biometrics' : 'Vault unlocked with passkey')
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
-      setVaultError(detail ? `Biometric unlock failed: ${detail}` : 'Biometric unlock failed. Use master password.')
+      setVaultError(detail ? `Quick unlock failed: ${detail}` : 'Quick unlock failed. Use master password.')
+    } finally {
+      setIsUnlocking(false)
     }
   }
+
+  const enableBiometricUnlock = enableQuickUnlock
+  const unlockVaultBiometric = unlockVaultQuickUnlock
 
   async function chooseLocalVaultLocation() {
     if (storageMode === 'cloud_only') {
@@ -4136,6 +4363,90 @@ export function useVaultApp() {
     } catch {
       setSyncMessage('Could not choose local vault location')
     }
+  }
+
+  async function unlockVaultWithRecoveryKey() {
+    if (isUnlocking) return
+    const unlockStartedAt = Date.now()
+    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+    const ensureUnlockVisualFeedback = async () => {
+      const elapsed = Date.now() - unlockStartedAt
+      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
+        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
+      }
+    }
+    setIsUnlocking(true)
+    setVaultError('')
+    await new Promise<void>((resolve) => {
+      if (typeof window.requestAnimationFrame !== 'function') {
+        resolve()
+        return
+      }
+      window.requestAnimationFrame(() => resolve())
+    })
+    const parsedRecoveryKey = await parseRecoveryKeyFromDisplay(unlockRecoveryKey).catch(() => null)
+    if (!parsedRecoveryKey) {
+      setIsUnlocking(false)
+      setVaultError('Recovery key unlock failed. Verify your key and vault file.')
+      return
+    }
+    try {
+      const file = getUnlockSourceFile()
+      if (!file) {
+        setVaultError('Select a vault to unlock.')
+        return
+      }
+      const session = await unlockVaultFileWithRecoveryKey(file, parsedRecoveryKey)
+      applySession(session, { resetNavigation: true })
+      await ensureUnlockVisualFeedback()
+      setPhase('ready')
+      setUnlockPassword('')
+      setUnlockRecoveryKey('')
+      setSyncMessage('Vault unlocked with recovery key')
+    } catch {
+      setVaultError('Recovery key unlock failed. Verify your key and vault file.')
+    } finally {
+      parsedRecoveryKey.fill(0)
+      setIsUnlocking(false)
+    }
+  }
+
+  async function enableRecoveryKit() {
+    await enableOrRotateRecoveryKit('enable')
+  }
+
+  async function rotateRecoveryKit() {
+    await enableOrRotateRecoveryKit('rotate')
+  }
+
+  async function disableRecoveryKit() {
+    if (!vaultSession || !vaultSession.file.recovery) {
+      setSyncMessage('Recovery kit is not enabled')
+      return
+    }
+    const reauthed = await reauthenticateWithMasterPassword('disable the recovery kit')
+    if (!reauthed) return
+    const confirmed = window.confirm('Disable recovery kit? You will only be able to unlock with your master password or enrolled quick unlock methods.')
+    if (!confirmed) return
+    try {
+      const withoutRecovery: ArmadilloVaultFile = { ...vaultSession.file }
+      delete withoutRecovery.recovery
+      const nextSeedSession: VaultSession = {
+        ...vaultSession,
+        file: withoutRecovery,
+      }
+      const nextSession = await rewriteVaultFile(nextSeedSession, vaultSession.payload)
+      persistVaultSnapshot(nextSession.file)
+      applySession(nextSession)
+      setRecoveryKeyDisplay('')
+      setSyncMessage('Recovery kit disabled')
+    } catch {
+      setSyncMessage('Failed to disable recovery kit')
+    }
+  }
+
+  function acknowledgeRecoveryKeyStored() {
+    setRecoveryKeyDisplay('')
   }
 
   async function browseExistingLocalVault() {
@@ -4183,6 +4494,23 @@ export function useVaultApp() {
       setStoredLocalVaultPath(nextPath)
       setLocalVaultPath(nextPath)
     }
+  }
+
+  function prepareNamedLocalVault(vaultName: string) {
+    const trimmedName = vaultName.trim()
+    if (!trimmedName) {
+      setSyncMessage('Enter a vault name first')
+      return
+    }
+    const basePath = localVaultPath || getLocalVaultPath()
+    const nextPath = buildNamedVaultPath(basePath, trimmedName)
+    setStoredLocalVaultPath(nextPath)
+    rememberLocalVaultPath(nextPath)
+    setLocalVaultPath(nextPath)
+    setRecentLocalVaultPaths(listRecentLocalVaultPaths())
+    setVaultError('')
+    setPhase('create')
+    setSyncMessage(`Ready to create vault: ${nextPath}`)
   }
 
   async function signInWithGoogle() {
@@ -4313,6 +4641,7 @@ export function useVaultApp() {
     state: {
       phase,
       unlockPassword,
+      unlockRecoveryKey,
       createPassword,
       confirmPassword,
       isUnlocking,
@@ -4334,6 +4663,11 @@ export function useVaultApp() {
       mobileStep,
       syncState,
       syncMessage,
+      recoveryKeyDisplay,
+      recoveryKitEnabled,
+      recoveryKeyFingerprintSuffix,
+      recoveryEnabledAt,
+      recoveryRotatedAt,
       isSaving,
       showPassword,
       showSettings,
@@ -4356,7 +4690,9 @@ export function useVaultApp() {
       updateCheckResult,
       isCheckingForUpdates,
       devFlagOverrideState,
-      biometricEnabled,
+      quickUnlockEnabled,
+      biometricEnabled: quickUnlockEnabled,
+      quickUnlockCapabilities,
       authMessage,
       cloudAuthState,
       cloudIdentity,
@@ -4414,6 +4750,7 @@ export function useVaultApp() {
     actions: {
       setPhase,
       setUnlockPassword,
+      setUnlockRecoveryKey,
       setCreatePassword,
       setConfirmPassword,
       setQuery,
@@ -4469,16 +4806,20 @@ export function useVaultApp() {
       closeDesktopWindow,
       createVault,
       unlockVault,
+      unlockVaultQuickUnlock,
       unlockVaultBiometric,
+      unlockVaultWithRecoveryKey,
       loadVaultFromCloud,
       browseExistingLocalVault,
       chooseLocalVaultLocation,
+      prepareNamedLocalVault,
       selectRecentLocalVaultPath,
       removeRecentLocalVaultPath,
       signInWithGoogle,
       signOutCloud,
       createItem,
       createStorageItem,
+      createEntry,
       lockVault,
       closeOpenItem,
       createSubfolder,
@@ -4528,7 +4869,12 @@ export function useVaultApp() {
       saveAutoFolderPreferences,
       applyAutoFolderingV2,
       createPasskeyIdentity,
+      enableQuickUnlock,
       enableBiometricUnlock,
+      enableRecoveryKit,
+      rotateRecoveryKit,
+      disableRecoveryKit,
+      acknowledgeRecoveryKeyStored,
       refreshVaultFromCloudNow,
       pushVaultToCloudNow,
       persistPayload,

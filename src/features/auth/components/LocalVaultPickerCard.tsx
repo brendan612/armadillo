@@ -15,6 +15,7 @@ function vaultFileLabel(path: string) {
 
 export function LocalVaultPickerCard() {
   const {
+    phase,
     storageMode,
     localVaultPath,
     selectedLocalVaultStatus,
@@ -26,6 +27,7 @@ export function LocalVaultPickerCard() {
   const {
     browseExistingLocalVault,
     chooseLocalVaultLocation,
+    prepareNamedLocalVault,
     selectRecentLocalVaultPath,
     removeRecentLocalVaultPath,
     loadVaultFromCloud,
@@ -34,6 +36,7 @@ export function LocalVaultPickerCard() {
   const hasCloud = cloudVaultCandidates.length > 0
   const [preferredTab, setPreferredTab] = useState<'cloud' | 'local' | null>(null)
   const [selectedCloudSnapshotKey, setSelectedCloudSnapshotKey] = useState('')
+  const [newVaultName, setNewVaultName] = useState('')
   const activeTab: 'cloud' | 'local' = useMemo(() => {
     if (preferredTab === 'cloud' && hasCloud) return 'cloud'
     if (preferredTab === 'local' && hasLocal) return 'local'
@@ -48,6 +51,12 @@ export function LocalVaultPickerCard() {
   const selectedCloudSnapshotResolvedKey = selectedCloudSnapshot
     ? `${selectedCloudSnapshot.vaultId}:${selectedCloudSnapshot.revision}:${selectedCloudSnapshot.updatedAt}`
     : ''
+  const selectedLocalStatusForDisplay = useMemo(() => {
+    if (phase === 'create' && selectedLocalVaultStatus === 'missing' && localVaultPath.trim()) {
+      return 'pending' as const
+    }
+    return selectedLocalVaultStatus
+  }, [phase, selectedLocalVaultStatus, localVaultPath])
 
   if (!hasLocal && !hasCloud) {
     return null
@@ -79,8 +88,8 @@ export function LocalVaultPickerCard() {
         <>
           <div className="vault-picker-head">
             <p className="muted" style={{ margin: 0 }}>Local Vault</p>
-            <span className={`vault-status-pill is-${selectedLocalVaultStatus}`}>
-              {statusLabel(selectedLocalVaultStatus)}
+            <span className={`vault-status-pill is-${selectedLocalStatusForDisplay}`}>
+              {selectedLocalStatusForDisplay === 'pending' ? 'New' : statusLabel(selectedLocalStatusForDisplay)}
             </span>
           </div>
           <p className="muted vault-picker-path" style={{ margin: 0 }} title={localVaultPath}>
@@ -89,6 +98,23 @@ export function LocalVaultPickerCard() {
           <div className="vault-picker-actions">
             <button className="ghost" onClick={() => void browseExistingLocalVault()}>Browse</button>
             <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>New Location</button>
+          </div>
+          <div className="vault-picker-create-row">
+            <input
+              value={newVaultName}
+              onChange={(event) => setNewVaultName(event.target.value)}
+              placeholder="New vault name..."
+              aria-label="New vault name"
+            />
+            <button
+              className="solid vault-picker-remove"
+              onClick={() => {
+                prepareNamedLocalVault(newVaultName)
+                setNewVaultName('')
+              }}
+            >
+              Create New Vault
+            </button>
           </div>
           {recentLocalVaultPaths.length > 0 && (
             <div className="vault-picker-recent">
@@ -100,11 +126,14 @@ export function LocalVaultPickerCard() {
                 >
                   {!localVaultPath && <option value="">Select saved vault...</option>}
                   {recentLocalVaultPaths.map((entry) => {
-                    const status = recentLocalVaultPathStatuses[entry.path] ?? 'unknown'
+                    const rawStatus = recentLocalVaultPathStatuses[entry.path] ?? 'unknown'
+                    const status = phase === 'create' && entry.path === localVaultPath && rawStatus === 'missing'
+                      ? 'pending'
+                      : rawStatus
                     const usedAt = new Date(entry.lastUsedAt).toLocaleString()
                     return (
                       <option key={entry.path} value={entry.path}>
-                        {`${vaultFileLabel(entry.path)} - ${statusLabel(status)} - ${usedAt}`}
+                        {`${vaultFileLabel(entry.path)} - ${status === 'pending' ? 'New' : statusLabel(status)} - ${usedAt}`}
                       </option>
                     )
                   })}

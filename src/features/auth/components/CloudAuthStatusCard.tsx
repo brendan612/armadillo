@@ -1,5 +1,6 @@
 import { syncConfigured } from '../../../lib/syncClient'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { GoogleSignInButton } from './GoogleSignInButton'
 
 export function CloudAuthStatusCard() {
   const { cloudConnected, authStatus, hasCapability } = useVaultAppDerived()
@@ -15,9 +16,17 @@ export function CloudAuthStatusCard() {
         <div className="auth-status-actions">
           {!cloudConnected ? (
             showSignIn ? (
-              <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
-                {cloudAuthState === 'checking' ? 'Checking Session...' : (syncProvider === 'self_hosted' ? 'Authenticate' : 'Sign in with Google')}
-              </button>
+              syncProvider === 'self_hosted' ? (
+                <button className="ghost" onClick={() => void signInWithGoogle()} disabled={cloudAuthState === 'checking'}>
+                  {cloudAuthState === 'checking' ? 'Checking Session...' : 'Authenticate'}
+                </button>
+              ) : (
+                <GoogleSignInButton
+                  onClick={() => void signInWithGoogle()}
+                  disabled={cloudAuthState === 'checking'}
+                  label={cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                />
+              )
             ) : null
           ) : (
             <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>

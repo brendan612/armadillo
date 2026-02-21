@@ -1,5 +1,5 @@
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
-export const VAULT_SCHEMA_VERSION = 5 as const
+export const VAULT_SCHEMA_VERSION = 6 as const
 
 export type SecurityQuestion = {
   question: string
@@ -153,6 +153,23 @@ export type EncryptedBlob = {
   ciphertext: string
 }
 
+export type RecoveryKdfConfig = {
+  algorithm: 'ARGON2ID'
+  iterations: number
+  memoryKiB: number
+  parallelism: number
+  salt: string
+}
+
+export type VaultRecoveryConfig = {
+  version: 1
+  kdf: RecoveryKdfConfig
+  wrappedVaultKeyRecovery: EncryptedBlob
+  recoveryKeyFingerprint: string
+  enabledAt: string
+  rotatedAt?: string
+}
+
 export type ArmadilloVaultFile = {
   format: 'armadillo-v1'
   vaultId: string
@@ -170,9 +187,10 @@ export type ArmadilloVaultFile = {
         algorithm: 'PBKDF2-SHA256'
         iterations: number
         salt: string
-      }
+  }
   wrappedVaultKey: EncryptedBlob
   vaultData: EncryptedBlob
+  recovery?: VaultRecoveryConfig
 }
 
 export type VaultSession = {
