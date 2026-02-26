@@ -478,6 +478,9 @@ function closeSplashWindow() {
 
 function createWindow() {
   const splashTheme = resolveSplashTheme();
+  const windowIconPath = process.platform === 'win32'
+    ? path.join(__dirname, 'icon.ico')
+    : path.join(__dirname, 'icon.png');
   mainWindow = new BrowserWindow({
     show: false,
     width: 1500,
@@ -485,7 +488,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 760,
     title: 'Armadillo',
-    icon: path.join(__dirname, 'icon.png'),
+    icon: windowIconPath,
     backgroundColor: splashTheme.bg0,
     frame: false,
     titleBarStyle: 'hidden',
