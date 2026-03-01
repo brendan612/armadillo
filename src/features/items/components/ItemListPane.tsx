@@ -97,6 +97,20 @@ const ItemListRow = memo(function ItemListRow({
         </p>
       </div>
       <div className="row-meta">
+        <div className="item-inline-meta item-inline-meta-row">
+          <button
+            type="button"
+            className={`risk risk-${item.risk} risk-filter-pill item-inline-risk`}
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelectRiskFilter(item)
+            }}
+            title={`Filter by ${riskLabelByState[item.risk]} risk`}
+          >
+            {riskLabelByState[item.risk]}
+          </button>
+          <span className="folder-tag item-inline-folder">{folderLabel}</span>
+        </div>
         <div className="item-inline-actions">
           {item.note && (
             <button
@@ -141,18 +155,6 @@ const ItemListRow = memo(function ItemListRow({
             <Keyboard size={14} aria-hidden="true" />
           </button>
         </div>
-        <button
-          type="button"
-          className={`risk risk-${item.risk} risk-filter-pill`}
-          onClick={(event) => {
-            event.stopPropagation()
-            onSelectRiskFilter(item)
-          }}
-          title={`Filter by ${riskLabelByState[item.risk]} risk`}
-        >
-          {riskLabelByState[item.risk]}
-        </button>
-        <span className="folder-tag">{folderLabel}</span>
       </div>
     </li>
   )
@@ -219,7 +221,7 @@ export function ItemListPane() {
   }, [copyToClipboard])
 
   const handleCopyPassword = useCallback((password: string) => {
-    void copyToClipboard(password, 'Password copied to clipboard', 'Clipboard copy failed')
+    void copyToClipboard(password, 'Password copied to clipboard', 'Clipboard copy failed', { clearAfterMs: 20_000 })
   }, [copyToClipboard])
 
   const handleAutofillItem = useCallback((item: VaultItem) => {
@@ -359,17 +361,24 @@ export function ItemListPane() {
           {trash.length === 0 ? (
             <p className="muted">Trash is empty.</p>
           ) : (
-            trash.map((entry) => (
-              <div key={entry.id} className="group-block">
-                <strong>{entry.kind === 'folderTreeSnapshot' ? 'Deleted folder tree' : 'Deleted item'}</strong>
-                <p className="muted" style={{ margin: 0 }}>{`Deleted ${new Date(entry.deletedAt).toLocaleString()}`}</p>
-                <p className="muted" style={{ margin: 0 }}>{`Expires ${new Date(entry.purgeAt).toLocaleString()}`}</p>
-                <div className="settings-action-list">
-                  <button className="ghost" onClick={() => void restoreTrashEntry(entry.id)}>Restore</button>
-                  <button className="ghost" onClick={() => void deleteTrashEntryPermanently(entry.id)}>Delete Permanently</button>
+            trash.map((entry) => {
+              const trashLabel = entry.kind === 'folderTreeSnapshot'
+                ? 'Deleted folder tree'
+                : entry.kind === 'itemSnapshot' && entry.payload && typeof entry.payload === 'object' && 'title' in entry.payload
+                  ? String((entry.payload as { title?: string }).title || 'Untitled credential')
+                  : 'Deleted item'
+              return (
+                <div key={entry.id} className="group-block">
+                  <strong>{trashLabel}</strong>
+                  <p className="muted" style={{ margin: 0 }}>{`Deleted ${new Date(entry.deletedAt).toLocaleString()}`}</p>
+                  <p className="muted" style={{ margin: 0 }}>{`Expires ${new Date(entry.purgeAt).toLocaleString()}`}</p>
+                  <div className="settings-action-list">
+                    <button className="ghost" onClick={() => void restoreTrashEntry(entry.id)}>Restore</button>
+                    <button className="ghost" onClick={() => void deleteTrashEntryPermanently(entry.id)}>Delete Permanently</button>
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       ) : filteredByRisk.length === 0 ? (
@@ -385,7 +394,7 @@ export function ItemListPane() {
           )}
         </div>
       ) : (
-        <ul className="item-list">{itemRows}</ul>
+        <ul className="item-list item-list-vault">{itemRows}</ul>
       )}
     </section>
   )

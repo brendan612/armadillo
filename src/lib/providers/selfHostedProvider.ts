@@ -15,6 +15,7 @@ import type {
   RemoteBlobRecord,
   Role,
   SyncProviderClient,
+  VaultDeleteResponse,
   VaultUpdateEvent,
   VaultUpdateSubscriptionOptions,
 } from '../syncTypes'
@@ -141,6 +142,21 @@ async function pushRemoteSnapshot(file: ArmadilloVaultFile): Promise<PushRespons
     return parseJsonResponse<PushResponse>(response, 'Self-hosted push')
   } catch {
     return postJson<PushResponse>(`/v1/vaults/${encodeURIComponent(file.vaultId)}/push`, payload, 'Self-hosted push (legacy)')
+  }
+}
+
+async function deleteRemoteVault(vaultId: string): Promise<VaultDeleteResponse | null> {
+  if (!baseUrl) return null
+  try {
+    return await deleteJson<VaultDeleteResponse>(
+      `/v2/vaults/${encodeURIComponent(vaultId)}`,
+      'Self-hosted vault delete',
+    )
+  } catch {
+    return deleteJson<VaultDeleteResponse>(
+      `/v1/vaults/${encodeURIComponent(vaultId)}`,
+      'Self-hosted vault delete (legacy)',
+    )
   }
 }
 
@@ -308,6 +324,7 @@ export const selfHostedProvider: SyncProviderClient = {
   listRemoteVaultsByOwner,
   pullRemoteSnapshot,
   pushRemoteSnapshot,
+  deleteRemoteVault,
   putRemoteBlob,
   getRemoteBlob,
   deleteRemoteBlob,

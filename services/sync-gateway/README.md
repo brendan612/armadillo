@@ -56,6 +56,7 @@ SYNC_DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db> npm run sync:selfhos
 - `POST /v2/vaults/list-by-owner`
 - `POST /v2/vaults/:vaultId/pull`
 - `POST /v2/vaults/:vaultId/push` (`Idempotency-Key` supported)
+- `DELETE /v2/vaults/:vaultId`
 - `PUT /v2/vaults/:vaultId/blobs/:blobId`
 - `GET /v2/vaults/:vaultId/blobs/:blobId`
 - `DELETE /v2/vaults/:vaultId/blobs/:blobId`
@@ -75,6 +76,7 @@ SYNC_DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db> npm run sync:selfhos
 - `POST /v1/vaults/list-by-owner`
 - `POST /v1/vaults/:vaultId/pull`
 - `POST /v1/vaults/:vaultId/push`
+- `DELETE /v1/vaults/:vaultId`
 - `POST /v1/events/token`
 - `GET /v1/events/stream?streamToken=<token>`
 - `GET /v1/orgs`

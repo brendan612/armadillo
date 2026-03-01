@@ -44,11 +44,12 @@ function findScrollableAncestor(target: EventTarget | null): HTMLElement | null 
 export function AppShell() {
   const { effectivePlatform } = useVaultAppDerived()
   const { expiryAlerts, expiryAlertsDismissed, syncState, selectedNode, workspaceSection, showSettings, appBuildInfo, updateCheckResult } = useVaultAppState()
-  const { importFileInputRef, backupImportInputRef, googlePasswordImportInputRef, keepassImportInputRef } = useVaultAppRefs()
+  const { importFileInputRef, backupImportInputRef, googlePasswordImportInputRef, lastpassImportInputRef, keepassImportInputRef } = useVaultAppRefs()
   const {
     onImportFileSelected,
     onBackupBundleSelected,
     onGooglePasswordCsvSelected,
+    onLastPassCsvSelected,
     onKeePassCsvSelected,
     dismissExpiryAlerts,
     refreshVaultFromCloudNow,
@@ -184,6 +185,13 @@ export function AppShell() {
         accept=".csv,text/csv"
         style={{ display: 'none' }}
         onChange={(event) => void onGooglePasswordCsvSelected(event)}
+      />
+      <input
+        ref={lastpassImportInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        style={{ display: 'none' }}
+        onChange={(event) => void onLastPassCsvSelected(event)}
       />
       <input
         ref={keepassImportInputRef}

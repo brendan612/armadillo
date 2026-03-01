@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronLeft, CircleHelp, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
 import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
@@ -78,12 +79,17 @@ export function ItemDetailPane() {
   const [presetName, setPresetName] = useState('')
   const [showPresetSave, setShowPresetSave] = useState(false)
   const genPopoverRef = useRef<HTMLDivElement>(null)
+  const genTriggerRef = useRef<HTMLButtonElement>(null)
+  const genPanelRef = useRef<HTMLDivElement>(null)
+  const [genPopoverStyle, setGenPopoverStyle] = useState<CSSProperties | undefined>(undefined)
   const [showEntropyInfo, setShowEntropyInfo] = useState(false)
   const entropyInfoRef = useRef<HTMLDivElement>(null)
 
   // Password confirm/save-error state keyed by item id to avoid effect-driven state resets.
   const [passwordConfirmById, setPasswordConfirmById] = useState<Record<string, string>>({})
   const [saveErrorById, setSaveErrorById] = useState<Record<string, string>>({})
+  const [breachSaveMessageById, setBreachSaveMessageById] = useState<Record<string, string>>({})
+  const [breachSaveMutedById, setBreachSaveMutedById] = useState<Record<string, boolean>>({})
   const [tagInputById, setTagInputById] = useState<Record<string, string>>({})
   const [showUsernameSuggestions, setShowUsernameSuggestions] = useState(false)
 
@@ -91,7 +97,12 @@ export function ItemDetailPane() {
   useEffect(() => {
     if (!showGenerator && !showEntropyInfo) return
     function handlePointerDown(event: PointerEvent) {
-      if (showGenerator && genPopoverRef.current && !genPopoverRef.current.contains(event.target as Node)) {
+      if (
+        showGenerator
+        && genPopoverRef.current
+        && !genPopoverRef.current.contains(event.target as Node)
+        && (!genPanelRef.current || !genPanelRef.current.contains(event.target as Node))
+      ) {
         setShowGenerator(false)
         setShowGenEditor(false)
         setShowPresetSave(false)
@@ -103,6 +114,47 @@ export function ItemDetailPane() {
     document.addEventListener('pointerdown', handlePointerDown)
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [showGenerator, showEntropyInfo])
+
+  useEffect(() => {
+    if (!showGenerator) {
+      return
+    }
+
+    function positionGeneratorPopover() {
+      if (!genTriggerRef.current) return
+      if (!window.matchMedia('(max-width: 980px)').matches) {
+        setGenPopoverStyle(undefined)
+        return
+      }
+
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+      const margin = 8
+      const triggerRect = genTriggerRef.current.getBoundingClientRect()
+      const targetWidth = Math.min(340, viewportWidth - margin * 2)
+      let left = triggerRect.left + triggerRect.width / 2 - targetWidth / 2
+      left = Math.max(margin, Math.min(left, viewportWidth - targetWidth - margin))
+
+      const top = Math.round(triggerRect.bottom + 2)
+      const maxHeight = Math.max(180, Math.min(420, viewportHeight - top - margin))
+
+      setGenPopoverStyle({
+        position: 'fixed',
+        left: `${Math.round(left)}px`,
+        top: `${top}px`,
+        width: `${Math.round(targetWidth)}px`,
+        maxHeight: `${Math.round(maxHeight)}px`,
+      })
+    }
+
+    positionGeneratorPopover()
+    window.addEventListener('resize', positionGeneratorPopover)
+    window.addEventListener('scroll', positionGeneratorPopover, true)
+    return () => {
+      window.removeEventListener('resize', positionGeneratorPopover)
+      window.removeEventListener('scroll', positionGeneratorPopover, true)
+    }
+  }, [showGenerator, showGenEditor, showPresetSave, vaultSettings.generatorPresets.length])
 
   function regenerate(config: GeneratorConfig) {
     setGenPreview(generatePassword(config))
@@ -202,6 +254,8 @@ export function ItemDetailPane() {
   async function handleSave() {
     if (draft) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+      setBreachSaveMessageById((current) => ({ ...current, [draft.id]: '' }))
+      setBreachSaveMutedById((current) => ({ ...current, [draft.id]: false }))
     }
     if (draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: 'Confirm password is required' }))
@@ -212,7 +266,19 @@ export function ItemDetailPane() {
       return false
     }
     try {
-      await saveCurrentItem()
+      const result = await saveCurrentItem()
+      if (draft && result.saved) {
+        if (result.breachStatus === 'compromised') {
+          const countLabel = typeof result.breachCount === 'number' && result.breachCount > 0
+            ? ` (seen ${result.breachCount.toLocaleString()} times)`
+            : ''
+          setBreachSaveMessageById((current) => ({ ...current, [draft.id]: `This password appears in known breaches${countLabel}. Consider rotating it.` }))
+          setBreachSaveMutedById((current) => ({ ...current, [draft.id]: false }))
+        } else if (result.breachStatus === 'unavailable') {
+          setBreachSaveMessageById((current) => ({ ...current, [draft.id]: 'Compromised-password check unavailable; credential saved.' }))
+          setBreachSaveMutedById((current) => ({ ...current, [draft.id]: true }))
+        }
+      }
       return true
     } catch {
       if (draft) {
@@ -225,6 +291,8 @@ export function ItemDetailPane() {
   const passwordConfirm = draft ? (passwordConfirmById[draft.id] ?? draft.passwordMasked ?? '') : ''
   const tagInputValue = draft ? (tagInputById[draft.id] ?? draft.tags.join(', ')) : ''
   const saveError = draft ? (saveErrorById[draft.id] ?? '') : ''
+  const breachSaveMessage = draft ? (breachSaveMessageById[draft.id] ?? '') : ''
+  const breachSaveMuted = draft ? (breachSaveMutedById[draft.id] ?? false) : false
   const passwordConfirmMissing = Boolean(draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0)
   const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
   const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
@@ -331,7 +399,9 @@ export function ItemDetailPane() {
               <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving || passwordConfirmMissing}>
                 {isSaving ? 'Saving...' : 'Save'}
               </button>
-              <button className="ghost detail-delete-btn" onClick={() => void removeCurrentItem()} disabled={isSaving} title="Delete item">
+              <button className="ghost detail-delete-btn" onClick={() => {
+                if (window.confirm(`Move "${draft?.title || 'this item'}" to trash?`)) void removeCurrentItem()
+              }} disabled={isSaving} title="Delete item">
                 <Trash2 size={14} /> Delete
               </button>
               <button className="ghost detail-close-btn" onClick={() => void handleCloseWithUnsavedPrompt()} disabled={isSaving} title="Close item">
@@ -436,10 +506,17 @@ export function ItemDetailPane() {
                 </button>
                 <div className="gen-popover-anchor" ref={genPopoverRef}>
                   <button
+                    ref={genTriggerRef}
                     className="inline-icon-btn"
                     type="button"
                     title="Generate password"
                     onClick={() => {
+                      if (!showGenerator) {
+                        const active = document.activeElement
+                        if (active instanceof HTMLElement) {
+                          active.blur()
+                        }
+                      }
                       setShowGenerator((prev) => !prev)
                       if (!showGenerator) {
                         regenerate(genConfig)
@@ -452,6 +529,148 @@ export function ItemDetailPane() {
                   </button>
 
                 {showGenerator && (
+                  genPopoverStyle
+                    ? createPortal(
+                      <div className="gen-popover" ref={genPanelRef} style={genPopoverStyle}>
+                        <h4>Password Generator</h4>
+
+                        {/* Presets */}
+                        {vaultSettings.generatorPresets.length > 0 && (
+                          <>
+                            <div className="gen-preset-list">
+                              {vaultSettings.generatorPresets.map((preset) => (
+                                <div key={preset.id} className="gen-preset-item">
+                                  <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => handleQuickGenerate(preset)}>
+                                    <span className="gen-preset-name">{preset.name}</span>
+                                    <span className="gen-preset-meta">
+                                      {' '}{preset.length}ch
+                                      {preset.uppercase ? ' A-Z' : ''}
+                                      {preset.lowercase ? ' a-z' : ''}
+                                      {preset.digits ? ' 0-9' : ''}
+                                      {preset.symbols ? ' !@#' : ''}
+                                    </span>
+                                  </div>
+                                  <button
+                                    className="gen-preset-delete"
+                                    title="Delete preset"
+                                    onClick={(e) => { e.stopPropagation(); void removeGeneratorPreset(preset.id) }}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="gen-popover-divider" />
+                          </>
+                        )}
+
+                        {/* Toggle editor */}
+                        {!showGenEditor ? (
+                          <button className="ghost" onClick={() => { setShowGenEditor(true); regenerate(genConfig) }}>
+                            Custom Generator
+                          </button>
+                        ) : (
+                          <div className="gen-config-panel">
+                            <div className="gen-length-row">
+                              <span className="gen-length-title">Length</span>
+                              <div className="gen-length-stepper">
+                                <button type="button" className="gen-stepper-btn" onClick={() => updateLength(genConfig.length - 1)} disabled={genConfig.length <= GENERATOR_MIN_LENGTH} aria-label="Decrease length">&minus;</button>
+                                <input
+                                  type="number"
+                                  className="gen-length-input"
+                                  min={GENERATOR_MIN_LENGTH}
+                                  max={GENERATOR_MAX_LENGTH}
+                                  step={1}
+                                  value={genLengthInput}
+                                  onChange={(e) => updateLengthFromInput(e.target.value)}
+                                  onBlur={commitLengthInput}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      commitLengthInput()
+                                    }
+                                  }}
+                                />
+                                <button type="button" className="gen-stepper-btn" onClick={() => updateLength(genConfig.length + 1)} disabled={genConfig.length >= GENERATOR_MAX_LENGTH} aria-label="Increase length">+</button>
+                              </div>
+                            </div>
+                            <input
+                              type="range"
+                              min={GENERATOR_MIN_LENGTH}
+                              max={GENERATOR_MAX_LENGTH}
+                              value={genConfig.length}
+                              onChange={(e) => updateLength(Number(e.target.value))}
+                            />
+
+                            <div className="gen-toggles">
+                              <label className={`gen-toggle ${genConfig.uppercase ? 'active' : ''}`}>
+                                <input type="checkbox" checked={genConfig.uppercase} onChange={(e) => updateConfig({ uppercase: e.target.checked })} />
+                                A-Z
+                              </label>
+                              <label className={`gen-toggle ${genConfig.lowercase ? 'active' : ''}`}>
+                                <input type="checkbox" checked={genConfig.lowercase} onChange={(e) => updateConfig({ lowercase: e.target.checked })} />
+                                a-z
+                              </label>
+                              <label className={`gen-toggle ${genConfig.digits ? 'active' : ''}`}>
+                                <input type="checkbox" checked={genConfig.digits} onChange={(e) => updateConfig({ digits: e.target.checked })} />
+                                0-9
+                              </label>
+                              <label className={`gen-toggle ${genConfig.symbols ? 'active' : ''}`}>
+                                <input type="checkbox" checked={genConfig.symbols} onChange={(e) => updateConfig({ symbols: e.target.checked })} />
+                                !@#$
+                              </label>
+                            </div>
+
+                            <div className="gen-preview">{genPreview}</div>
+                            <div className="password-strength-meter gen-strength-meter" aria-live="polite">
+                              <div className="password-strength-label-row">
+                                <span>Preview strength</span>
+                                <div className="password-strength-meta">
+                                  <strong className={`password-strength-label ${generatorStrength.level}`}>
+                                    {generatorStrength.label} ({generatorStrength.entropyBits} bits)
+                                  </strong>
+                                </div>
+                              </div>
+                              <div className="password-strength-track" role="progressbar" aria-valuemin={0} aria-valuemax={4} aria-valuenow={generatorStrength.score}>
+                                <span className={`password-strength-fill ${generatorStrength.level}`} style={{ width: `${(generatorStrength.score / 4) * 100}%` }} />
+                              </div>
+                              {generatorStrength.score <= 2 && (
+                                <p className="gen-strength-warning">Estimated crack time: {generatorStrength.crackTimeDisplay}</p>
+                              )}
+                            </div>
+
+                            <div className="gen-popover-actions">
+                              <button className="ghost" onClick={() => regenerate(genConfig)}>
+                                <RefreshCw size={13} /> Regenerate
+                              </button>
+                              <button className="solid" onClick={() => applyGeneratedPassword(genPreview)}>
+                                Use Password
+                              </button>
+                            </div>
+
+                            {!showPresetSave ? (
+                              <button className="ghost" onClick={() => setShowPresetSave(true)}>
+                                <Save size={13} /> Save as Preset
+                              </button>
+                            ) : (
+                              <div className="gen-save-row">
+                                <input
+                                  placeholder="Preset name"
+                                  value={presetName}
+                                  onChange={(e) => setPresetName(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') void handleSavePreset() }}
+                                  autoFocus
+                                />
+                                <button className="solid" onClick={() => void handleSavePreset()}>Save</button>
+                                <button className="ghost" onClick={() => setShowPresetSave(false)}>Cancel</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>,
+                      document.body,
+                    )
+                    : (
                   <div className="gen-popover">
                     <h4>Password Generator</h4>
 
@@ -543,9 +762,21 @@ export function ItemDetailPane() {
                         </div>
 
                         <div className="gen-preview">{genPreview}</div>
-                        <div className={`gen-strength-hint ${generatorStrength.score <= 2 ? 'weak' : 'ok'}`}>
-                          Preview strength: {generatorStrength.label} ({generatorStrength.entropyBits} bits)
-                          {generatorStrength.score <= 2 ? `, est. crack time: ${generatorStrength.crackTimeDisplay}` : ''}
+                        <div className="password-strength-meter gen-strength-meter" aria-live="polite">
+                          <div className="password-strength-label-row">
+                            <span>Preview strength</span>
+                            <div className="password-strength-meta">
+                              <strong className={`password-strength-label ${generatorStrength.level}`}>
+                                {generatorStrength.label} ({generatorStrength.entropyBits} bits)
+                              </strong>
+                            </div>
+                          </div>
+                          <div className="password-strength-track" role="progressbar" aria-valuemin={0} aria-valuemax={4} aria-valuenow={generatorStrength.score}>
+                            <span className={`password-strength-fill ${generatorStrength.level}`} style={{ width: `${(generatorStrength.score / 4) * 100}%` }} />
+                          </div>
+                          {generatorStrength.score <= 2 && (
+                            <p className="gen-strength-warning">Estimated crack time: {generatorStrength.crackTimeDisplay}</p>
+                          )}
                         </div>
 
                         <div className="gen-popover-actions">
@@ -577,6 +808,7 @@ export function ItemDetailPane() {
                       </div>
                     )}
                   </div>
+                    )
                 )}
                 </div>
               </div>
@@ -768,6 +1000,7 @@ export function ItemDetailPane() {
             <span>Updated: {draft.updatedAt}</span>
           </div>
 
+          {breachSaveMessage && <p className={breachSaveMuted ? 'muted' : 'password-reuse-warning'}>{breachSaveMessage}</p>}
           {saveError && <p className="password-mismatch-msg">{saveError}</p>}
         </div>
       )}

@@ -25,6 +25,12 @@ export type PushResponse = {
   ownerSource: SyncIdentitySource
 }
 
+export type VaultDeleteResponse = {
+  ok: boolean
+  deleted: boolean
+  ownerSource: SyncIdentitySource
+}
+
 export type RemoteBlobRecord = {
   blobId: string
   vaultId: string
@@ -117,6 +123,7 @@ export type SyncProviderClient = {
   listRemoteVaultsByOwner: () => Promise<ListByOwnerResponse | null>
   pullRemoteSnapshot: (vaultId: string) => Promise<PullResponse | null>
   pushRemoteSnapshot: (file: ArmadilloVaultFile) => Promise<PushResponse | null>
+  deleteRemoteVault?: (vaultId: string) => Promise<VaultDeleteResponse | null>
   putRemoteBlob?: (vaultId: string, blob: RemoteBlobRecord) => Promise<BlobPutResponse | null>
   getRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobGetResponse | null>
   deleteRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobDeleteResponse | null>

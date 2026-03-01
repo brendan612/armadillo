@@ -1,6 +1,7 @@
 import type { SyncProviderClient } from '../syncTypes'
 import {
   convexConfigured,
+  deleteRemoteVault,
   deleteRemoteBlob,
   getCloudAuthStatus,
   getRemoteBlob,
@@ -22,6 +23,7 @@ export const convexProvider: SyncProviderClient = {
   listRemoteVaultsByOwner,
   pullRemoteSnapshot,
   pushRemoteSnapshot,
+  deleteRemoteVault,
   putRemoteBlob,
   getRemoteBlob,
   deleteRemoteBlob,

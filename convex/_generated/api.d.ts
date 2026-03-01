@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as entitlements from "../entitlements.js";
 import type * as http from "../http.js";
 import type * as sync from "../sync.js";
 
@@ -20,6 +21,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  entitlements: typeof entitlements;
   http: typeof http;
   sync: typeof sync;
 }>;

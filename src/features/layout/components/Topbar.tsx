@@ -39,6 +39,25 @@ export function Topbar() {
     }
   }, [showEntryTypeMenu])
 
+  useEffect(() => {
+    function onLockShortcut(event: KeyboardEvent) {
+      if ((!event.ctrlKey && !event.metaKey) || event.key.toLowerCase() !== 'x') return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      const isTypingTarget = Boolean(
+        target?.isContentEditable
+        || tag === 'input'
+        || tag === 'textarea'
+        || tag === 'select',
+      )
+      if (isTypingTarget) return
+      event.preventDefault()
+      lockVault()
+    }
+    window.addEventListener('keydown', onLockShortcut)
+    return () => window.removeEventListener('keydown', onLockShortcut)
+  }, [lockVault])
+
   function handleQuickCreate(type: (typeof QUICK_ENTRY_TYPES)[number]['key']) {
     createEntry(type)
     setShowEntryTypeMenu(false)

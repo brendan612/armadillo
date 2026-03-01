@@ -67,7 +67,8 @@ Output:
 
 Signing:
 
-- Set `CSC_LINK` and `CSC_KEY_PASSWORD` for signed release artifacts.
+- Use `npm run dist:win:signed` for signed release artifacts.
+- Set `CSC_LINK` and `CSC_KEY_PASSWORD` before running the signed build.
 - Validate signing env locally with:
 
 ```bash
@@ -143,6 +144,24 @@ ENTITLEMENT_DEV_PRIVATE_JWK='<private-jwk-json>' npm run entitlement:sign -- --t
 ```
 
 Manual signed token input is kept as a break-glass/admin path in settings.
+
+Per-account entitlement override (Convex):
+
+1. Set `ENTITLEMENT_ADMIN_SECRET` on your Convex deployment.
+2. Generate a signed token with desired tier/capabilities/flags.
+3. Upsert an override for the target account using one of `userId`, `tokenIdentifier`, `subject`, or `email`.
+
+```bash
+npx convex run entitlements:upsertOverride \
+  '{"adminSecret":"<secret>","targetType":"userId","targetValue":"<convex-user-id>","token":"<signed-jwt>","note":"manual premium grant"}'
+```
+
+Remove override:
+
+```bash
+npx convex run entitlements:clearOverride \
+  '{"adminSecret":"<secret>","targetType":"userId","targetValue":"<convex-user-id>"}'
+```
 
 ## Device Update Channels
 

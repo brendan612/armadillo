@@ -4,6 +4,21 @@ import { authTables } from '@convex-dev/auth/server'
 
 export default defineSchema({
   ...authTables,
+  entitlementOverrides: defineTable({
+    targetType: v.union(
+      v.literal('userId'),
+      v.literal('tokenIdentifier'),
+      v.literal('subject'),
+      v.literal('email'),
+    ),
+    targetValue: v.string(),
+    token: v.string(),
+    note: v.optional(v.string()),
+    updatedAt: v.string(),
+    updatedBy: v.string(),
+  })
+    .index('by_target', ['targetType', 'targetValue'])
+    .index('by_updated_at', ['updatedAt']),
   vaultSnapshots: defineTable({
     ownerId: v.string(),
     vaultId: v.string(),

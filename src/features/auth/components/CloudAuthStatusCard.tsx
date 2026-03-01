@@ -7,7 +7,9 @@ export function CloudAuthStatusCard() {
   const { cloudAuthState, syncProvider, cloudSyncEnabled } = useVaultAppState()
   const { signInWithGoogle, signOutCloud } = useVaultAppActions()
   const cloudSyncAllowed = hasCapability('cloud.sync') && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
-  const showSignIn = cloudSyncEnabled && cloudSyncAllowed
+  const showSignIn = syncProvider === 'convex'
+    ? true
+    : cloudSyncEnabled && cloudSyncAllowed
 
   return (
     <section className="auth-status-card">

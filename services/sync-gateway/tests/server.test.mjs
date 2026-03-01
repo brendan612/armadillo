@@ -197,3 +197,69 @@ test('v2 blob put/get/delete round-trip', async (t) => {
   assert.equal(del.ok, true)
   assert.equal(del.deleted, true)
 })
+
+test('v2 delete vault removes snapshot', async (t) => {
+  const server = spawnServer()
+  t.after(async () => {
+    await server.cleanup()
+  })
+
+  await waitForReady(server.baseUrl)
+
+  const vaultId = 'vault-delete-test'
+  const snapshot = {
+    format: 'armadillo-v1',
+    vaultId,
+    revision: 1,
+    updatedAt: new Date().toISOString(),
+    kdf: {
+      algorithm: 'ARGON2ID',
+      iterations: 3,
+      memoryKiB: 65536,
+      parallelism: 1,
+      salt: 'c2FsdA==',
+    },
+    wrappedVaultKey: {
+      nonce: 'bm9uY2U=',
+      ciphertext: 'Y2lwaGVy',
+    },
+    vaultData: {
+      nonce: 'bm9uY2U=',
+      ciphertext: 'Y2lwaGVy',
+    },
+  }
+
+  await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/push`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-armadillo-owner': 'test-device',
+    },
+    body: JSON.stringify({
+      revision: snapshot.revision,
+      encryptedFile: JSON.stringify(snapshot),
+      updatedAt: snapshot.updatedAt,
+    }),
+  }).then((res) => res.json())
+
+  const deleted = await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}`, {
+    method: 'DELETE',
+    headers: {
+      'x-armadillo-owner': 'test-device',
+    },
+  }).then((res) => res.json())
+
+  assert.equal(deleted.ok, true)
+  assert.equal(deleted.deleted, true)
+
+  const pulled = await fetch(`${server.baseUrl}/v2/vaults/${encodeURIComponent(vaultId)}/pull`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-armadillo-owner': 'test-device',
+    },
+    body: '{}',
+  }).then((res) => res.json())
+
+  assert.equal(pulled.snapshot, null)
+})

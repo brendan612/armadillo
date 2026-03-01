@@ -8,6 +8,14 @@ import type { ThemeEditableTokenKey, VaultThemeSettings } from '../../../types/v
 import type { CapabilityKey, DevFlagOverride, PlanTier } from '../../../types/entitlements'
 import { ALL_CAPABILITIES, DEFAULT_ROLLOUT_FLAGS } from '../../../features/flags/registry'
 import { GoogleSignInButton } from '../../auth/components/GoogleSignInButton'
+import {
+  Download, Upload, FolderTree as FolderTreeIcon, HardDrive, Trash2, Save, Clock, ArchiveRestore,
+  Palette, User, LogOut, KeyRound, Package, RefreshCw, ExternalLink, Database, Cloud, CloudUpload,
+  ShieldAlert, ShieldCheck, Search, LifeBuoy, RotateCcw, ShieldOff, Smartphone, AlertTriangle, ServerCrash,
+} from 'lucide-react'
+import armadilloLogo from '../../../assets/armadillo.png'
+import googleLogo from '../../../assets/other providers/google.png'
+import lastpassLogo from '../../../assets/other providers/lastpass.png'
 
 const THEME_TOKEN_LABELS: Record<ThemeEditableTokenKey, string> = {
   accent: 'Accent',
@@ -34,6 +42,7 @@ const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   'cloud.cloud_only': 'Cloud-Only Storage',
   'vault.storage': 'Storage Vault',
   'vault.storage.blobs': 'Storage Blob Sync',
+  'security.breach_scan': 'Compromised Password Scan',
   'enterprise.self_hosted': 'Self-Hosted Sync',
   'enterprise.org_admin': 'Org Admin',
 }
@@ -101,6 +110,11 @@ function formatDateTime(value: string | null) {
   return new Date(parsed).toLocaleString()
 }
 
+function vaultFileLabel(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path
+}
+
 export function SettingsPage() {
   const {
     showSettings,
@@ -123,6 +137,9 @@ export function SettingsPage() {
     themeSettings,
     themeSettingsDirty,
     cloudIdentity,
+    localVaultPath,
+    recentLocalVaultPaths,
+    recentLocalVaultPathStatuses,
     entitlementState,
     effectiveTier,
     entitlementStatusMessage,
@@ -138,7 +155,11 @@ export function SettingsPage() {
     autoFolderError,
     autoFolderPreferencesDirty,
     autoFolderWarnings,
+    breachScanRunning,
+    breachScanProgress,
+    breachScanSummary,
     isOrgMember,
+    trash,
   } = useVaultAppState()
   const { cloudConnected, hasCapability } = useVaultAppDerived()
   const {
@@ -151,6 +172,8 @@ export function SettingsPage() {
     setStorageMode,
     setCloudCacheTtlHours,
     pushVaultToCloudNow,
+    setBreachCheckEnabled,
+    runBreachScanAll,
     refreshEntitlements,
     checkForAppUpdates,
     applyManualEntitlementToken,
@@ -168,6 +191,7 @@ export function SettingsPage() {
     triggerImport,
     triggerBackupImport,
     triggerGooglePasswordImport,
+    triggerLastPassImport,
     triggerKeePassImport,
     previewAutoFoldering,
     cancelAutoFolderingPreview,
@@ -177,6 +201,8 @@ export function SettingsPage() {
     lockAutoFolderPath,
     saveAutoFolderPreferences,
     chooseLocalVaultLocation,
+    selectRecentLocalVaultPath,
+    lockVault,
     setVaultSettings,
     selectThemePreset,
     updateThemeTokenOverride,
@@ -196,6 +222,8 @@ export function SettingsPage() {
   const [autoFolderSearch, setAutoFolderSearch] = useState('')
   const [themePresetName, setThemePresetName] = useState('')
   const [showThemeCustomizer, setShowThemeCustomizer] = useState(false)
+  const [showImportWizard, setShowImportWizard] = useState(false)
+  const [switchVaultPath, setSwitchVaultPath] = useState('')
   const [manualTokenInput, setManualTokenInput] = useState('')
   const [manualTokenBusy, setManualTokenBusy] = useState(false)
   const [devTier, setDevTier] = useState<PlanTier | ''>(devFlagOverrideState?.tier ?? '')
@@ -316,8 +344,11 @@ export function SettingsPage() {
   const previewPlan = autoFolderPreviewDraft ?? autoFolderPreview
   const cloudSyncLocked = !hasCapability('cloud.sync')
   const cloudOnlyLocked = !hasCapability('cloud.cloud_only')
+  const breachScanLocked = !hasCapability('security.breach_scan')
   const selfHostedLocked = syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')
-  const showCloudSignIn = cloudSyncEnabled && !cloudSyncLocked && !selfHostedLocked
+  const showCloudSignIn = syncProvider === 'convex'
+    ? true
+    : cloudSyncEnabled && !cloudSyncLocked && !selfHostedLocked
   const upgradeDisabled = !billingUrl
   const resolvedThemeTokens = useMemo(() => resolveThemeTokens(themeSettings), [themeSettings])
   const selectedCustomPreset = themeSettings.customPresets.find((preset) => preset.id === themeSettings.selectedPresetId) ?? null
@@ -355,6 +386,69 @@ export function SettingsPage() {
         : 'Unavailable'
   const releaseNotesUrl = (updateCheckResult.releaseNotesUrl || '').trim()
   const installUrl = (updateCheckResult.installUrl || '').trim()
+  const canSwitchLocalVault = storageMode === 'local_file' && recentLocalVaultPaths.length > 1
+  const resolvedSwitchVaultPath = switchVaultPath.trim() || localVaultPath || recentLocalVaultPaths[0]?.path || ''
+  const isSwitchTargetActive = resolvedSwitchVaultPath.trim() === localVaultPath.trim()
+  const switchTargetStatus = recentLocalVaultPathStatuses[resolvedSwitchVaultPath] ?? 'unknown'
+  const importProviderOptions = [
+    {
+      id: 'armadillo',
+      label: '.armadillo File',
+      meta: 'Native vault export',
+      logo: armadilloLogo,
+      initials: 'AR',
+      onClick: triggerImport,
+    },
+    {
+      id: 'backup',
+      label: 'Full Backup (.zip)',
+      meta: 'Vault + storage blobs',
+      logo: null,
+      initials: 'ZIP',
+      onClick: triggerBackupImport,
+    },
+    {
+      id: 'google',
+      label: 'Google Passwords',
+      meta: 'CSV export',
+      logo: googleLogo,
+      initials: 'G',
+      onClick: triggerGooglePasswordImport,
+    },
+    {
+      id: 'lastpass',
+      label: 'LastPass',
+      meta: 'CSV export',
+      logo: lastpassLogo,
+      initials: 'LP',
+      onClick: triggerLastPassImport,
+    },
+    {
+      id: 'keepass',
+      label: 'KeePass',
+      meta: 'CSV or XML export',
+      logo: null,
+      initials: 'KP',
+      onClick: triggerKeePassImport,
+    },
+  ] as const
+
+  useEffect(() => {
+    if (!isVault) {
+      setShowImportWizard(false)
+    }
+  }, [isVault])
+
+  useEffect(() => {
+    if (!isVault) return
+    if (localVaultPath.trim()) {
+      setSwitchVaultPath(localVaultPath)
+      return
+    }
+    if (recentLocalVaultPaths[0]?.path) {
+      setSwitchVaultPath(recentLocalVaultPaths[0].path)
+    }
+  }, [isVault, localVaultPath, recentLocalVaultPaths])
 
   if (!showSettings) return null
 
@@ -405,14 +499,13 @@ export function SettingsPage() {
         <div className="settings-body settings-page-content">
           <section className="settings-section" hidden={!isGeneral}>
             <h3>Appearance</h3>
-            <div className="settings-action-list">
-              <button
-                className={showThemeCustomizer ? 'solid' : 'ghost'}
-                onClick={() => setShowThemeCustomizer((current) => !current)}
-              >
-                {showThemeCustomizer ? 'Hide Appearance Customization' : `Customize Appearance (${selectedThemeLabel})`}
-              </button>
-            </div>
+            <button
+              className={`vault-action-btn ${showThemeCustomizer ? 'solid' : 'ghost'}`}
+              onClick={() => setShowThemeCustomizer((current) => !current)}
+            >
+              <Palette size={15} />
+              {showThemeCustomizer ? 'Hide Appearance' : `Customize (${selectedThemeLabel})`}
+            </button>
 
             {showThemeCustomizer && (
               <>
@@ -577,19 +670,24 @@ export function SettingsPage() {
                       Save as Preset
                     </button>
                   </div>
-                  <div className="settings-action-list">
+                  <div className="vault-btn-row" style={{ flexWrap: 'wrap' }}>
                     {selectedCustomPreset && (
-                      <button className="ghost" onClick={() => deleteThemePreset(selectedCustomPreset.id)}>
+                      <button className="vault-action-btn ghost" onClick={() => deleteThemePreset(selectedCustomPreset.id)}>
+                        <Trash2 size={14} />
                         Delete Preset ({selectedCustomPreset.name})
                       </button>
                     )}
-                    <button className="ghost" onClick={resetThemeOverrides}>Reset to Base Theme</button>
+                    <button className="vault-action-btn ghost" onClick={resetThemeOverrides}>
+                      <RotateCcw size={14} />
+                      Reset to Base
+                    </button>
                     <button
-                      className={themeSettingsDirty ? 'solid' : 'ghost'}
+                      className={`vault-action-btn ${themeSettingsDirty ? 'solid' : 'ghost'}`}
                       disabled={!themeSettingsDirty}
                       onClick={() => void persistThemeSettings()}
                     >
-                      Save Theme Settings
+                      <Save size={14} />
+                      Save Theme
                     </button>
                   </div>
                   {themeSettingsDirty && (
@@ -605,264 +703,476 @@ export function SettingsPage() {
           <div className="settings-divider" hidden={!isGeneral} />
 
           <section className="settings-section" hidden={!isGeneral}>
-            <h3>Account</h3>
-            <div className="settings-identity">
-              <span className={`dot-status ${cloudConnected ? 'connected' : 'disconnected'}`} />
-              <span>{cloudConnected ? cloudIdentity || 'Google connected' : 'Not signed in'}</span>
-            </div>
-            <div className="settings-action-list">
-              {!cloudConnected ? (
-                showCloudSignIn ? (
-                  syncProvider === 'self_hosted' ? (
-                    <button
-                      className="ghost"
-                      onClick={() => void signInWithGoogle()}
-                      disabled={cloudAuthState === 'checking'}
-                    >
-                      {cloudAuthState === 'checking' ? 'Checking Session...' : 'Authenticate'}
-                    </button>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <User size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Account</h3>
+                  <p className="muted">{cloudConnected ? cloudIdentity || 'Google connected' : 'Not signed in'}</p>
+                </div>
+                <span className={`feature-dot ${cloudConnected ? 'connected' : 'disconnected'}`} />
+              </div>
+              <div className="settings-feature-body">
+                <div className="vault-btn-row">
+                  {!cloudConnected ? (
+                    showCloudSignIn ? (
+                      syncProvider === 'self_hosted' ? (
+                        <button
+                          className="vault-action-btn ghost"
+                          onClick={() => void signInWithGoogle()}
+                          disabled={cloudAuthState === 'checking'}
+                        >
+                          <KeyRound size={15} />
+                          {cloudAuthState === 'checking' ? 'Checking Session...' : 'Authenticate'}
+                        </button>
+                      ) : (
+                        <GoogleSignInButton
+                          onClick={() => void signInWithGoogle()}
+                          disabled={cloudAuthState === 'checking'}
+                          label={cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
+                        />
+                      )
+                    ) : null
                   ) : (
-                    <GoogleSignInButton
-                      onClick={() => void signInWithGoogle()}
-                      disabled={cloudAuthState === 'checking'}
-                      label={cloudAuthState === 'checking' ? 'Checking Session...' : 'Sign in with Google'}
-                    />
-                  )
-                ) : null
-              ) : (
-                <button className="ghost" onClick={() => void signOutCloud()}>Sign out</button>
-              )}
-              {syncProvider !== 'self_hosted' && (
-                <button className="ghost" onClick={() => void createPasskeyIdentity()}>Bind Cloud Passkey Identity</button>
-              )}
+                    <button className="vault-action-btn ghost" onClick={() => void signOutCloud()}>
+                      <LogOut size={15} />
+                      Sign out
+                    </button>
+                  )}
+                  {syncProvider !== 'self_hosted' && (
+                    <button className="vault-action-btn ghost" onClick={() => void createPasskeyIdentity()}>
+                      <KeyRound size={15} />
+                      Bind Cloud Passkey
+                    </button>
+                  )}
+                </div>
+                {syncProvider === 'self_hosted' && selfHostedLocked && (
+                  <p className="settings-plan-hint muted">Available on Enterprise</p>
+                )}
+              </div>
             </div>
-            {syncProvider === 'self_hosted' && selfHostedLocked && (
-              <p className="settings-plan-hint muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
-                Available on Enterprise
-              </p>
-            )}
           </section>
 
           <div className="settings-divider" hidden={!isGeneral} />
 
           <section className="settings-section" hidden={!isGeneral}>
-            <h3>App & Updates</h3>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Channel: {appBuildInfo.channel}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Build: {appBuildInfo.version} ({appBuildInfo.commit.slice(0, 8)})
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Built at: {formatDateTime(appBuildInfo.builtAt)}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Policy: {updateCheckResult.policy}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Status: {updateStatusLabel}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Latest: {updateCheckResult.latestVersion ?? 'n/a'}
-            </p>
-            <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-              Minimum supported: {updateCheckResult.minimumSupportedVersion ?? 'n/a'}
-            </p>
-            {updateCheckResult.forceBy && (
-              <p className="muted" style={{ marginTop: 0, marginBottom: '0.35rem' }}>
-                Force by: {formatDateTime(updateCheckResult.forceBy)}
-              </p>
-            )}
-            <p className="muted" style={{ marginTop: 0 }}>
-              {updateCheckResult.message}
-            </p>
-            <div className="settings-action-list">
-              <button className="ghost" onClick={() => void checkForAppUpdates()} disabled={isCheckingForUpdates}>
-                {isCheckingForUpdates ? 'Checking...' : 'Check for Updates'}
-              </button>
-              <button className="ghost" onClick={() => openExternalUrl(releaseNotesUrl)} disabled={!releaseNotesUrl}>
-                Open Release Notes
-              </button>
-              <button className="ghost" onClick={() => openExternalUrl(installUrl)} disabled={!installUrl}>
-                Open Install Link
-              </button>
-            </div>
-          </section>
-
-          <section className="settings-section" hidden={!isCloud}>
-            <h3>Storage Mode</h3>
-            <div className="settings-toggle-row">
-              <span>Vault Persistence</span>
-              <div className="settings-action-list">
-                <button
-                  className={storageMode === 'local_file' ? 'solid' : 'ghost'}
-                  onClick={() => setStorageMode('local_file')}
-                >
-                  Local File
-                </button>
-                <button
-                  className={storageMode === 'cloud_only' ? 'solid' : 'ghost'}
-                  disabled={cloudOnlyLocked || selfHostedLocked}
-                  onClick={() => setStorageMode('cloud_only')}
-                >
-                  Cloud Only
-                </button>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-muted">
+                  <Package size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>App & Updates</h3>
+                  <p className="muted">{appBuildInfo.version} ({appBuildInfo.commit.slice(0, 8)}) &middot; {updateStatusLabel}</p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <dl className="settings-build-grid">
+                  <dt>Channel</dt><dd>{appBuildInfo.channel}</dd>
+                  <dt>Built</dt><dd>{formatDateTime(appBuildInfo.builtAt)}</dd>
+                  <dt>Policy</dt><dd>{updateCheckResult.policy}</dd>
+                  <dt>Latest</dt><dd>{updateCheckResult.latestVersion ?? 'n/a'}</dd>
+                  <dt>Min supported</dt><dd>{updateCheckResult.minimumSupportedVersion ?? 'n/a'}</dd>
+                  {updateCheckResult.forceBy && (<><dt>Force by</dt><dd>{formatDateTime(updateCheckResult.forceBy)}</dd></>)}
+                </dl>
+                {updateCheckResult.message && (
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>{updateCheckResult.message}</p>
+                )}
+                <div className="vault-btn-row">
+                  <button className="vault-action-btn ghost" onClick={() => void checkForAppUpdates()} disabled={isCheckingForUpdates}>
+                    <RefreshCw size={15} />
+                    {isCheckingForUpdates ? 'Checking...' : 'Check for Updates'}
+                  </button>
+                  <button className="vault-action-btn ghost" onClick={() => openExternalUrl(releaseNotesUrl)} disabled={!releaseNotesUrl}>
+                    <ExternalLink size={15} />
+                    Release Notes
+                  </button>
+                  <button className="vault-action-btn ghost" onClick={() => openExternalUrl(installUrl)} disabled={!installUrl}>
+                    <ExternalLink size={15} />
+                    Install Link
+                  </button>
+                </div>
               </div>
             </div>
-            {(cloudOnlyLocked || selfHostedLocked) && (
-              <p className="settings-plan-hint muted" style={{ marginTop: '0.45rem' }}>
-                Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}
-              </p>
-            )}
-            <label>
-              Cloud Cache TTL (hours)
-              <input
-                type="number"
-                min={1}
-                max={720}
-                value={cloudCacheTtlHours}
-                onChange={(event) => setCloudCacheTtlHours(Math.max(1, Math.min(720, Math.round(Number(event.target.value) || 72))))}
-              />
-            </label>
-            <p className="muted" style={{ marginBottom: 0 }}>
-              {cloudCacheExpiresAt
-                ? `Cache expires ${new Date(cloudCacheExpiresAt).toLocaleString()}`
-                : 'No encrypted cache currently stored'}
-            </p>
           </section>
 
-          <div className="settings-divider" hidden={!isCloud} />
+          <section className="settings-section" hidden={!isCloud}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <Database size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Storage Mode</h3>
+                  <p className="muted">{storageMode === 'local_file' ? 'Using local encrypted file' : 'Cloud-only encrypted storage'}</p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <div className="settings-toggle-row">
+                  <span>Vault Persistence</span>
+                  <div className="vault-btn-row">
+                    <button
+                      className={`vault-action-btn ${storageMode === 'local_file' ? 'solid' : 'ghost'}`}
+                      onClick={() => setStorageMode('local_file')}
+                    >
+                      <HardDrive size={14} />
+                      Local File
+                    </button>
+                    <button
+                      className={`vault-action-btn ${storageMode === 'cloud_only' ? 'solid' : 'ghost'}`}
+                      disabled={cloudOnlyLocked || selfHostedLocked}
+                      onClick={() => setStorageMode('cloud_only')}
+                    >
+                      <Cloud size={14} />
+                      Cloud Only
+                    </button>
+                  </div>
+                </div>
+                {(cloudOnlyLocked || selfHostedLocked) && (
+                  <p className="settings-plan-hint muted">Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}</p>
+                )}
+                <label className="settings-inline-label">
+                  <Clock size={14} />
+                  <span>Cache TTL</span>
+                  <input
+                    className="trash-retention-input"
+                    type="number"
+                    min={1}
+                    max={720}
+                    inputMode="numeric"
+                    value={cloudCacheTtlHours}
+                    onChange={(event) => setCloudCacheTtlHours(Math.max(1, Math.min(720, Math.round(Number(event.target.value) || 72))))}
+                  />
+                  <span className="trash-retention-unit">hours</span>
+                </label>
+                <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                  {cloudCacheExpiresAt
+                    ? `Cache expires ${new Date(cloudCacheExpiresAt).toLocaleString()}`
+                    : 'No encrypted cache currently stored'}
+                </p>
+              </div>
+            </div>
+          </section>
 
           <section className="settings-section" hidden={!isCloud}>
-            <h3>Cloud Sync</h3>
-            <p className="muted" style={{ marginTop: 0 }}>
-              Provider: {syncProvider === 'self_hosted' ? 'Self-hosted' : 'Convex'}
-            </p>
-            {(cloudSyncLocked || selfHostedLocked) && (
-              <p className="settings-plan-hint muted" style={{ marginTop: 0 }}>
-                Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}
-              </p>
-            )}
-            <div className="settings-toggle-row">
-              <span>Auto Sync</span>
-              <button
-                className={cloudSyncEnabled ? 'solid' : 'ghost'}
-                onClick={() => setCloudSyncEnabled((v) => !v)}
-                disabled={cloudSyncLocked || selfHostedLocked}
-              >
-                {cloudSyncEnabled ? 'On' : 'Off'}
-              </button>
-            </div>
-            <div className="settings-action-list">
-              <button
-                className="ghost"
-                onClick={() => void pushVaultToCloudNow()}
-                disabled={cloudSyncLocked || selfHostedLocked}
-              >
-                Push Vault to Cloud Now
-              </button>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <Cloud size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Cloud Sync</h3>
+                  <p className="muted">Provider: {syncProvider === 'self_hosted' ? 'Self-hosted' : 'Convex'}</p>
+                </div>
+                <span className={`feature-dot ${cloudSyncEnabled && !cloudSyncLocked ? 'connected' : 'disconnected'}`} />
+              </div>
+              <div className="settings-feature-body">
+                {(cloudSyncLocked || selfHostedLocked) && (
+                  <p className="settings-plan-hint muted">Available on {selfHostedLocked ? 'Enterprise' : 'Premium'}</p>
+                )}
+                <div className="settings-toggle-row">
+                  <span>Auto Sync</span>
+                  <button
+                    className={cloudSyncEnabled ? 'solid' : 'ghost'}
+                    onClick={() => setCloudSyncEnabled((v) => !v)}
+                    disabled={cloudSyncLocked || selfHostedLocked}
+                  >
+                    {cloudSyncEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <button
+                  className="vault-action-btn ghost"
+                  onClick={() => void pushVaultToCloudNow()}
+                  disabled={cloudSyncLocked || selfHostedLocked}
+                >
+                  <CloudUpload size={15} />
+                  Push Vault to Cloud Now
+                </button>
+              </div>
             </div>
           </section>
 
           <section className="settings-section" hidden={!isSecurity}>
-            <h3>Security</h3>
-            <div className="settings-action-list">
-              {quickUnlockCapabilities.supported ? (
-                <button className={quickUnlockEnabled ? 'solid' : 'ghost'} onClick={() => void enableQuickUnlock()}>
-                  {quickUnlockCapabilities.method === 'android-native'
-                    ? (quickUnlockEnabled ? 'Biometric Enabled' : 'Enable Biometric')
-                    : (quickUnlockEnabled ? 'Passkey Enabled' : quickUnlockCapabilities.enrollmentLabel)}
-                </button>
-              ) : (
-                <p className="muted" style={{ margin: 0 }}>
-                  {quickUnlockCapabilities.unavailableReason || 'Passkey quick unlock is not supported on this device/browser.'}
-                </p>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-safe">
+                  <KeyRound size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Quick Unlock</h3>
+                  <p className="muted">
+                    {quickUnlockCapabilities.supported
+                      ? (quickUnlockEnabled
+                        ? (quickUnlockCapabilities.method === 'android-native' ? 'Biometric unlock enabled' : 'Passkey unlock enabled')
+                        : 'Set up fast unlock for this device')
+                      : (quickUnlockCapabilities.unavailableReason || 'Not supported on this device')}
+                  </p>
+                </div>
+                {quickUnlockCapabilities.supported && (
+                  <span className={`feature-dot ${quickUnlockEnabled ? 'connected' : 'disconnected'}`} />
+                )}
+              </div>
+              {quickUnlockCapabilities.supported && (
+                <div className="settings-feature-body">
+                  <button
+                    className={`vault-action-btn ${quickUnlockEnabled ? 'solid' : 'ghost'}`}
+                    onClick={() => void enableQuickUnlock()}
+                  >
+                    <KeyRound size={15} />
+                    {quickUnlockCapabilities.method === 'android-native'
+                      ? (quickUnlockEnabled ? 'Biometric Enabled' : 'Enable Biometric')
+                      : (quickUnlockEnabled ? 'Passkey Enabled' : quickUnlockCapabilities.enrollmentLabel)}
+                  </button>
+                  {(syncMessage.toLowerCase().includes('biometric') || syncMessage.toLowerCase().includes('passkey') || syncMessage.toLowerCase().includes('quick unlock')) && (
+                    <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>{syncMessage}</p>
+                  )}
+                </div>
               )}
             </div>
-            <div className="settings-divider" />
-            <div className="settings-identity">
-              <span className={`dot-status ${recoveryKitEnabled ? 'connected' : 'disconnected'}`} />
-              <span>
-                {recoveryKitEnabled
-                  ? `Recovery Kit enabled (${recoveryKeyFingerprintSuffix || 'fingerprint unavailable'})`
-                  : 'Recovery Kit not enabled'}
-              </span>
-            </div>
-            <p className="muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
-              Enabled: {formatDateTime(recoveryEnabledAt)}{recoveryRotatedAt ? ` · Rotated: ${formatDateTime(recoveryRotatedAt)}` : ''}
-            </p>
-            <div className="settings-action-list" style={{ marginTop: '0.6rem' }}>
-              {!recoveryKitEnabled ? (
-                <button className="ghost" onClick={() => void enableRecoveryKit()}>
-                  Enable Recovery Kit
-                </button>
-              ) : (
-                <>
-                  <button className="ghost" onClick={() => void rotateRecoveryKit()}>
-                    Rotate Recovery Key
-                  </button>
-                  <button className="ghost" onClick={() => void disableRecoveryKit()}>
-                    Disable Recovery Kit
-                  </button>
-                </>
-              )}
-            </div>
-            {recoveryKeyDisplay && (
-              <div className="settings-card" style={{ marginTop: '0.6rem' }}>
-                <p style={{ marginTop: 0 }}><strong>Store this recovery key offline now.</strong></p>
-                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '0 0 0.5rem 0' }}>{recoveryKeyDisplay}</pre>
-                <div className="settings-action-list">
-                  <button className="solid" onClick={acknowledgeRecoveryKeyStored}>I Stored This Offline</button>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-warn">
+                  <ShieldAlert size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Compromised Passwords</h3>
+                  <p className="muted">Uses k-anonymity. Only a hash prefix is sent.</p>
                 </div>
               </div>
-            )}
-            {(syncMessage.toLowerCase().includes('biometric') || syncMessage.toLowerCase().includes('passkey') || syncMessage.toLowerCase().includes('quick unlock')) && (
-              <p className="muted" style={{ marginTop: '0.45rem', marginBottom: 0 }}>
-                {syncMessage}
-              </p>
-            )}
+              <div className="settings-feature-body">
+                {breachScanLocked && (
+                  <p className="settings-plan-hint muted">Requires Premium plan</p>
+                )}
+                <div className="settings-toggle-row">
+                  <span>Compromised Password Check</span>
+                  <button
+                    className={vaultSettings.breachCheck?.enabled ? 'solid' : 'ghost'}
+                    onClick={() => void setBreachCheckEnabled(!(vaultSettings.breachCheck?.enabled === true))}
+                    disabled={breachScanLocked || breachScanRunning}
+                  >
+                    {vaultSettings.breachCheck?.enabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <button
+                  className="vault-action-btn ghost"
+                  onClick={() => void runBreachScanAll()}
+                  disabled={breachScanLocked || breachScanRunning}
+                >
+                  <Search size={15} />
+                  {breachScanRunning ? 'Scanning All Entries...' : 'Scan All Entries Now'}
+                </button>
+                {breachScanRunning && (
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                    Progress: {breachScanProgress.done}/{breachScanProgress.total}
+                  </p>
+                )}
+                {breachScanSummary && (
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                    Last scan: {breachScanSummary.compromised} compromised, {breachScanSummary.unavailable} unavailable, {breachScanSummary.scanned} passwords ({formatDateTime(breachScanSummary.finishedAt)})
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <LifeBuoy size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Recovery Kit</h3>
+                  <p className="muted">
+                    {recoveryKitEnabled
+                      ? `Enabled (${recoveryKeyFingerprintSuffix || 'fingerprint unavailable'})`
+                      : 'Not enabled — set up offline recovery'}
+                  </p>
+                </div>
+                <span className={`feature-dot ${recoveryKitEnabled ? 'connected' : 'disconnected'}`} />
+              </div>
+              <div className="settings-feature-body">
+                {(recoveryEnabledAt || recoveryRotatedAt) && (
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                    Enabled: {formatDateTime(recoveryEnabledAt)}{recoveryRotatedAt ? ` · Rotated: ${formatDateTime(recoveryRotatedAt)}` : ''}
+                  </p>
+                )}
+                <div className="vault-btn-row">
+                  {!recoveryKitEnabled ? (
+                    <button className="vault-action-btn ghost" onClick={() => void enableRecoveryKit()}>
+                      <ShieldCheck size={15} />
+                      Enable Recovery Kit
+                    </button>
+                  ) : (
+                    <>
+                      <button className="vault-action-btn ghost" onClick={() => void rotateRecoveryKit()}>
+                        <RotateCcw size={15} />
+                        Rotate Key
+                      </button>
+                      <button className="vault-action-btn ghost" onClick={() => void disableRecoveryKit()}>
+                        <ShieldOff size={15} />
+                        Disable
+                      </button>
+                    </>
+                  )}
+                </div>
+                {recoveryKeyDisplay && (
+                  <div className="settings-recovery-reveal">
+                    <p style={{ margin: '0 0 0.35rem', fontWeight: 600, fontSize: '0.8rem' }}>Store this recovery key offline now.</p>
+                    <pre className="settings-recovery-key">{recoveryKeyDisplay}</pre>
+                    <button className="vault-action-btn solid" onClick={acknowledgeRecoveryKeyStored}>
+                      <Save size={15} />
+                      I Stored This Offline
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </section>
 
           {isNativeAndroid() && autofillSupported && (
-            <>
-              <div className="settings-divider" hidden={!isSecurity} />
-              <section className="settings-section" hidden={!isSecurity}>
-                <h3>Autofill</h3>
-                <div className="settings-identity">
-                  <span className={`dot-status ${autofillEnabled ? 'connected' : 'disconnected'}`} />
-                  <span>{autofillEnabled ? 'Armadillo is your autofill provider' : 'Autofill not enabled'}</span>
+            <section className="settings-section" hidden={!isSecurity}>
+              <div className="settings-feature-card">
+                <div className="settings-feature-head">
+                  <div className="settings-feature-icon tint-safe">
+                    <Smartphone size={18} />
+                  </div>
+                  <div className="settings-feature-title">
+                    <h3>Autofill</h3>
+                    <p className="muted">{autofillEnabled ? 'Armadillo is your autofill provider' : 'Autofill not enabled'}</p>
+                  </div>
+                  <span className={`feature-dot ${autofillEnabled ? 'connected' : 'disconnected'}`} />
                 </div>
-                <div className="settings-action-list">
+                <div className="settings-feature-body">
                   <button
-                    className={autofillEnabled ? 'solid' : 'ghost'}
+                    className={`vault-action-btn ${autofillEnabled ? 'solid' : 'ghost'}`}
                     onClick={() => {
                       void AutofillBridge.openAutofillSettings().then(() => {
                         setTimeout(checkAutofillStatus, 1000)
                       })
                     }}
                   >
+                    <Smartphone size={15} />
                     {autofillEnabled ? 'Autofill Settings' : 'Enable Autofill'}
                   </button>
                 </div>
-              </section>
-            </>
+              </div>
+            </section>
           )}
 
           <section className="settings-section" hidden={!isVault}>
             <h3>Vault</h3>
-            <div className="settings-action-list">
-              <button className="ghost" onClick={exportVaultFile}>Export .armadillo</button>
-              <button className="ghost" onClick={() => void exportVaultBackupBundle()}>Export Full Backup (.zip)</button>
-              <button className="ghost" onClick={triggerImport}>Import .armadillo</button>
-              <button className="ghost" onClick={triggerBackupImport}>Import Full Backup (.zip)</button>
-              <button className="ghost" onClick={triggerGooglePasswordImport}>Import Google Passwords (.csv)</button>
-              <button className="ghost" onClick={triggerKeePassImport}>Import KeePass Export (.xml/.csv)</button>
-              <button className="ghost" onClick={() => void previewAutoFoldering()} disabled={autoFolderBusy}>
-                {autoFolderBusy ? 'Building Auto-Folder Plan...' : 'Auto-Folder Unfiled Items'}
-              </button>
-              {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
-                <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>Choose Vault Location</button>
-              )}
+            <div className="vault-settings-grid">
+              <div className="settings-vault-group">
+                <p className="settings-vault-group-title">Import & Export</p>
+                <div className="vault-btn-row">
+                  <button className="vault-action-btn ghost" onClick={exportVaultFile}>
+                    <Download size={15} />
+                    Export Vault File
+                  </button>
+                  <button className="vault-action-btn ghost" onClick={() => void exportVaultBackupBundle()}>
+                    <ArchiveRestore size={15} />
+                    Export Full Backup
+                  </button>
+                </div>
+                <p className="muted settings-io-note">
+                  Export requires master-password confirmation each time.
+                </p>
+                <button
+                  className={`vault-action-btn ${showImportWizard ? 'solid' : 'ghost'}`}
+                  onClick={() => setShowImportWizard((current) => !current)}
+                >
+                  <Upload size={15} />
+                  {showImportWizard ? 'Close Import Wizard' : 'Open Import Wizard'}
+                </button>
+                {showImportWizard && (
+                  <div className="import-wizard-card">
+                    <div className="import-wizard-head">
+                      <strong>Import Wizard</strong>
+                      <span>Choose your source</span>
+                    </div>
+                    <div className="import-provider-grid">
+                      {importProviderOptions.map((provider) => (
+                        <button
+                          key={provider.id}
+                          className="import-provider-tile"
+                          onClick={() => {
+                            provider.onClick()
+                            setShowImportWizard(false)
+                          }}
+                        >
+                          {provider.logo ? (
+                            <img src={provider.logo} alt={`${provider.label} logo`} className="import-provider-logo" />
+                          ) : (
+                            <span className="import-provider-fallback">{provider.initials}</span>
+                          )}
+                          <span className="import-provider-text">
+                            <strong>{provider.label}</strong>
+                            <small>{provider.meta}</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="settings-vault-group">
+                <p className="settings-vault-group-title">Vault Management</p>
+                <div className="vault-btn-row">
+                  <button className="vault-action-btn ghost" onClick={() => void previewAutoFoldering()} disabled={autoFolderBusy}>
+                    <FolderTreeIcon size={15} />
+                    {autoFolderBusy ? 'Building Plan...' : 'Auto-Folder Unfiled'}
+                  </button>
+                  {window.armadilloShell?.isElectron && storageMode === 'local_file' && (
+                    <button className="vault-action-btn ghost" onClick={() => void chooseLocalVaultLocation()}>
+                      <HardDrive size={15} />
+                      Vault Location
+                    </button>
+                  )}
+                </div>
+                {canSwitchLocalVault && (
+                  <div className="vault-picker-recent">
+                    <p className="muted settings-io-note" style={{ marginTop: 0 }}>
+                      Switch Local Vault
+                    </p>
+                    <div className="vault-picker-recent-row">
+                      <select
+                        value={resolvedSwitchVaultPath}
+                        onChange={(event) => setSwitchVaultPath(event.target.value)}
+                        aria-label="Local vault switch target"
+                      >
+                        {recentLocalVaultPaths.map((entry) => {
+                          const status = recentLocalVaultPathStatuses[entry.path] ?? 'unknown'
+                          return (
+                            <option key={entry.path} value={entry.path}>
+                              {`${vaultFileLabel(entry.path)} - ${status}`}
+                            </option>
+                          )
+                        })}
+                      </select>
+                      <button
+                        className="vault-action-btn ghost vault-picker-remove"
+                        disabled={!resolvedSwitchVaultPath || isSwitchTargetActive}
+                        onClick={() => {
+                          if (!resolvedSwitchVaultPath || isSwitchTargetActive) return
+                          lockVault()
+                          selectRecentLocalVaultPath(resolvedSwitchVaultPath)
+                        }}
+                      >
+                        Switch
+                      </button>
+                    </div>
+                    <p className="muted settings-io-note" style={{ marginTop: 0 }}>
+                      Selected: {vaultFileLabel(resolvedSwitchVaultPath || 'No vault selected')} ({switchTargetStatus}){localVaultPath ? ` · Active: ${vaultFileLabel(localVaultPath)}` : ''}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
             {showAutoFolderPreview && previewPlan && (
               <div className="auto-folder-preview-card">
@@ -986,33 +1296,63 @@ export function SettingsPage() {
           <div className="settings-divider" hidden={!isVault} />
 
           <section className="settings-section" hidden={!isVault}>
-            <h3>Trash</h3>
-            <label>
-              Retention (days)
-              <input
-                type="number"
-                min={1}
-                max={3650}
-                value={vaultSettings.trashRetentionDays}
-                onChange={(event) => {
-                  const nextDays = getSafeRetentionDays(Number(event.target.value))
-                  setVaultSettings((prev) => ({ ...prev, trashRetentionDays: nextDays }))
-                }}
-              />
-            </label>
-            <div className="settings-action-list">
-              <button
-                className="ghost"
-                onClick={() => void persistPayload({ settings: vaultSettings })}
-              >
-                Save Trash Settings
-              </button>
-              <button
-                className="ghost"
-                onClick={() => void persistPayload({ trash: [] })}
-              >
-                Empty Trash
-              </button>
+            <div className="trash-settings-card">
+              <div className="trash-settings-head">
+                <div className="trash-settings-icon">
+                  <Trash2 size={18} />
+                </div>
+                <div className="trash-settings-title">
+                  <h3>Trash{trash.length > 0 && <span className="trash-count-badge">{trash.length}</span>}</h3>
+                  <p className="muted">
+                    {trash.length === 0
+                      ? 'Trash is empty. Deleted items will appear here.'
+                      : `${trash.length} item${trash.length === 1 ? '' : 's'} in trash. Items are removed after the retention period.`}
+                  </p>
+                </div>
+              </div>
+              <div className="trash-settings-body">
+                <label className="trash-retention-field">
+                  <Clock size={14} />
+                  <span>Retention</span>
+                  <input
+                    className="trash-retention-input"
+                    type="number"
+                    min={1}
+                    max={3650}
+                    inputMode="numeric"
+                    value={vaultSettings.trashRetentionDays}
+                    onChange={(event) => {
+                      const nextDays = getSafeRetentionDays(Number(event.target.value))
+                      setVaultSettings((prev) => ({ ...prev, trashRetentionDays: nextDays }))
+                    }}
+                    onWheel={(event) => {
+                      event.currentTarget.blur()
+                    }}
+                  />
+                  <span className="trash-retention-unit">days</span>
+                </label>
+                <div className="trash-settings-actions">
+                  <button
+                    className="vault-action-btn ghost"
+                    onClick={() => void persistPayload({ settings: vaultSettings })}
+                  >
+                    <Save size={14} />
+                    Save
+                  </button>
+                  <button
+                    className="vault-action-btn ghost trash-empty-btn"
+                    disabled={trash.length === 0}
+                    onClick={() => {
+                      if (window.confirm(`Permanently delete all ${trash.length} item${trash.length === 1 ? '' : 's'} in trash? This cannot be undone.`)) {
+                        void persistPayload({ trash: [] })
+                      }
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    Empty Trash
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -1037,11 +1377,10 @@ export function SettingsPage() {
                       <li>Cloud-only encrypted storage</li>
                       <li>Priority support</li>
                     </ul>
-                    <div className="settings-action-list">
-                      <button className={upgradeDisabled ? 'ghost' : 'solid'} onClick={openBillingUrl} disabled={upgradeDisabled}>
-                        {upgradeDisabled ? 'Upgrade URL Not Configured' : 'Upgrade to Premium'}
-                      </button>
-                    </div>
+                    <button className={`vault-action-btn ${upgradeDisabled ? 'ghost' : 'solid'}`} onClick={openBillingUrl} disabled={upgradeDisabled}>
+                      <ExternalLink size={15} />
+                      {upgradeDisabled ? 'Upgrade URL Not Configured' : 'Upgrade to Premium'}
+                    </button>
                   </div>
                 ) : (
                   <div className="settings-plan-card">
@@ -1064,12 +1403,14 @@ export function SettingsPage() {
                         </p>
                       )}
                     </div>
-                    <div className="settings-action-list">
-                      <button className="ghost" onClick={() => void refreshEntitlements()}>
+                    <div className="vault-btn-row">
+                      <button className="vault-action-btn ghost" onClick={() => void refreshEntitlements()}>
+                        <RefreshCw size={15} />
                         Refresh Entitlements
                       </button>
                       {billingUrl && (
-                        <button className="ghost" onClick={openBillingUrl}>
+                        <button className="vault-action-btn ghost" onClick={openBillingUrl}>
+                          <ExternalLink size={15} />
                           Manage Subscription
                         </button>
                       )}
@@ -1103,11 +1444,13 @@ export function SettingsPage() {
                         rows={4}
                       />
                     </label>
-                    <div className="settings-action-list">
-                      <button className="ghost" onClick={() => void handleApplyManualToken()} disabled={manualTokenBusy}>
+                    <div className="vault-btn-row">
+                      <button className="vault-action-btn ghost" onClick={() => void handleApplyManualToken()} disabled={manualTokenBusy}>
+                        <KeyRound size={15} />
                         {manualTokenBusy ? 'Validating...' : 'Apply Signed Token'}
                       </button>
-                      <button className="ghost" onClick={clearManualEntitlementToken}>
+                      <button className="vault-action-btn ghost" onClick={clearManualEntitlementToken}>
+                        <Trash2 size={15} />
                         Clear Manual Token
                       </button>
                     </div>
@@ -1174,9 +1517,15 @@ export function SettingsPage() {
                       ))}
                     </div>
 
-                    <div className="settings-action-list">
-                      <button className="ghost" onClick={handleApplyDevOverride}>Apply Overrides</button>
-                      <button className="ghost" onClick={clearDevFlagOverrides}>Clear All</button>
+                    <div className="vault-btn-row">
+                      <button className="vault-action-btn ghost" onClick={handleApplyDevOverride}>
+                        <Save size={15} />
+                        Apply Overrides
+                      </button>
+                      <button className="vault-action-btn ghost" onClick={clearDevFlagOverrides}>
+                        <Trash2 size={15} />
+                        Clear All
+                      </button>
                     </div>
                   </>
                 )}
@@ -1185,29 +1534,42 @@ export function SettingsPage() {
           )}
 
           <section className="settings-section" hidden={!isDanger}>
-            <h3>Danger Zone</h3>
-            <div className="settings-action-list">
-              <button
-                className="ghost"
-                onClick={() => {
-                  if (!window.confirm('Empty all vault items, folders, and trash for testing?')) {
-                    return
-                  }
-                  void emptyVaultForTesting()
-                }}
-              >
-                Empty Vault (Testing)
-              </button>
-              <button
-                className="ghost"
-                onClick={() => {
-                  clearLocalVaultFile()
-                  clearCachedVaultSnapshot()
-                  window.location.reload()
-                }}
-              >
-                Reset Local Cache + Vault
-              </button>
+            <div className="settings-feature-card settings-danger-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-danger">
+                  <AlertTriangle size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Danger Zone</h3>
+                  <p className="muted">Destructive actions for testing and recovery. These cannot be undone.</p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <div className="vault-btn-row">
+                  <button
+                    className="vault-action-btn ghost trash-empty-btn"
+                    onClick={() => {
+                      if (!window.confirm('Empty all vault items, folders, and trash for testing?')) return
+                      void emptyVaultForTesting()
+                    }}
+                  >
+                    <ServerCrash size={15} />
+                    Empty Vault (Testing)
+                  </button>
+                  <button
+                    className="vault-action-btn ghost trash-empty-btn"
+                    onClick={() => {
+                      if (!window.confirm('Delete local vault data and cached vault data from this device? This does NOT delete cloud saves. This cannot be undone.')) return
+                      clearLocalVaultFile()
+                      clearCachedVaultSnapshot()
+                      window.location.reload()
+                    }}
+                  >
+                    <AlertTriangle size={15} />
+                    Reset Local Device Data
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
         </div>

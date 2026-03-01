@@ -159,6 +159,33 @@ export const pushByOwnerVault = mutation({
   },
 })
 
+export const deleteByOwnerVault = mutation({
+  args: {
+    ownerId: v.string(),
+    vaultId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query('vaultSnapshots')
+      .withIndex('by_owner_vault', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+      .unique()
+
+    if (snapshot) {
+      await ctx.db.delete(snapshot._id)
+    }
+
+    const blobs = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_owner_vault_blobs', (q) => q.eq('ownerId', args.ownerId).eq('vaultId', args.vaultId))
+      .collect()
+    for (const blob of blobs) {
+      await ctx.db.delete(blob._id)
+    }
+
+    return { deleted: Boolean(snapshot || blobs.length > 0) }
+  },
+})
+
 export const getBlobByOwnerVault = query({
   args: {
     ownerId: v.string(),

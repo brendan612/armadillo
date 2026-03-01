@@ -13,6 +13,15 @@ function vaultFileLabel(path: string) {
   return parts[parts.length - 1] || path
 }
 
+function vaultFolderLabel(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) return ''
+  const slashIndex = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  if (slashIndex < 0) return trimmed
+  if (slashIndex === 0) return trimmed.slice(0, 1)
+  return trimmed.slice(0, slashIndex)
+}
+
 export function LocalVaultPickerCard() {
   const {
     phase,
@@ -27,6 +36,7 @@ export function LocalVaultPickerCard() {
   const {
     browseExistingLocalVault,
     chooseLocalVaultLocation,
+    deleteVaultFromCloud,
     prepareNamedLocalVault,
     selectRecentLocalVaultPath,
     removeRecentLocalVaultPath,
@@ -36,6 +46,7 @@ export function LocalVaultPickerCard() {
   const hasCloud = cloudVaultCandidates.length > 0
   const [preferredTab, setPreferredTab] = useState<'cloud' | 'local' | null>(null)
   const [selectedCloudSnapshotKey, setSelectedCloudSnapshotKey] = useState('')
+  const [isDeletingCloudVault, setIsDeletingCloudVault] = useState(false)
   const [newVaultName, setNewVaultName] = useState('')
   const activeTab: 'cloud' | 'local' = useMemo(() => {
     if (preferredTab === 'cloud' && hasCloud) return 'cloud'
@@ -57,6 +68,8 @@ export function LocalVaultPickerCard() {
     }
     return selectedLocalVaultStatus
   }, [phase, selectedLocalVaultStatus, localVaultPath])
+  const localVaultFileName = useMemo(() => (localVaultPath ? vaultFileLabel(localVaultPath) : ''), [localVaultPath])
+  const localVaultFolder = useMemo(() => (localVaultPath ? vaultFolderLabel(localVaultPath) : ''), [localVaultPath])
 
   if (!hasLocal && !hasCloud) {
     return null
@@ -95,6 +108,23 @@ export function LocalVaultPickerCard() {
           <p className="muted vault-picker-path" style={{ margin: 0 }} title={localVaultPath}>
             {localVaultPath || 'No vault selected'}
           </p>
+          {phase === 'create' && (
+            <div className="vault-create-destination">
+              <p className="vault-create-destination-label">Save location</p>
+              {localVaultPath ? (
+                <>
+                  <p className="vault-create-destination-file" title={localVaultFileName}>
+                    {localVaultFileName}
+                  </p>
+                  <p className="vault-create-destination-folder" title={localVaultFolder}>
+                    {localVaultFolder}
+                  </p>
+                </>
+              ) : (
+                <p className="vault-create-destination-empty">Pick a location to create your new vault.</p>
+              )}
+            </div>
+          )}
           <div className="vault-picker-actions">
             <button className="ghost" onClick={() => void browseExistingLocalVault()}>Browse</button>
             <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>New Location</button>
@@ -157,7 +187,7 @@ export function LocalVaultPickerCard() {
             <span className="vault-status-pill is-exists">Latest by default</span>
           </div>
           <div className="vault-picker-recent">
-            <div className="vault-picker-recent-row">
+            <div className="vault-picker-cloud-row">
               <select
                 value={selectedCloudSnapshotResolvedKey}
                 onChange={(event) => setSelectedCloudSnapshotKey(event.target.value)}
@@ -180,9 +210,29 @@ export function LocalVaultPickerCard() {
                     loadVaultFromCloud(selectedCloudSnapshot)
                   }
                 }}
-                disabled={!selectedCloudSnapshot}
+                disabled={!selectedCloudSnapshot || isDeletingCloudVault}
               >
                 Load
+              </button>
+              <button
+                className="ghost danger vault-picker-remove"
+                disabled={!selectedCloudSnapshot || isDeletingCloudVault}
+                onClick={() => {
+                  if (!selectedCloudSnapshot || isDeletingCloudVault) {
+                    return
+                  }
+                  const label = localVaultNameById[selectedCloudSnapshot.vaultId] || `Vault ${selectedCloudSnapshot.vaultId.slice(0, 8)}`
+                  const confirmed = window.confirm(
+                    `Delete ${label} from cloud?\n\nThis removes the encrypted cloud copy and its synced files for this vault. Local vault files are not deleted.`,
+                  )
+                  if (!confirmed) {
+                    return
+                  }
+                  setIsDeletingCloudVault(true)
+                  void deleteVaultFromCloud(selectedCloudSnapshot).finally(() => setIsDeletingCloudVault(false))
+                }}
+              >
+                {isDeletingCloudVault ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

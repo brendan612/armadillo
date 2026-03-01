@@ -56,6 +56,69 @@ async function resolveIdentity(
   }
 }
 
+function normalizeOverrideTargetValue(targetType: 'userId' | 'tokenIdentifier' | 'subject' | 'email', value: string) {
+  const trimmed = value.trim()
+  return targetType === 'email' ? trimmed.toLowerCase() : trimmed
+}
+
+type EntitlementOverrideTargetType = 'userId' | 'tokenIdentifier' | 'subject' | 'email'
+type EntitlementOverrideRow = { token?: string } | null
+type EntitlementOverrideEqChain = {
+  eq: (field: 'targetType' | 'targetValue', value: string) => EntitlementOverrideEqChain
+}
+type EntitlementOverrideDb = {
+  query: (table: 'entitlementOverrides') => {
+    withIndex: (
+      indexName: 'by_target',
+      cb: (q: EntitlementOverrideEqChain) => EntitlementOverrideEqChain,
+    ) => {
+      unique: () => Promise<EntitlementOverrideRow>
+    }
+  }
+}
+
+async function findEntitlementOverrideToken(
+  ctx: { db: EntitlementOverrideDb },
+  args: {
+    targetType: EntitlementOverrideTargetType
+    targetValue: string
+  },
+) {
+  const normalized = normalizeOverrideTargetValue(args.targetType, args.targetValue)
+  if (!normalized) return null
+
+  const row = await ctx.db
+    .query('entitlementOverrides')
+    .withIndex('by_target', (q) => q.eq('targetType', args.targetType).eq('targetValue', normalized))
+    .unique()
+  const token = typeof row?.token === 'string' ? row.token.trim() : ''
+  return token || null
+}
+
+async function resolveEntitlementTokenForIdentity(
+  ctx: { db: EntitlementOverrideDb },
+  identity: { subject: string | null; email: string | null; name: string | null; tokenIdentifier: string | null } | null,
+) {
+  if (!identity) return null
+
+  const userIdFromSubject = identity.subject ? identity.subject.split('|')[0] : ''
+  const candidates: Array<{ targetType: EntitlementOverrideTargetType; targetValue: string }> = [
+    { targetType: 'userId', targetValue: userIdFromSubject || '' },
+    { targetType: 'tokenIdentifier', targetValue: identity.tokenIdentifier || '' },
+    { targetType: 'subject', targetValue: identity.subject || '' },
+    { targetType: 'email', targetValue: identity.email || '' },
+  ]
+
+  for (const candidate of candidates) {
+    if (!candidate.targetValue) continue
+    const token = await findEntitlementOverrideToken(ctx, candidate)
+    if (token) {
+      return { token, source: `${candidate.targetType}:${normalizeOverrideTargetValue(candidate.targetType, candidate.targetValue)}` }
+    }
+  }
+  return null
+}
+
 function normalizeOwnerHint(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64)
 }
@@ -266,24 +329,42 @@ http.route({
 http.route({
   path: '/api/v2/entitlements/me',
   method: 'GET',
-  handler: httpAction(async () => {
-    return json(
-      SYNC_ENTITLEMENT_TOKEN
-        ? {
-          ok: true,
-          token: SYNC_ENTITLEMENT_TOKEN,
-          reason: 'Server-issued entitlement token',
-          expiresAt: null,
-          fetchedAt: nowIso(),
-        }
-        : {
+  handler: httpAction(async (ctx) => {
+    try {
+      const identity = await resolveIdentity(ctx)
+      const override = await resolveEntitlementTokenForIdentity(ctx, identity)
+      const token = override?.token || SYNC_ENTITLEMENT_TOKEN
+      const source = override ? `User override (${override.source})` : 'Server-issued entitlement token'
+      return json(
+        token
+          ? {
+            ok: true,
+            token,
+            reason: source,
+            expiresAt: null,
+            fetchedAt: nowIso(),
+          }
+          : {
+            ok: false,
+            token: null,
+            reason: 'No signed entitlement token configured',
+            expiresAt: null,
+            fetchedAt: nowIso(),
+          },
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Entitlement lookup failed'
+      return json(
+        {
           ok: false,
           token: null,
-          reason: 'No signed entitlement token configured',
+          reason: message,
           expiresAt: null,
           fetchedAt: nowIso(),
         },
-    )
+        500,
+      )
+    }
   }),
 })
 
@@ -349,6 +430,12 @@ http.route({
 
 http.route({
   path: '/api/v2/sync/blobs/delete',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/sync/vaults/delete',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
 })
@@ -719,6 +806,31 @@ http.route({
       deleted: result.deleted,
       ownerSource: owner.ownerSource,
       usedBytes: result.usedBytes,
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/sync/vaults/delete',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const owner = await resolveOwner(ctx, request)
+    if (!owner) {
+      return json({ error: 'Owner could not be resolved.' }, 401)
+    }
+    const payload = (await request.json()) as { vaultId?: string }
+    const vaultId = payload.vaultId?.trim() || ''
+    if (!vaultId) {
+      return json({ error: 'vaultId is required' }, 400)
+    }
+    const result = await ctx.runMutation(api.sync.deleteByOwnerVault, {
+      ownerId: owner.ownerId,
+      vaultId,
+    })
+    return json({
+      ok: true,
+      deleted: result.deleted,
+      ownerSource: owner.ownerSource,
     })
   }),
 })

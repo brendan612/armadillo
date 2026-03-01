@@ -5,6 +5,7 @@ export type CapabilityKey =
   | 'cloud.cloud_only'
   | 'vault.storage'
   | 'vault.storage.blobs'
+  | 'security.breach_scan'
   | 'enterprise.self_hosted'
   | 'enterprise.org_admin'
 

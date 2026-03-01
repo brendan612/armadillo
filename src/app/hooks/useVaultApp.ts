@@ -6,6 +6,7 @@ import { App as CapacitorApp } from '@capacitor/app'
 import { Browser } from '@capacitor/browser'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
+  deleteRemoteVault,
   deleteRemoteBlob,
   fetchEntitlementToken,
   getCloudAuthStatus,
@@ -30,6 +31,7 @@ import {
 } from '../../lib/biometric'
 import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
 import { parseGooglePasswordCsv } from '../../shared/utils/googlePasswordCsv'
+import { parseLastPassCsv } from '../../shared/utils/lastPassCsv'
 import { parseKeePassCsv } from '../../shared/utils/keePassCsv'
 import { parseKeePassXml } from '../../shared/utils/keePassXml'
 import { getPasswordExpiryStatus } from '../../shared/utils/passwordExpiry'
@@ -58,6 +60,7 @@ import {
   mapAnalysisToRisk,
   recomputeItemRisks,
 } from '../../shared/utils/passwordStrength'
+import { checkPasswordCompromised, scanPasswords, type BreachCheckStatus } from '../../lib/breachCheck'
 import { LocalNotifications } from '@capacitor/local-notifications'
 import AutofillBridge, { type CapturedCredentialDTO } from '../../plugins/autofillBridge'
 import {
@@ -549,6 +552,28 @@ type ExpiryAlert = {
   status: 'expired' | 'expiring'
 }
 
+type BreachScanProgress = {
+  done: number
+  total: number
+}
+
+type BreachScanSummary = {
+  scanned: number
+  compromised: number
+  unavailable: number
+  finishedAt: string
+}
+
+type SaveCurrentItemResult =
+  | {
+      saved: true
+      breachStatus: BreachCheckStatus
+      breachCount?: number
+    }
+  | {
+      saved: false
+    }
+
 type TreeContextMenuState = { x: number; y: number } | null
 
 function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
@@ -693,6 +718,31 @@ function uniqueNonEmptyStrings(values: string[] | undefined) {
   return Array.from(deduped)
 }
 
+function defaultBreachCheckSettings() {
+  return {
+    enabled: false,
+    provider: 'hibp' as const,
+    mode: 'on_save' as const,
+    timeoutMs: 3500,
+  }
+}
+
+function normalizeBreachCheckSettings(settings: VaultSettings['breachCheck']) {
+  const defaults = defaultBreachCheckSettings()
+  if (!settings || typeof settings !== 'object') {
+    return defaults
+  }
+  const timeoutMs = Number.isFinite(settings.timeoutMs)
+    ? Math.min(15000, Math.max(500, Math.round(settings.timeoutMs)))
+    : defaults.timeoutMs
+  return {
+    enabled: settings.enabled === true,
+    provider: settings.provider === 'hibp' ? 'hibp' : defaults.provider,
+    mode: settings.mode === 'on_save' ? 'on_save' : defaults.mode,
+    timeoutMs,
+  }
+}
+
 function normalizeAutoFolderMappings(mappings: VaultSettings['autoFolderCustomMappings']) {
   if (!Array.isArray(mappings)) return []
   const rows: Exclude<VaultSettings['autoFolderCustomMappings'], undefined> = []
@@ -724,6 +774,7 @@ function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
     autoFolderLockedFolderPaths: uniqueNonEmptyStrings(settings.autoFolderLockedFolderPaths).map((path) => normalizeAutoFolderPath(path)).filter(Boolean),
     autoFolderCustomMappings: normalizeAutoFolderMappings(settings.autoFolderCustomMappings),
     theme: normalizedTheme,
+    breachCheck: normalizeBreachCheckSettings(settings.breachCheck),
   }
 }
 
@@ -790,6 +841,7 @@ export function useVaultApp() {
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
     theme: defaultThemeSettings(),
+    breachCheck: defaultBreachCheckSettings(),
   })
   const [query, setQuery] = useState('')
   const [homeSearchQuery, setHomeSearchQuery] = useState('')
@@ -847,13 +899,18 @@ export function useVaultApp() {
   const [autoFolderWarnings, setAutoFolderWarnings] = useState<string[]>([])
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult>(() => defaultUpdateCheckResult(APP_BUILD_INFO))
   const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false)
+  const [breachScanRunning, setBreachScanRunning] = useState(false)
+  const [breachScanProgress, setBreachScanProgress] = useState<BreachScanProgress>({ done: 0, total: 0 })
+  const [breachScanSummary, setBreachScanSummary] = useState<BreachScanSummary | null>(null)
 
   const [draft, setDraft] = useState<VaultItem | null>(null)
   const [storageDraft, setStorageDraft] = useState<VaultStorageItem | null>(null)
   const [storageFileBusy, setStorageFileBusy] = useState(false)
+  const clipboardClearTimerRef = useRef<number | null>(null)
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const backupImportInputRef = useRef<HTMLInputElement | null>(null)
   const googlePasswordImportInputRef = useRef<HTMLInputElement | null>(null)
+  const lastpassImportInputRef = useRef<HTMLInputElement | null>(null)
   const keepassImportInputRef = useRef<HTMLInputElement | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
   const previousCloudAuthStateRef = useRef<CloudAuthState>('unknown')
@@ -1040,6 +1097,9 @@ export function useVaultApp() {
     setShowAutoFolderPreview(false)
     setAutoFolderPreferencesDirty(false)
     setAutoFolderWarnings([])
+    setBreachScanRunning(false)
+    setBreachScanProgress({ done: 0, total: 0 })
+    setBreachScanSummary(null)
     const alerts = computeExpiryAlerts(session.payload.items)
     setExpiryAlerts(alerts)
     setExpiryAlertsDismissed(false)
@@ -1421,6 +1481,13 @@ export function useVaultApp() {
         saveCachedVaultSnapshot(activeFile, cloudCacheTtlHours)
         setCloudCacheExpiresAt(getCachedVaultExpiresAt())
       }
+      const confirmed = window.confirm(
+        'Switch to Cloud-Only mode and remove the local encrypted vault file from this device?\n\nYour cloud copy and encrypted cache remain available.',
+      )
+      if (!confirmed) {
+        setSyncMessage('Cloud-only mode change canceled')
+        return
+      }
       clearLocalVaultFile()
       setLocalVaultPath('')
       setCloudSyncEnabled(true)
@@ -1498,6 +1565,9 @@ export function useVaultApp() {
     return () => {
       if (nativeAutofillSyncRetryTimerRef.current !== null) {
         window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
+      }
+      if (clipboardClearTimerRef.current !== null) {
+        window.clearTimeout(clipboardClearTimerRef.current)
       }
     }
   }, [])
@@ -1833,9 +1903,32 @@ export function useVaultApp() {
     await window.armadilloShell?.closeWindow?.()
   }
 
-  async function copyToClipboard(text: string, successMessage: string, failureMessage: string) {
+  async function copyToClipboard(
+    text: string,
+    successMessage: string,
+    failureMessage: string,
+    options?: { clearAfterMs?: number },
+  ) {
     try {
       await navigator.clipboard.writeText(text)
+      if (clipboardClearTimerRef.current !== null) {
+        window.clearTimeout(clipboardClearTimerRef.current)
+        clipboardClearTimerRef.current = null
+      }
+      if (options?.clearAfterMs && options.clearAfterMs > 0) {
+        const copiedValue = text
+        clipboardClearTimerRef.current = window.setTimeout(() => {
+          void (async () => {
+            try {
+              const current = await navigator.clipboard.readText()
+              if (current !== copiedValue) return
+              await navigator.clipboard.writeText('')
+            } catch {
+              // Best effort clipboard expiration only.
+            }
+          })()
+        }, options.clearAfterMs)
+      }
       setSyncMessage(successMessage)
     } catch {
       setSyncMessage(failureMessage)
@@ -2538,6 +2631,60 @@ export function useVaultApp() {
     setPhase('unlock')
   }
 
+  async function deleteVaultFromCloud(snapshot?: ArmadilloVaultFile) {
+    const chosen = snapshot || cloudVaultSnapshot
+    if (!chosen) {
+      setSyncMessage('Select a cloud vault first')
+      return
+    }
+    if (!hasCapability('cloud.sync')) {
+      setSyncMessage(capabilityLockReasons['cloud.sync'] ?? 'Requires Premium plan')
+      return
+    }
+    if (syncProvider === 'self_hosted' && !hasCapability('enterprise.self_hosted')) {
+      setSyncMessage(capabilityLockReasons['enterprise.self_hosted'] ?? 'Self-hosted sync requires Enterprise plan')
+      return
+    }
+    if (syncProvider === 'convex' && !authToken) {
+      setSyncMessage('Cloud auth token pending. Try again in a moment.')
+      return
+    }
+
+    setSyncAuthToken(authToken ?? null)
+    setSyncState('syncing')
+    setSyncMessage('Removing encrypted vault from cloud...')
+    try {
+      const result = await deleteRemoteVault(chosen.vaultId)
+      if (!result?.ok) {
+        setSyncState('error')
+        setSyncMessage('Failed to remove vault from cloud')
+        return
+      }
+
+      const remote = await listRemoteVaultsByOwner().catch(() => null)
+      const snapshots = remote?.snapshots || []
+      const latest = snapshots[0] || null
+      setCloudVaultSnapshot(latest)
+      setCloudVaultCandidates(snapshots)
+      setSyncState('live')
+      if (result.deleted) {
+        setSyncMessage(`Removed cloud vault ${chosen.vaultId.slice(0, 8)} (local vault unchanged)`)
+      } else {
+        setSyncMessage('Cloud vault was already removed (local vault unchanged)')
+      }
+      setAuthMessage(snapshots.length > 0 ? 'Cloud vault list updated.' : 'No cloud vault found for this account')
+    } catch (error) {
+      console.error('[armadillo] cloud vault delete failed:', error)
+      const detail = error instanceof Error ? error.message : String(error)
+      setSyncState('error')
+      if (syncProvider === 'convex' && detail.toLowerCase().includes('failed to fetch')) {
+        setSyncMessage('Cloud delete endpoint unavailable on server. Deploy latest Convex backend and try again.')
+      } else {
+        setSyncMessage('Cloud vault delete failed')
+      }
+    }
+  }
+
 
 
   function lockVault() {
@@ -2803,6 +2950,20 @@ export function useVaultApp() {
       return
     }
 
+    if (entry.kind === 'itemSnapshot') {
+      const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as VaultItem | null
+      if (!payload) return
+      if (items.some((item) => item.id === payload.id)) {
+        await persistPayload({ trash: trash.filter((row) => row.id !== entryId) })
+        return
+      }
+      await persistPayload({
+        items: [payload, ...items],
+        trash: trash.filter((row) => row.id !== entryId),
+      })
+      return
+    }
+
     if (entry.kind === 'storageItemSnapshot') {
       const payload = (entry.payload && typeof entry.payload === 'object' ? entry.payload : null) as VaultStorageItem | null
       if (!payload) return
@@ -2931,6 +3092,123 @@ export function useVaultApp() {
     const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
     setVaultSettings(nextSettings)
     await persistPayload({ settings: nextSettings })
+  }
+
+  async function setBreachCheckEnabled(enabled: boolean) {
+    if (enabled && !hasCapability('security.breach_scan')) {
+      setSyncMessage(capabilityLockReasons['security.breach_scan'] ?? 'Requires Premium plan')
+      return
+    }
+    const nextSettings = normalizeAutoFolderSettings({
+      ...vaultSettings,
+      breachCheck: {
+        ...defaultBreachCheckSettings(),
+        ...vaultSettings.breachCheck,
+        enabled,
+      },
+    })
+    setVaultSettings(nextSettings)
+    await persistPayload({ settings: nextSettings })
+    setSyncMessage(enabled ? 'Compromised password check enabled' : 'Compromised password check disabled')
+  }
+
+  async function runBreachScanAll() {
+    if (!hasCapability('security.breach_scan')) {
+      setSyncMessage(capabilityLockReasons['security.breach_scan'] ?? 'Requires Premium plan')
+      return
+    }
+    if (breachScanRunning) return
+
+    const passwords = items.map((item) => item.passwordMasked ?? '').filter(Boolean)
+    if (passwords.length === 0) {
+      setBreachScanProgress({ done: 0, total: 0 })
+      setBreachScanSummary({
+        scanned: 0,
+        compromised: 0,
+        unavailable: 0,
+        finishedAt: new Date().toISOString(),
+      })
+      setSyncMessage('No entry passwords found to scan')
+      return
+    }
+
+    setBreachScanRunning(true)
+    setBreachScanSummary(null)
+    setBreachScanProgress({ done: 0, total: 0 })
+    try {
+      const scanResults = await scanPasswords(passwords, {
+        timeoutMs: vaultSettings.breachCheck?.timeoutMs,
+        onProgress: (done, total) => setBreachScanProgress({ done, total }),
+      })
+
+      let compromised = 0
+      let unavailable = 0
+      let changed = false
+      const nextItems = items.map((item) => {
+        const password = item.passwordMasked ?? ''
+        if (!password) return item
+        const result = scanResults.get(password)
+        if (!result) return item
+        if (result.status === 'compromised') {
+          compromised += 1
+          if (item.risk === 'exposed') return item
+          changed = true
+          return { ...item, risk: 'exposed' as const }
+        }
+        if (result.status === 'unavailable') {
+          unavailable += 1
+        }
+        return item
+      })
+
+      if (changed) {
+        await persistPayload({ items: nextItems })
+      }
+      const summary: BreachScanSummary = {
+        scanned: scanResults.size,
+        compromised,
+        unavailable,
+        finishedAt: new Date().toISOString(),
+      }
+      setBreachScanSummary(summary)
+      setSyncMessage(`Breach scan complete: ${summary.compromised} compromised, ${summary.unavailable} unavailable checks`)
+    } finally {
+      setBreachScanRunning(false)
+    }
+  }
+
+  async function scanItemForBreach(itemId: string) {
+    if (!hasCapability('security.breach_scan')) {
+      setSyncMessage(capabilityLockReasons['security.breach_scan'] ?? 'Requires Premium plan')
+      return
+    }
+    const item = items.find((entry) => entry.id === itemId)
+    if (!item) return
+    const password = item.passwordMasked ?? ''
+    if (!password) {
+      setSyncMessage('No password set for this entry')
+      return
+    }
+
+    const result = await checkPasswordCompromised(password, { timeoutMs: vaultSettings.breachCheck?.timeoutMs })
+    if (result.status === 'unavailable') {
+      setSyncMessage(`Compromised-password check unavailable for "${item.title || 'Untitled'}"`)
+      return
+    }
+    if (result.status === 'compromised') {
+      if (item.risk !== 'exposed') {
+        const nextItems = items.map((entry) => (
+          entry.id === itemId ? { ...entry, risk: 'exposed' as const } : entry
+        ))
+        await persistPayload({ items: nextItems })
+      }
+      const countLabel = typeof result.count === 'number' && result.count > 0
+        ? ` (seen ${result.count.toLocaleString()} times)`
+        : ''
+      setSyncMessage(`"${item.title || 'Untitled'}" appears in known breaches${countLabel}`)
+      return
+    }
+    setSyncMessage(`No breach match found for "${item.title || 'Untitled'}"`)
   }
 
   function selectThemePreset(presetId: string) {
@@ -3423,12 +3701,14 @@ export function useVaultApp() {
     }
   }
 
-  async function saveCurrentItem() {
-    if (!draft) return
+  async function saveCurrentItem(): Promise<SaveCurrentItemResult> {
+    if (!draft) return { saved: false }
     setIsSaving(true)
+    let breachStatus: BreachCheckStatus = 'clear'
+    let breachCount: number | undefined
     const folderInput = newFolderValue.trim() || draft.folder || ''
     const ensuredFolder = ensureFolderByPath(folderInput, folders)
-    const nextItem: VaultItem = {
+    let nextItem: VaultItem = {
       ...draft,
       urls: draft.urls
         .map((url) => url.trim())
@@ -3437,15 +3717,37 @@ export function useVaultApp() {
       folderId: ensuredFolder.folder?.id ?? null,
       updatedAt: new Date().toLocaleString(),
     }
+    const breachCapabilityEnabled = hasCapability('security.breach_scan')
+    const breachCheckEnabled = breachCapabilityEnabled && vaultSettings.breachCheck?.enabled === true
+    const passwordForCheck = nextItem.passwordMasked ?? ''
+
+    if (passwordForCheck && breachCheckEnabled) {
+      const breachResult = await checkPasswordCompromised(passwordForCheck, { timeoutMs: vaultSettings.breachCheck?.timeoutMs })
+      breachStatus = breachResult.status
+      breachCount = breachResult.count
+      if (breachResult.status === 'compromised') {
+        nextItem = { ...nextItem, risk: 'exposed' }
+      } else if (breachResult.status === 'clear' && nextItem.risk === 'exposed') {
+        nextItem = { ...nextItem, risk: 'safe' }
+      }
+    }
+
     const nextItems = applyComputedItemRisks(items.map((item) => (item.id === nextItem.id ? nextItem : item)))
     setFolders(ensuredFolder.nextFolders)
-    await persistPayload({
-      items: nextItems,
-      folders: ensuredFolder.nextFolders,
-    })
-
-    setIsSaving(false)
-    setNewFolderValue('')
+    try {
+      await persistPayload({
+        items: nextItems,
+        folders: ensuredFolder.nextFolders,
+      })
+      setNewFolderValue('')
+      return {
+        saved: true,
+        breachStatus,
+        breachCount,
+      }
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   function scopeItemsForSelection(sourceItems: VaultItem[], node: SidebarNode, mode: FolderFilterMode) {
@@ -3485,11 +3787,21 @@ export function useVaultApp() {
   async function removeCurrentItem() {
     if (!draft) return
     const deletingId = draft.id
+    const target = items.find((item) => item.id === deletingId)
     const previousNode = selectedNode
     const previousFilterMode = folderFilterMode
     const previousMobileStep = mobileStep
     const remaining = items.filter((item) => item.id !== deletingId)
-    await persistPayload({ items: remaining })
+    const deletedAt = new Date().toISOString()
+    const retentionMs = getSafeRetentionDays(vaultSettings.trashRetentionDays) * 24 * 60 * 60 * 1000
+    const nextTrashEntries = target ? [{
+      id: crypto.randomUUID(),
+      kind: 'itemSnapshot' as const,
+      deletedAt,
+      purgeAt: new Date(Date.parse(deletedAt) + retentionMs).toISOString(),
+      payload: target,
+    }, ...trash] : trash
+    await persistPayload({ items: remaining, trash: nextTrashEntries })
     const inViewRemaining = scopeItemsForSelection(remaining, previousNode, previousFilterMode)
     const nextSelected = inViewRemaining[0] ?? null
     setSelectedNode(previousNode)
@@ -3502,12 +3814,22 @@ export function useVaultApp() {
   }
 
   async function removeItemById(itemId: string) {
+    const target = items.find((item) => item.id === itemId)
     const previousNode = selectedNode
     const previousFilterMode = folderFilterMode
     const previousMobileStep = mobileStep
     const previousSelectedId = selectedId
     const remaining = items.filter((item) => item.id !== itemId)
-    await persistPayload({ items: remaining })
+    const deletedAt = new Date().toISOString()
+    const retentionMs = getSafeRetentionDays(vaultSettings.trashRetentionDays) * 24 * 60 * 60 * 1000
+    const nextTrashEntries = target ? [{
+      id: crypto.randomUUID(),
+      kind: 'itemSnapshot' as const,
+      deletedAt,
+      purgeAt: new Date(Date.parse(deletedAt) + retentionMs).toISOString(),
+      payload: target,
+    }, ...trash] : trash
+    await persistPayload({ items: remaining, trash: nextTrashEntries })
     const inViewRemaining = scopeItemsForSelection(remaining, previousNode, previousFilterMode)
     const fallbackSelected = inViewRemaining[0] ?? null
     const keepSelected = previousSelectedId && previousSelectedId !== itemId
@@ -3596,7 +3918,7 @@ export function useVaultApp() {
 
   async function copyPassword() {
     if (!draft?.passwordMasked) return
-    await copyToClipboard(draft.passwordMasked, 'Password copied to clipboard', 'Clipboard copy failed')
+    await copyToClipboard(draft.passwordMasked, 'Password copied to clipboard', 'Clipboard copy failed', { clearAfterMs: 20_000 })
   }
 
   async function autofillItem(item: VaultItem) {
@@ -3624,16 +3946,20 @@ export function useVaultApp() {
     if (!vaultSession) {
       return
     }
+    void (async () => {
+      const reauthed = await reauthenticateWithMasterPassword('export your vault file')
+      if (!reauthed) return
 
-    const text = serializeVaultFile(vaultSession.file)
-    const blob = new Blob([text], { type: 'application/octet-stream' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `vault-${vaultSession.file.vaultId}.armadillo`
-    anchor.click()
-    URL.revokeObjectURL(url)
-    setSyncMessage('Encrypted vault exported (.armadillo)')
+      const text = serializeVaultFile(vaultSession.file)
+      const blob = new Blob([text], { type: 'application/octet-stream' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `vault-${vaultSession.file.vaultId}.armadillo`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setSyncMessage('Encrypted vault exported (.armadillo)')
+    })()
   }
 
   async function exportVaultBackupBundle() {
@@ -3641,6 +3967,8 @@ export function useVaultApp() {
       setSyncMessage('Unlock vault before exporting backup bundle')
       return
     }
+    const reauthed = await reauthenticateWithMasterPassword('export your full backup bundle')
+    if (!reauthed) return
 
     try {
       const vaultId = vaultSession.file.vaultId
@@ -3710,6 +4038,10 @@ export function useVaultApp() {
 
   function triggerGooglePasswordImport() {
     googlePasswordImportInputRef.current?.click()
+  }
+
+  function triggerLastPassImport() {
+    lastpassImportInputRef.current?.click()
   }
 
   function triggerKeePassImport() {
@@ -3876,6 +4208,96 @@ export function useVaultApp() {
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'unknown error'
       setSyncMessage(`Failed to import Google CSV: ${detail}`)
+    } finally {
+      event.currentTarget.value = ''
+    }
+  }
+
+  async function onLastPassCsvSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    if (!vaultSession) {
+      setSyncMessage('Unlock vault before importing LastPass data')
+      event.currentTarget.value = ''
+      return
+    }
+
+    try {
+      const text = await file.text()
+      const parsed = parseLastPassCsv(text)
+      if (parsed.entries.length === 0) {
+        setSyncMessage('No importable credentials found in LastPass CSV')
+        return
+      }
+
+      let nextFolders = folders
+      const folderIdByPathKey = new Map<string, string>()
+      for (const [folderId, path] of folderPathById.entries()) {
+        folderIdByPathKey.set(getPathKey(path), folderId)
+      }
+      const requestedGroupPaths = Array.from(new Set(parsed.entries
+        .map((entry) => normalizeAutoFolderPath(entry.group))
+        .filter(Boolean)))
+      for (const groupPath of requestedGroupPaths) {
+        const pathKey = getPathKey(groupPath)
+        if (folderIdByPathKey.has(pathKey)) continue
+        const ensured = ensureFolderByPath(groupPath, nextFolders)
+        nextFolders = ensured.nextFolders
+        if (ensured.folder) {
+          folderIdByPathKey.set(pathKey, ensured.folder.id)
+        }
+      }
+
+      const now = new Date().toLocaleString()
+      const importedItems: VaultItem[] = parsed.entries.map((entry, index) => {
+        const url = entry.url.trim()
+        const username = entry.username
+        const password = entry.password
+        const groupPath = normalizeAutoFolderPath(entry.group)
+        const folderId = groupPath ? (folderIdByPathKey.get(getPathKey(groupPath)) ?? null) : null
+        const baseNote = entry.note
+        const note = folderId
+          ? baseNote
+          : (groupPath ? `LastPass Group: ${groupPath}${baseNote ? `\n\n${baseNote}` : ''}` : baseNote)
+
+        return {
+          id: crypto.randomUUID(),
+          title: inferImportedItemTitle({ title: entry.title, url: entry.url, username: entry.username }, index + 1),
+          username,
+          passwordMasked: password,
+          urls: url ? [url] : [],
+          linkedAndroidPackages: [],
+          folder: groupPath || '',
+          folderId,
+          tags: ['imported', 'lastpass'],
+          risk: 'safe',
+          updatedAt: now,
+          note,
+          securityQuestions: [],
+          passwordExpiryDate: null,
+          excludeFromCloudSync: false,
+        }
+      })
+
+      const nextItems = applyComputedItemRisks([...importedItems, ...items])
+      await persistPayload({ items: nextItems, folders: nextFolders })
+
+      setSelectedNode('all')
+      setSelectedId(importedItems[0].id)
+      setDraft(nextItems.find((item) => item.id === importedItems[0].id) ?? importedItems[0])
+      setMobileStep('detail')
+      setActivePanel('details')
+
+      const skippedSuffix = parsed.skippedRows > 0 ? `, skipped ${parsed.skippedRows}` : ''
+      const createdFolderCount = Math.max(0, nextFolders.length - folders.length)
+      const folderSuffix = createdFolderCount > 0 ? `, created ${createdFolderCount} folder(s)` : ''
+      setSyncMessage(`Imported ${importedItems.length} credential(s) from LastPass CSV${skippedSuffix}${folderSuffix}`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to import LastPass CSV: ${detail}`)
     } finally {
       event.currentTarget.value = ''
     }
@@ -4723,6 +5145,9 @@ export function useVaultApp() {
       autoFolderError,
       autoFolderPreferencesDirty,
       autoFolderWarnings,
+      breachScanRunning,
+      breachScanProgress,
+      breachScanSummary,
       draft,
       storageDraft,
       storageFileBusy,
@@ -4769,6 +5194,7 @@ export function useVaultApp() {
       setStorageMode: updateStorageMode,
       setCloudCacheTtlHours,
       setVaultSettings,
+      setBreachCheckEnabled,
       refreshEntitlements,
       checkForAppUpdates,
       applyManualEntitlementToken,
@@ -4810,6 +5236,7 @@ export function useVaultApp() {
       unlockVaultBiometric,
       unlockVaultWithRecoveryKey,
       loadVaultFromCloud,
+      deleteVaultFromCloud,
       browseExistingLocalVault,
       chooseLocalVaultLocation,
       prepareNamedLocalVault,
@@ -4854,14 +5281,18 @@ export function useVaultApp() {
       triggerImport,
       triggerBackupImport,
       triggerGooglePasswordImport,
+      triggerLastPassImport,
       triggerKeePassImport,
       onImportFileSelected,
       onBackupBundleSelected,
       onGooglePasswordCsvSelected,
+      onLastPassCsvSelected,
       onKeePassCsvSelected,
       previewAutoFoldering,
       cancelAutoFolderingPreview,
       applyAutoFoldering,
+      scanItemForBreach,
+      runBreachScanAll,
       previewAutoFolderingV2,
       updateAutoFolderPreviewAssignment,
       excludeItemFromAutoFoldering,
@@ -4890,6 +5321,7 @@ export function useVaultApp() {
       importFileInputRef,
       backupImportInputRef,
       googlePasswordImportInputRef,
+      lastpassImportInputRef,
       keepassImportInputRef,
       folderLongPressTimerRef,
     },

@@ -5,14 +5,15 @@ export const ALL_CAPABILITIES: CapabilityKey[] = [
   'cloud.cloud_only',
   'vault.storage',
   'vault.storage.blobs',
+  'security.breach_scan',
   'enterprise.self_hosted',
   'enterprise.org_admin',
 ]
 
 export const PLAN_CAPABILITIES: Record<PlanTier, CapabilityKey[]> = {
   free: [],
-  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs'],
-  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'enterprise.self_hosted', 'enterprise.org_admin'],
+  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan'],
+  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan', 'enterprise.self_hosted', 'enterprise.org_admin'],
 }
 
 export const DEFAULT_ROLLOUT_FLAGS: RolloutFlagMap = {
@@ -27,6 +28,7 @@ export const CAPABILITY_MIN_TIER: Record<CapabilityKey, PlanTier> = {
   'cloud.cloud_only': 'premium',
   'vault.storage': 'premium',
   'vault.storage.blobs': 'premium',
+  'security.breach_scan': 'premium',
   'enterprise.self_hosted': 'enterprise',
   'enterprise.org_admin': 'enterprise',
 }

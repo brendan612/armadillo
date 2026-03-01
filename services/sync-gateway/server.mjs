@@ -188,6 +188,27 @@ const server = createServer(async (req, res) => {
     const pushV2 = url.pathname.match(/^\/v2\/vaults\/([^/]+)\/push$/)
     if (pushV2 && req.method === 'POST') { const c = resolveContext(req, url, ENTERPRISE_MODE); if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return } const role = ensureOrg(c); if (!hasRole([role], 'editor')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return } const vaultId = decodeURIComponent(pushV2[1]); const body = await readJsonBody(req); const revision = Number(body.revision); const encryptedFile = typeof body.encryptedFile === 'string' ? body.encryptedFile : ''; const updatedAt = typeof body.updatedAt === 'string' ? body.updatedAt : ''; if (!Number.isFinite(revision) || !encryptedFile || !updatedAt) { json(req, res, 400, { error: 'revision, encryptedFile, and updatedAt are required' }); return } const idempotencyKey = String(req.headers['idempotency-key'] || '').trim(); if (idempotencyKey && state.idempotency[idempotencyKey]) { json(req, res, 200, state.idempotency[idempotencyKey]); return } state.snapshotsByOrg[c.orgId] = state.snapshotsByOrg[c.orgId] || {}; const existing = state.snapshotsByOrg[c.orgId][vaultId]; const accepted = !existing || revision > Number(existing.revision || 0); if (accepted) { state.snapshotsByOrg[c.orgId][vaultId] = { orgId: c.orgId, vaultId, revision, encryptedFile, updatedAt, updatedBy: c.subject }; publishVaultUpdate(c.orgId, vaultId, revision, updatedAt) } else { metrics.pushConflictsTotal += 1 } const payload = { ok: true, accepted, ownerSource: c.authenticated ? 'auth' : 'anonymous' }; if (idempotencyKey) state.idempotency[idempotencyKey] = payload; appendAudit(makeAudit(c.orgId, c.subject, 'vault.push', vaultId, { revision, accepted })); writeState(state); json(req, res, 200, payload); return }
 
+    const deleteV2 = url.pathname.match(/^\/v2\/vaults\/([^/]+)$/)
+    if (deleteV2 && req.method === 'DELETE') {
+      const c = resolveContext(req, url, ENTERPRISE_MODE)
+      if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { error: c.error }); return }
+      const role = ensureOrg(c)
+      if (!hasRole([role], 'editor')) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const vaultId = decodeURIComponent(deleteV2[1])
+      const hadSnapshot = Boolean(state.snapshotsByOrg?.[c.orgId]?.[vaultId])
+      if (state.snapshotsByOrg?.[c.orgId]?.[vaultId]) {
+        delete state.snapshotsByOrg[c.orgId][vaultId]
+      }
+      const hadBlobs = Boolean(state.blobsByOrg?.[c.orgId]?.[vaultId])
+      if (state.blobsByOrg?.[c.orgId]?.[vaultId]) {
+        delete state.blobsByOrg[c.orgId][vaultId]
+      }
+      writeState(state)
+      appendAudit(makeAudit(c.orgId, c.subject, 'vault.delete', vaultId))
+      json(req, res, 200, { ok: true, deleted: hadSnapshot || hadBlobs, ownerSource: c.authenticated ? 'auth' : 'anonymous' })
+      return
+    }
+
     const blobV2 = url.pathname.match(/^\/v2\/vaults\/([^/]+)\/blobs\/([^/]+)$/)
     if (blobV2 && req.method === 'PUT') {
       const c = resolveContext(req, url, ENTERPRISE_MODE)
@@ -277,6 +298,8 @@ const server = createServer(async (req, res) => {
     if (pullV1 && req.method === 'POST') { if (!owner) { json(req, res, 401, { error: 'Owner could not be resolved.' }); return } const vaultId = decodeURIComponent(pullV1[1]); const row = state.snapshotsByOwner?.[owner.ownerId]?.[vaultId] || null; json(req, res, 200, { snapshot: row ? parseEncryptedFile(row.encryptedFile) : null, ownerSource: owner.ownerSource }); return }
     const pushV1 = url.pathname.match(/^\/v1\/vaults\/([^/]+)\/push$/)
     if (pushV1 && req.method === 'POST') { if (!owner) { json(req, res, 401, { error: 'Owner could not be resolved.' }); return } const vaultId = decodeURIComponent(pushV1[1]); const body = await readJsonBody(req); const revision = Number(body.revision); const encryptedFile = typeof body.encryptedFile === 'string' ? body.encryptedFile : ''; const updatedAt = typeof body.updatedAt === 'string' ? body.updatedAt : ''; if (!Number.isFinite(revision) || !encryptedFile || !updatedAt) { json(req, res, 400, { error: 'revision, encryptedFile, and updatedAt are required' }); return } state.snapshotsByOwner[owner.ownerId] = state.snapshotsByOwner[owner.ownerId] || {}; const existing = state.snapshotsByOwner[owner.ownerId][vaultId]; const accepted = !existing || revision > Number(existing.revision || 0); if (accepted) { state.snapshotsByOwner[owner.ownerId][vaultId] = { ownerId: owner.ownerId, vaultId, revision, encryptedFile, updatedAt }; publishVaultUpdate(owner.ownerId, vaultId, revision, updatedAt) } else { metrics.pushConflictsTotal += 1 } writeState(state); json(req, res, 200, { ok: true, accepted, ownerSource: owner.ownerSource }); return }
+    const deleteV1 = url.pathname.match(/^\/v1\/vaults\/([^/]+)$/)
+    if (deleteV1 && req.method === 'DELETE') { if (!owner) { json(req, res, 401, { error: 'Owner could not be resolved.' }); return } const vaultId = decodeURIComponent(deleteV1[1]); const hadSnapshot = Boolean(state.snapshotsByOwner?.[owner.ownerId]?.[vaultId]); if (state.snapshotsByOwner?.[owner.ownerId]?.[vaultId]) delete state.snapshotsByOwner[owner.ownerId][vaultId]; writeState(state); json(req, res, 200, { ok: true, deleted: hadSnapshot, ownerSource: owner.ownerSource }); return }
 
     if (url.pathname === '/v1/orgs' && req.method === 'GET') { if (!owner) { json(req, res, 401, { error: 'Owner could not be resolved.' }); return } const orgs = Object.values(state.orgs).filter((org) => org?.members?.[owner.ownerId]).map((org) => ({ id: org.id, name: org.name, role: org.members[owner.ownerId].role, createdAt: org.createdAt })); json(req, res, 200, { orgs }); return }
     if (url.pathname === '/v1/orgs' && req.method === 'POST') { if (!owner) { json(req, res, 401, { error: 'Owner could not be resolved.' }); return } const body = await readJsonBody(req); const name = typeof body.name === 'string' ? body.name.trim() : ''; const provided = typeof body.orgId === 'string' ? body.orgId.trim() : ''; const orgId = (provided || `org_${Date.now().toString(36)}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64); if (!name) { json(req, res, 400, { error: 'name is required' }); return } if (!state.orgs[orgId]) state.orgs[orgId] = { id: orgId, name, createdAt: nowIso(), members: {} }; state.orgs[orgId].members[owner.ownerId] = { role: 'owner', addedAt: nowIso() }; writeState(state); json(req, res, 200, { org: { id: orgId, name, role: 'owner', createdAt: state.orgs[orgId].createdAt } }); return }

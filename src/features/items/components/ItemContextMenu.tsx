@@ -4,6 +4,7 @@ import {
   CloudOff,
   ExternalLink,
   KeyRound,
+  ShieldCheck,
   UserRound,
   ClipboardPaste,
   CopyPlus,
@@ -21,6 +22,7 @@ export function ItemContextMenu() {
     duplicateItem,
     copyToClipboard,
     autofillItem,
+    scanItemForBreach,
     removeItemById,
     setItemCloudSyncExcluded,
   } = useVaultAppActions()
@@ -49,9 +51,8 @@ export function ItemContextMenu() {
     el.style.opacity = '1'
   }, [itemContextMenu])
 
-  if (!itemContextMenu) return null
-
-  const item = items.find((row) => row.id === itemContextMenu.itemId)
+  const itemId = itemContextMenu?.itemId ?? ''
+  const item = items.find((row) => row.id === itemId)
   const isLocalOnly = item?.excludeFromCloudSync === true
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
@@ -59,6 +60,56 @@ export function ItemContextMenu() {
   function dismiss() {
     setItemContextMenu(null)
   }
+
+  function copyUsernameFromMenu() {
+    if (!item?.username) return
+    void copyToClipboard(item.username, 'Username copied', 'Copy failed')
+  }
+
+  function copyPasswordFromMenu() {
+    if (!item?.passwordMasked) return
+    void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed', { clearAfterMs: 20_000 })
+  }
+
+  function autofillFromMenu() {
+    if (!item) return
+    void autofillItem(item)
+  }
+
+  useEffect(() => {
+    if (!itemContextMenu) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (!event.ctrlKey && !event.metaKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'b') {
+        event.preventDefault()
+        if (item?.username) {
+          void copyToClipboard(item.username, 'Username copied', 'Copy failed')
+        }
+        setItemContextMenu(null)
+        return
+      }
+      if (key === 'c') {
+        event.preventDefault()
+        if (item?.passwordMasked) {
+          void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed', { clearAfterMs: 20_000 })
+        }
+        setItemContextMenu(null)
+        return
+      }
+      if (key === 'v') {
+        event.preventDefault()
+        if (item) {
+          void autofillItem(item)
+        }
+        setItemContextMenu(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [itemContextMenu, item, copyToClipboard, autofillItem, setItemContextMenu])
+
+  if (!itemContextMenu) return null
 
   return (
     <div
@@ -70,7 +121,7 @@ export function ItemContextMenu() {
       <button
         className="ctx-menu-item"
         onClick={() => {
-          setSelectedId(itemContextMenu.itemId)
+          setSelectedId(itemId)
           setMobileStep('detail')
           dismiss()
         }}
@@ -82,7 +133,7 @@ export function ItemContextMenu() {
       <button
         className="ctx-menu-item"
         onClick={() => {
-          void duplicateItem(itemContextMenu.itemId)
+          void duplicateItem(itemId)
           dismiss()
         }}
       >
@@ -95,49 +146,55 @@ export function ItemContextMenu() {
       <button
         className="ctx-menu-item"
         onClick={() => {
-          if (item?.username) {
-            void copyToClipboard(item.username, 'Username copied', 'Copy failed')
-          }
+          copyUsernameFromMenu()
           dismiss()
         }}
       >
         <UserRound className="ctx-menu-icon" />
         <span className="ctx-menu-label">Copy Username</span>
-        <kbd className="ctx-menu-shortcut">Ctrl+U</kbd>
+        <kbd className="ctx-menu-shortcut">Ctrl+B</kbd>
       </button>
 
       <button
         className="ctx-menu-item"
         onClick={() => {
-          if (item?.passwordMasked) {
-            void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed')
-          }
+          copyPasswordFromMenu()
           dismiss()
         }}
       >
         <KeyRound className="ctx-menu-icon" />
         <span className="ctx-menu-label">Copy Password</span>
-        <kbd className="ctx-menu-shortcut">Ctrl+P</kbd>
+        <kbd className="ctx-menu-shortcut">Ctrl+C</kbd>
       </button>
 
       <button
         className="ctx-menu-item"
         onClick={() => {
-          if (item) {
-            void autofillItem(item)
-          }
+          autofillFromMenu()
           dismiss()
         }}
       >
         <ClipboardPaste className="ctx-menu-icon" />
         <span className="ctx-menu-label">Autofill</span>
+        <kbd className="ctx-menu-shortcut">Ctrl+V</kbd>
+      </button>
+
+      <button
+        className="ctx-menu-item"
+        onClick={() => {
+          void scanItemForBreach(itemId)
+          dismiss()
+        }}
+      >
+        <ShieldCheck className="ctx-menu-icon" />
+        <span className="ctx-menu-label">Scan for Breach</span>
       </button>
 
       {canManageCloudSyncExclusions && (
         <button
           className="ctx-menu-item"
           onClick={() => {
-            void setItemCloudSyncExcluded(itemContextMenu.itemId, !isLocalOnly)
+            void setItemCloudSyncExcluded(itemId, !isLocalOnly)
             dismiss()
           }}
         >
@@ -151,7 +208,9 @@ export function ItemContextMenu() {
       <button
         className="ctx-menu-item danger"
         onClick={() => {
-          void removeItemById(itemContextMenu.itemId)
+          if (window.confirm(`Move "${item?.title || 'this item'}" to trash?`)) {
+            void removeItemById(itemId)
+          }
           dismiss()
         }}
       >

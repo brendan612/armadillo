@@ -137,6 +137,12 @@ export type VaultSettings = {
   autoFolderLockedFolderPaths?: string[]
   autoFolderCustomMappings?: AutoFolderCustomMapping[]
   theme?: VaultThemeSettings
+  breachCheck?: {
+    enabled: boolean
+    provider: 'hibp'
+    mode: 'on_save'
+    timeoutMs: number
+  }
 }
 
 export type VaultPayload = {
