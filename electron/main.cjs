@@ -138,12 +138,12 @@ function parseCssVarBlock(cssText, selectorPattern) {
 }
 
 function resolveThemeCssPath() {
-  const sourceCssPath = path.join(__dirname, '..', 'src', 'index.css');
+  const sourceCssPath = path.join(__dirname, '..', 'apps', 'web', 'src', 'index.css');
   if (fs.existsSync(sourceCssPath)) {
     return sourceCssPath;
   }
 
-  const distAssetsPath = path.join(__dirname, '..', 'dist', 'assets');
+  const distAssetsPath = path.join(__dirname, '..', 'apps', 'web', 'dist', 'assets');
   if (!fs.existsSync(distAssetsPath)) {
     return '';
   }
@@ -162,15 +162,15 @@ function resolveThemeCssPath() {
 
 function resolveSplashLogoPath() {
   const sourceCandidates = [
-    path.join(__dirname, '..', 'src', 'assets', 'armadillo.webp'),
-    path.join(__dirname, '..', 'src', 'assets', 'armadillo.png'),
+    path.join(__dirname, '..', 'apps', 'web', 'src', 'assets', 'armadillo.webp'),
+    path.join(__dirname, '..', 'apps', 'web', 'src', 'assets', 'armadillo.png'),
   ];
   const sourceMatch = sourceCandidates.find((candidate) => fs.existsSync(candidate));
   if (sourceMatch) {
     return sourceMatch;
   }
 
-  const distAssetsPath = path.join(__dirname, '..', 'dist', 'assets');
+  const distAssetsPath = path.join(__dirname, '..', 'apps', 'web', 'dist', 'assets');
   if (!fs.existsSync(distAssetsPath)) {
     return '';
   }
@@ -549,7 +549,7 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:4000');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    mainWindow.loadFile(path.join(__dirname, '..', 'apps', 'web', 'dist', 'index.html'));
   }
 
   mainWindow.once('ready-to-show', revealWindow);

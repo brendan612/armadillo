@@ -1,15 +1,21 @@
 {
   "name": "armadillo",
-  "private": false,
+  "private": true,
   "version": "1.0.0-beta.1",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite --host --port 4000",
-    "dev:web": "vite --port 4000",
+    "dev": "npm run dev:web",
+    "dev:web": "npm run dev --workspace @armadillo/web -- --port 4000",
+    "dev:admin": "npm run dev --workspace @armadillo/admin -- --port 4100",
     "dev:electron": "concurrently -k \"npm:dev:web\" \"npm:electron:wait\"",
     "electron:wait": "wait-on tcp:4000 && electron .",
     "electron": "electron .",
-    "build:web": "tsc -b && vite build",
+    "build:web": "npm run build --workspace @armadillo/web",
+    "build:admin": "npm run build --workspace @armadillo/admin",
     "typecheck": "tsc -b --pretty false",
     "build": "npm run build:web",
     "dist:win": "npm run build:web && electron-builder --win nsis --x64 -c.win.signAndEditExecutable=false",
@@ -24,8 +30,9 @@
     "release:check-signing": "node scripts/release/check-signing-env.mjs",
     "size:desktop:report": "node scripts/check-desktop-size.mjs --report",
     "size:desktop:check": "node scripts/check-desktop-size.mjs --check",
-    "ci:check": "npm run lint && npm run typecheck && npm run test && npm run build:web",
-    "preview": "vite preview",
+    "ci:check": "npm run lint && npm run typecheck && npm run test && npm run build:web && npm run build:admin",
+    "preview": "npm run preview --workspace @armadillo/web",
+    "preview:admin": "npm run preview --workspace @armadillo/admin",
     "convex:dev": "convex dev",
     "convex:deploy": "convex deploy",
     "sync:selfhost:dev": "node services/sync-gateway/server.mjs",
@@ -85,7 +92,7 @@
     "compression": "maximum",
     "icon": "electron/icon.png",
     "files": [
-      "dist/**/*",
+      "apps/web/dist/**/*",
       "electron/**/*",
       "package.json",
       "!node_modules/**"

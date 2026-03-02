@@ -1,6 +1,7 @@
 import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
 
 export type Role = 'owner' | 'admin' | 'editor' | 'viewer'
+export type OverrideTargetType = 'userId' | 'tokenIdentifier' | 'subject' | 'email'
 
 export type AuthContext = {
   subject: string
@@ -107,6 +108,47 @@ export type AdminMember = {
   addedAt: string
 }
 
+export type AdminIdentity = {
+  subject: string
+  email: string | null
+  name: string | null
+  tokenIdentifier: string | null
+  orgId: string
+  roles: Role[]
+}
+
+export type AdminPermissions = {
+  allowlisted: boolean
+  capability: boolean
+  allowed: boolean
+  reasons: string[]
+}
+
+export type AdminMeResponse = {
+  authenticated: boolean
+  identity: AdminIdentity | null
+  permissions: AdminPermissions
+}
+
+export type AdminAuditPage = {
+  events: AuditEvent[]
+  nextCursor: string | null
+}
+
+export type EntitlementOverrideRow = {
+  id: string
+  targetType: OverrideTargetType
+  targetValue: string
+  note: string
+  updatedAt: string
+  updatedBy: string
+}
+
+export type EntitlementOverridePage = {
+  overrides: EntitlementOverrideRow[]
+  nextCursor: string | null
+}
+
 export type EntitlementStatusResponse = {
   ok: boolean
   token: string | null
@@ -133,4 +175,17 @@ export type SyncProviderClient = {
   listOrgAuditEvents?: (orgId: string) => Promise<AuditEvent[]>
   addOrgMember?: (orgId: string, member: { memberId: string; role: Role }) => Promise<AdminMember | null>
   removeOrgMember?: (orgId: string, memberId: string) => Promise<boolean>
+  getAdminMe?: () => Promise<AdminMeResponse | null>
+  listAdminMembers?: (orgId: string) => Promise<AdminMember[]>
+  upsertAdminMember?: (orgId: string, member: { memberId: string; role: Role }) => Promise<AdminMember | null>
+  removeAdminMember?: (orgId: string, memberId: string) => Promise<boolean>
+  listAdminAudit?: (orgId: string, options?: { limit?: number; cursor?: string }) => Promise<AdminAuditPage>
+  listEntitlementOverrides?: (options?: { limit?: number; cursor?: string }) => Promise<EntitlementOverridePage>
+  upsertEntitlementOverride?: (input: {
+    targetType: OverrideTargetType
+    targetValue: string
+    token: string
+    note?: string
+  }) => Promise<EntitlementOverrideRow | null>
+  deleteEntitlementOverride?: (input: { targetType: OverrideTargetType; targetValue: string }) => Promise<boolean>
 }

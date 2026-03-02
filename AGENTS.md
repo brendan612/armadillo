@@ -19,17 +19,21 @@ Armadillo is a cross-platform secure vault with:
 - Fast unlock, strong offline behavior, and practical enterprise controls.
 
 ## High-Level Architecture
-- App state orchestration: `src/app/hooks/useVaultApp.ts`
-- View routing by app phase (`create` / `unlock` / `ready`): `src/app/AppRouter.tsx`
-- Main shell and panes: `src/app/AppShell.tsx`
-- Shared state access via context: `src/app/contexts/VaultAppContext.tsx`
+- Monorepo workspaces:
+  - User app: `apps/web`
+  - Admin app: `apps/admin`
+  - Shared admin client/types: `packages/shared-admin-client`
+- User-app state orchestration: `apps/web/src/app/hooks/useVaultApp.ts`
+- User-app routing by app phase (`create` / `unlock` / `ready`): `apps/web/src/app/AppRouter.tsx`
+- User-app shell and panes: `apps/web/src/app/AppShell.tsx`
+- User-app shared state context: `apps/web/src/app/contexts/VaultAppContext.tsx`
 
 ## Core Domains
 
 ### Vault File + Crypto
-- Local vault file utilities: `src/lib/vaultFile.ts`
-- Encryption/KDF primitives: `src/lib/crypto.ts`
-- Vault payload/types: `src/types/vault.ts`
+- Local vault file utilities: `apps/web/src/lib/vaultFile.ts`
+- Encryption/KDF primitives: `apps/web/src/lib/crypto.ts`
+- Vault payload/types: `apps/web/src/types/vault.ts`
 - Optional offline Recovery Kit:
   - Recovery key wraps the vault key with a separate Argon2id config.
   - Recovery metadata is persisted inside the `.armadillo` file as an optional `recovery` block.
@@ -39,15 +43,16 @@ Armadillo is a cross-platform secure vault with:
   - Recent local paths are tracked for quick reselect.
 
 ### Sync + Cloud
-- Sync abstraction entrypoint: `src/lib/syncClient.ts`
+- Sync abstraction entrypoint: `apps/web/src/lib/syncClient.ts`
 - Provider adapters:
-  - Convex: `src/lib/providers/convexProvider.ts`
-  - Self-hosted: `src/lib/providers/selfHostedProvider.ts`
+  - Convex: `apps/web/src/lib/providers/convexProvider.ts`
+  - Self-hosted: `apps/web/src/lib/providers/selfHostedProvider.ts`
 - Auth/sync status and gating are resolved in `useVaultApp`.
+- Admin provider/client normalization lives in `packages/shared-admin-client`.
 
 ### Entitlements + Feature Flags
 - Entitlement resolution and capability checks live in `useVaultApp` and flags modules:
-  - `src/features/flags/*`
+  - `apps/web/src/features/flags/*`
 - UI should respect capability gates before rendering privileged controls.
 
 ## Locked/Unlock UX Conventions

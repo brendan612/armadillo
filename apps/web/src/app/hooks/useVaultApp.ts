@@ -796,15 +796,25 @@ function useSafeConvexAuth() {
 }
 
 function useSafeAuthActions() {
+  const fallback = {
+    signIn: async () => {
+      throw new Error('Convex auth provider is not configured')
+    },
+    signOut: async () => {},
+  } as unknown as ReturnType<typeof useAuthActions>
+
   try {
-    return useAuthActions()
+    const actions = useAuthActions()
+    if (
+      actions
+      && typeof actions.signIn === 'function'
+      && typeof actions.signOut === 'function'
+    ) {
+      return actions
+    }
+    return fallback
   } catch {
-    return {
-      signIn: async () => {
-        throw new Error('Convex auth provider is not configured')
-      },
-      signOut: async () => {},
-    } as unknown as ReturnType<typeof useAuthActions>
+    return fallback
   }
 }
 

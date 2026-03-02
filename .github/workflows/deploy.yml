@@ -197,7 +197,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: ./dist
+          publish_dir: ./apps/web/dist
           destination_dir: staging/latest
           keep_files: true
           force_orphan: false
@@ -207,7 +207,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: ./dist
+          publish_dir: ./apps/web/dist
           destination_dir: staging/${{ needs.classify_release.outputs.tag_name }}
           keep_files: true
           force_orphan: false
@@ -288,7 +288,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: ./dist
+          publish_dir: ./apps/web/dist
           keep_files: true
           force_orphan: false
 
@@ -297,7 +297,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: ./dist
+          publish_dir: ./apps/web/dist
           destination_dir: releases/${{ needs.classify_release.outputs.tag_name }}
           keep_files: true
           force_orphan: false

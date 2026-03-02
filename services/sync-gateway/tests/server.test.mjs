@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 
 function randomPort() {
   return 30000 + Math.floor(Math.random() * 20000)
@@ -25,7 +26,36 @@ async function waitForReady(baseUrl, timeoutMs = 10000) {
   throw new Error('Timed out waiting for sync-gateway to become ready')
 }
 
-function spawnServer() {
+function createSignedEntitlementToken() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
+  const now = Math.floor(Date.now() / 1000)
+  const kid = 'test-admin-key'
+  const header = { alg: 'EdDSA', typ: 'JWT', kid }
+  const payload = {
+    iss: 'armadillo-tests',
+    sub: 'test-admin',
+    aud: 'armadillo',
+    iat: now,
+    exp: now + 60 * 60,
+    tier: 'enterprise',
+    capabilities: ['enterprise.org_admin'],
+  }
+  const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url')
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signingInput = `${encodedHeader}.${encodedPayload}`
+  const signature = crypto.sign(null, Buffer.from(signingInput, 'utf8'), privateKey).toString('base64url')
+  const token = `${encodedHeader}.${encodedPayload}.${signature}`
+
+  const publicJwk = publicKey.export({ format: 'jwk' })
+  return {
+    token,
+    jwks: {
+      keys: [{ ...publicJwk, kid, alg: 'EdDSA', use: 'sig' }],
+    },
+  }
+}
+
+function spawnServer(envOverrides = {}) {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'armadillo-sync-test-'))
   const port = randomPort()
   const dataFile = path.join(tempDir, 'data.json')
@@ -38,6 +68,7 @@ function spawnServer() {
         PORT: String(port),
         SYNC_DATA_FILE: dataFile,
         SYNC_ENTITLEMENT_TOKEN: 'signed-test-token',
+        ...envOverrides,
       },
       stdio: 'ignore',
       windowsHide: true,
@@ -262,4 +293,91 @@ test('v2 delete vault removes snapshot', async (t) => {
   }).then((res) => res.json())
 
   assert.equal(pulled.snapshot, null)
+})
+
+test('v2 admin endpoints enforce allowlist+capability and support overrides', async (t) => {
+  const entitlement = createSignedEntitlementToken()
+  const bearer = 'admin-seed-token'
+  const server = spawnServer({
+    SYNC_ENTITLEMENT_TOKEN: entitlement.token,
+    SYNC_ENTITLEMENT_VERIFY_JWKS: JSON.stringify(entitlement.jwks),
+    SYNC_ADMIN_ALLOWLIST_SUBJECTS: `user:${bearer}`,
+  })
+  t.after(async () => {
+    await server.cleanup()
+  })
+
+  await waitForReady(server.baseUrl)
+
+  const me = await fetch(`${server.baseUrl}/v2/admin/me`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  }).then((res) => res.json())
+
+  assert.equal(me.authenticated, true)
+  assert.equal(me.permissions.allowed, true)
+  assert.equal(me.permissions.superAdmin, true)
+  assert.equal(typeof me.identity?.orgId, 'string')
+
+  const orgId = me.identity.orgId
+  const orgs = await fetch(`${server.baseUrl}/v2/admin/orgs`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  }).then((res) => res.json())
+  assert.equal(Array.isArray(orgs.orgs), true)
+  assert.equal(orgs.orgs.some((row) => row.id === orgId), true)
+
+  const createdOrg = await fetch(`${server.baseUrl}/v2/admin/orgs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ orgId: 'org_test_admin', name: 'Test Admin Org' }),
+  }).then((res) => res.json())
+  assert.equal(createdOrg.org?.id, 'org_test_admin')
+
+  const upsertMember = await fetch(`${server.baseUrl}/v2/admin/orgs/${encodeURIComponent(orgId)}/members`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ memberId: 'member-1', role: 'viewer' }),
+  }).then((res) => res.json())
+  assert.equal(upsertMember.member?.memberId, 'member-1')
+
+  const members = await fetch(`${server.baseUrl}/v2/admin/orgs/${encodeURIComponent(orgId)}/members`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  }).then((res) => res.json())
+  assert.equal(Array.isArray(members.members), true)
+  assert.equal(members.members.some((row) => row.memberId === 'member-1'), true)
+
+  const upsertOverride = await fetch(`${server.baseUrl}/v2/admin/entitlements/overrides`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({
+      targetType: 'email',
+      targetValue: 'Admin@Example.com',
+      token: entitlement.token,
+      note: 'test override',
+    }),
+  }).then((res) => res.json())
+  assert.equal(upsertOverride.ok, true)
+  assert.equal(upsertOverride.override?.targetValue, 'admin@example.com')
+
+  const overrides = await fetch(`${server.baseUrl}/v2/admin/entitlements/overrides`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  }).then((res) => res.json())
+  assert.equal(Array.isArray(overrides.overrides), true)
+  assert.equal(overrides.overrides.length > 0, true)
 })

@@ -13,6 +13,7 @@ jspm_packages/
 
 # Build outputs
 dist/
+apps/*/dist/
 dist-ssr/
 out/
 release/

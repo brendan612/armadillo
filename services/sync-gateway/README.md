@@ -32,6 +32,9 @@ SYNC_MAX_BLOB_REQUEST_BYTES=33554432
 SYNC_RATE_LIMIT_WINDOW_MS=60000
 SYNC_RATE_LIMIT_MAX=300
 SYNC_ENTITLEMENT_TOKEN=<signed-jwt>
+SYNC_ENTITLEMENT_VERIFY_JWKS={"keys":[{"kty":"OKP","crv":"Ed25519","x":"<public-x>","kid":"dev-key","alg":"EdDSA","use":"sig"}]}
+SYNC_ADMIN_ALLOWLIST_EMAILS=admin@example.com
+SYNC_ADMIN_ALLOWLIST_SUBJECTS=subject:example-admin
 ```
 
 ## Client `.env` example
@@ -65,6 +68,16 @@ SYNC_DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db> npm run sync:selfhos
 - `GET /v2/orgs/:orgId/audit`
 - `POST /v2/orgs/:orgId/members`
 - `DELETE /v2/orgs/:orgId/members/:memberId`
+- `GET /v2/admin/me`
+- `GET /v2/admin/orgs`
+- `POST /v2/admin/orgs`
+- `GET /v2/admin/orgs/:orgId/members`
+- `POST /v2/admin/orgs/:orgId/members`
+- `DELETE /v2/admin/orgs/:orgId/members/:memberId`
+- `GET /v2/admin/orgs/:orgId/audit`
+- `GET /v2/admin/entitlements/overrides`
+- `PUT /v2/admin/entitlements/overrides`
+- `DELETE /v2/admin/entitlements/overrides`
 - `GET /healthz`
 - `GET /readyz`
 - `GET /metrics`

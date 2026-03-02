@@ -15,17 +15,22 @@ function normalizeBaseUrl(url: string) {
 }
 
 function resolveHttpBaseUrl() {
-  const explicitHttpUrl = import.meta.env.VITE_CONVEX_HTTP_URL || ''
+  const siteUrl = (import.meta.env.VITE_CONVEX_SITE_URL || '').trim()
+  if (siteUrl) {
+    return normalizeBaseUrl(siteUrl)
+  }
+
+  const deploymentUrl = (import.meta.env.VITE_CONVEX_URL || '').trim()
+  if (deploymentUrl) {
+    return normalizeBaseUrl(deploymentUrl.replace('.convex.cloud', '.convex.site'))
+  }
+
+  const explicitHttpUrl = (import.meta.env.VITE_CONVEX_HTTP_URL || '').trim()
   if (explicitHttpUrl) {
     return normalizeBaseUrl(explicitHttpUrl)
   }
 
-  const deploymentUrl = import.meta.env.VITE_CONVEX_URL || ''
-  if (!deploymentUrl) {
-    return ''
-  }
-
-  return normalizeBaseUrl(deploymentUrl.replace('.convex.cloud', '.convex.site'))
+  return ''
 }
 
 const baseUrl = resolveHttpBaseUrl()

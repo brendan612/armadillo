@@ -6,6 +6,12 @@ Armadillo is a secure, cross-platform password vault focused on fast local unloc
 
 Current version: `1.0.0-beta.1`
 
+## Workspace Layout
+
+- `apps/web` -> end-user vault app (web bundle used by Electron and Android sync)
+- `apps/admin` -> admin operations web app
+- `packages/shared-admin-client` -> shared admin API types/client
+
 ## Product Snapshot
 
 - End-to-end encrypted vault data (decrypts client-side only)
@@ -174,8 +180,8 @@ npx convex run entitlements:clearOverride \
 - Desktop fast lane is local-build only; pilot desktop stays on stable channel
 - OTA bundle/code-push updates are intentionally not used
 
-The app checks `public/update-manifest.json` (or `VITE_UPDATE_MANIFEST_URL`) and surfaces update status in Settings under **General -> App & Updates**.
-Keep `public/update-manifest.json` aligned with each production release and fast-lane drop so status and enforcement remain accurate.
+The app checks `apps/web/public/update-manifest.json` (or `VITE_UPDATE_MANIFEST_URL`) and surfaces update status in Settings under **General -> App & Updates**.
+Keep `apps/web/public/update-manifest.json` aligned with each production release and fast-lane drop so status and enforcement remain accurate.
 
 ## Security Notes
 
