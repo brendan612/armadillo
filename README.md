@@ -6,13 +6,19 @@ Armadillo is a secure, cross-platform password vault focused on fast local unloc
 
 Current version: `1.0.0-beta.1`
 
+## Workspace Layout
+
+- `apps/web` -> end-user vault app (web bundle used by Electron and Android sync)
+- `apps/admin` -> admin operations web app
+- `packages/shared-admin-client` -> shared admin API types/client
+
 ## Product Snapshot
 
 - End-to-end encrypted vault data (decrypts client-side only)
 - Local-file mode or cloud-only mode
 - Desktop (Electron), Web (Vite), and Android support
 - Import support for Google Password CSV + KeePass XML/CSV
-- Biometric unlock + Android autofill bridge
+- Passkey quick unlock (desktop/web) + biometric quick unlock (Android) + Android autofill bridge
 - Enterprise-ready foundations: org-scoped auth context, RBAC, audit endpoints, health/metrics endpoints
 
 ## App Preview
@@ -67,7 +73,8 @@ Output:
 
 Signing:
 
-- Set `CSC_LINK` and `CSC_KEY_PASSWORD` for signed release artifacts.
+- Use `npm run dist:win:signed` for signed release artifacts.
+- Set `CSC_LINK` and `CSC_KEY_PASSWORD` before running the signed build.
 - Validate signing env locally with:
 
 ```bash
@@ -144,6 +151,24 @@ ENTITLEMENT_DEV_PRIVATE_JWK='<private-jwk-json>' npm run entitlement:sign -- --t
 
 Manual signed token input is kept as a break-glass/admin path in settings.
 
+Per-account entitlement override (Convex):
+
+1. Set `ENTITLEMENT_ADMIN_SECRET` on your Convex deployment.
+2. Generate a signed token with desired tier/capabilities/flags.
+3. Upsert an override for the target account using one of `userId`, `tokenIdentifier`, `subject`, or `email`.
+
+```bash
+npx convex run entitlements:upsertOverride \
+  '{"adminSecret":"<secret>","targetType":"userId","targetValue":"<convex-user-id>","token":"<signed-jwt>","note":"manual premium grant"}'
+```
+
+Remove override:
+
+```bash
+npx convex run entitlements:clearOverride \
+  '{"adminSecret":"<secret>","targetType":"userId","targetValue":"<convex-user-id>"}'
+```
+
 ## Device Update Channels
 
 - `production` channel:
@@ -155,14 +180,14 @@ Manual signed token input is kept as a break-glass/admin path in settings.
 - Desktop fast lane is local-build only; pilot desktop stays on stable channel
 - OTA bundle/code-push updates are intentionally not used
 
-The app checks `public/update-manifest.json` (or `VITE_UPDATE_MANIFEST_URL`) and surfaces update status in Settings under **General -> App & Updates**.
-Keep `public/update-manifest.json` aligned with each production release and fast-lane drop so status and enforcement remain accurate.
+The app checks `apps/web/public/update-manifest.json` (or `VITE_UPDATE_MANIFEST_URL`) and surfaces update status in Settings under **General -> App & Updates**.
+Keep `apps/web/public/update-manifest.json` aligned with each production release and fast-lane drop so status and enforcement remain accurate.
 
 ## Security Notes
 
 - Local vault KDF: Argon2id (legacy PBKDF2 unlock compatibility retained)
 - Cloud stores encrypted saves only
-- Biometric quick unlock is device-local
+- Passkey and biometric quick unlock are device-local
 - Self-hosted v2 API includes org-scoped auth context, RBAC, audit, and ops endpoints
 
 ## Quality Gate

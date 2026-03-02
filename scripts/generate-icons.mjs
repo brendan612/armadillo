@@ -1,11 +1,11 @@
 /**
- * Generate all app icons from src/assets/armadillo.png
+ * Generate all app icons from apps/web/src/assets/armadillo.png
  *
  * Produces:
  *  - electron/icon.png (256x256 for electron-builder)
  *  - electron/icon.ico (multi-size ICO for Windows)
- *  - public/favicon.png (32x32 for web)
- *  - public/apple-touch-icon.png (180x180)
+ *  - apps/web/public/favicon.png (32x32 for web)
+ *  - apps/web/public/apple-touch-icon.png (180x180)
  *  - android mipmap icons (ic_launcher + ic_launcher_round + ic_launcher_foreground)
  */
 
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
-const src = join(root, 'src', 'assets', 'armadillo.png')
+const src = join(root, 'apps', 'web', 'src', 'assets', 'armadillo.png')
 
 // Android mipmap sizes
 const androidSizes = {
@@ -156,10 +156,10 @@ async function main() {
 
   // ---- Web icons ----
   console.log('\nWeb:')
-  await generatePng(src, join(root, 'public', 'favicon.png'), 32)
-  await generatePng(src, join(root, 'public', 'icon-192.png'), 192)
-  await generatePng(src, join(root, 'public', 'icon-512.png'), 512)
-  await generatePng(src, join(root, 'public', 'apple-touch-icon.png'), 180)
+  await generatePng(src, join(root, 'apps', 'web', 'public', 'favicon.png'), 32)
+  await generatePng(src, join(root, 'apps', 'web', 'public', 'icon-192.png'), 192)
+  await generatePng(src, join(root, 'apps', 'web', 'public', 'icon-512.png'), 512)
+  await generatePng(src, join(root, 'apps', 'web', 'public', 'apple-touch-icon.png'), 180)
 
   // ---- Android icons ----
   console.log('\nAndroid:')

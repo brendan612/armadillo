@@ -29,6 +29,27 @@ jobs:
       - name: Audit Runtime Dependencies
         run: npm audit --omit=dev
 
+  desktop_size_guard:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build Desktop Installer
+        run: npm run dist:win
+
+      - name: Enforce Desktop Size Guardrail
+        run: npm run size:desktop:check
+
   release_signing_guard:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'

@@ -13,6 +13,7 @@ jspm_packages/
 
 # Build outputs
 dist/
+apps/*/dist/
 dist-ssr/
 out/
 release/
@@ -53,3 +54,8 @@ vite.config.ts.timestamp-*
 
 # Local self-hosted sync data
 services/sync-gateway/data.json
+
+# Local entitlement/admin artifacts
+entitlement-private.jwk.json
+entitlement-public.jwks.json
+override.json
