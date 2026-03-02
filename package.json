@@ -22,6 +22,8 @@
     "lint": "eslint .",
     "test": "node --test services/sync-gateway/tests/*.test.mjs",
     "release:check-signing": "node scripts/release/check-signing-env.mjs",
+    "size:desktop:report": "node scripts/check-desktop-size.mjs --report",
+    "size:desktop:check": "node scripts/check-desktop-size.mjs --check",
     "ci:check": "npm run lint && npm run typecheck && npm run test && npm run build:web",
     "preview": "vite preview",
     "convex:dev": "convex dev",
@@ -47,8 +49,7 @@
     "lucide-react": "^0.544.0",
     "pg": "^8.16.3",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-icons": "^5.5.0"
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@capacitor/android": "^8.1.0",
@@ -81,11 +82,16 @@
     "directories": {
       "output": "release"
     },
+    "compression": "maximum",
     "icon": "electron/icon.png",
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/**"
+    ],
+    "electronLanguages": [
+      "en-US"
     ],
     "win": {
       "icon": "electron/icon.ico",

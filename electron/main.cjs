@@ -160,6 +160,38 @@ function resolveThemeCssPath() {
   return candidates[0]?.filePath || '';
 }
 
+function resolveSplashLogoPath() {
+  const sourceCandidates = [
+    path.join(__dirname, '..', 'src', 'assets', 'armadillo.webp'),
+    path.join(__dirname, '..', 'src', 'assets', 'armadillo.png'),
+  ];
+  const sourceMatch = sourceCandidates.find((candidate) => fs.existsSync(candidate));
+  if (sourceMatch) {
+    return sourceMatch;
+  }
+
+  const distAssetsPath = path.join(__dirname, '..', 'dist', 'assets');
+  if (!fs.existsSync(distAssetsPath)) {
+    return '';
+  }
+
+  const candidates = fs.readdirSync(distAssetsPath)
+    .filter((name) => /^armadillo-.*\.(webp|png)$/i.test(name))
+    .map((name) => path.join(distAssetsPath, name))
+    .map((filePath) => ({
+      filePath,
+      mtimeMs: fs.statSync(filePath).mtimeMs,
+    }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  return candidates[0]?.filePath || '';
+}
+
+function mimeTypeForImage(imagePath) {
+  if (/\.webp$/i.test(imagePath)) return 'image/webp';
+  return 'image/png';
+}
+
 function parseHexToRgb(value) {
   const hex = value.trim().replace('#', '');
   if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(hex)) return null;
@@ -298,11 +330,14 @@ function createSplashWindow() {
   });
   splashWindow.setIgnoreMouseEvents(true, { forward: true });
 
-  const logoPath = path.join(__dirname, '..', 'src', 'assets', 'armadillo.png');
+  const logoPath = resolveSplashLogoPath();
   let logoDataUrl = '';
   try {
+    if (!logoPath) {
+      throw new Error('missing logo');
+    }
     const logoBase64 = fs.readFileSync(logoPath).toString('base64');
-    logoDataUrl = `data:image/png;base64,${logoBase64}`;
+    logoDataUrl = `data:${mimeTypeForImage(logoPath)};base64,${logoBase64}`;
   } catch {
     logoDataUrl = '';
   }

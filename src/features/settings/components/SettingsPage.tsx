@@ -13,7 +13,7 @@ import {
   Palette, User, LogOut, KeyRound, Package, RefreshCw, ExternalLink, Database, Cloud, CloudUpload,
   ShieldAlert, ShieldCheck, Search, LifeBuoy, RotateCcw, ShieldOff, Smartphone, AlertTriangle, ServerCrash,
 } from 'lucide-react'
-import armadilloLogo from '../../../assets/armadillo.png'
+import armadilloLogo from '../../../assets/armadillo.webp'
 import googleLogo from '../../../assets/other providers/google.png'
 import lastpassLogo from '../../../assets/other providers/lastpass.png'
 

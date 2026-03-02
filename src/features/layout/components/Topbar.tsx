@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
-import logoSrc from '../../../assets/armadillo.png'
+import logoSrc from '../../../assets/armadillo.webp'
 
 const QUICK_ENTRY_TYPES = [
   { key: 'password', label: 'Password' },

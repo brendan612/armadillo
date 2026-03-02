@@ -2,7 +2,7 @@ import { CloudAuthStatusCard } from './CloudAuthStatusCard'
 import { LocalVaultPickerCard } from './LocalVaultPickerCard'
 import { DesktopTitlebar } from '../../layout/components/DesktopTitlebar'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
-import logoSrc from '../../../assets/armadillo.png'
+import logoSrc from '../../../assets/armadillo.webp'
 
 export function CreateVaultScreen() {
   const { effectivePlatform } = useVaultAppDerived()
