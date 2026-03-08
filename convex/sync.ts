@@ -4,6 +4,33 @@ import { v } from 'convex/values'
 
 const DEFAULT_MAX_BLOB_FILE_BYTES = 20 * 1024 * 1024
 const DEFAULT_MAX_BLOB_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+const DEFAULT_STORAGE_LIMIT_PREMIUM_BYTES = 2 * 1024 * 1024 * 1024
+
+const PLAN_CAPABILITIES = {
+  free: [] as const,
+  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan'] as const,
+  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan', 'enterprise.self_hosted', 'enterprise.org_admin'] as const,
+}
+
+const DEFAULT_FLAGS = {
+  'billing.plans_section': true,
+  'billing.manual_token_entry': true,
+  'experiments.enterprise_team_ui': false,
+  'experiments.storage_tab': true,
+}
+
+function normalizeScopeId(scopeType: 'org' | 'user', scopeId: string) {
+  const trimmed = scopeId.trim()
+  return scopeType === 'user' && trimmed.includes('@') ? trimmed.toLowerCase() : trimmed
+}
+
+function isSubscriptionEffective(status: 'active' | 'trialing' | 'canceled' | 'past_due' | 'paused') {
+  return status === 'active' || status === 'trialing'
+}
+
+function getCapabilitiesForTier(tier: 'free' | 'premium' | 'enterprise') {
+  return [...PLAN_CAPABILITIES[tier]]
+}
 
 export const getUserProfile = query({
   args: { tokenIdentifier: v.string() },
@@ -123,6 +150,7 @@ export const pullByOwnerVault = query({
 export const pushByOwnerVault = mutation({
   args: {
     ownerId: v.string(),
+    orgId: v.optional(v.string()),
     vaultId: v.string(),
     revision: v.number(),
     encryptedFile: v.string(),
@@ -137,6 +165,7 @@ export const pushByOwnerVault = mutation({
     if (!existing) {
       await ctx.db.insert('vaultSnapshots', {
         ownerId: args.ownerId,
+        ...(args.orgId ? { orgId: args.orgId } : {}),
         vaultId: args.vaultId,
         revision: args.revision,
         encryptedFile: args.encryptedFile,
@@ -150,6 +179,7 @@ export const pushByOwnerVault = mutation({
     }
 
     await ctx.db.patch(existing._id, {
+      ...(args.orgId ? { orgId: args.orgId } : {}),
       revision: args.revision,
       encryptedFile: args.encryptedFile,
       updatedAt: args.updatedAt,
@@ -228,6 +258,7 @@ export const listBlobByOwnerVault = query({
 export const putBlobByOwnerVault = mutation({
   args: {
     ownerId: v.string(),
+    orgId: v.optional(v.string()),
     vaultId: v.string(),
     blobId: v.string(),
     nonce: v.string(),
@@ -266,6 +297,7 @@ export const putBlobByOwnerVault = mutation({
     if (!existing) {
       await ctx.db.insert('vaultBlobs', {
         ownerId: args.ownerId,
+        ...(args.orgId ? { orgId: args.orgId } : {}),
         vaultId: args.vaultId,
         blobId: args.blobId,
         nonce: args.nonce,
@@ -280,6 +312,7 @@ export const putBlobByOwnerVault = mutation({
     }
 
     await ctx.db.patch(existing._id, {
+      ...(args.orgId ? { orgId: args.orgId } : {}),
       nonce: args.nonce,
       ciphertext: args.ciphertext,
       sizeBytes: args.sizeBytes,
@@ -335,6 +368,35 @@ const overrideTargetTypeValidator = v.union(
   v.literal('email'),
 )
 
+const overrideModeValidator = v.union(
+  v.literal('token'),
+  v.literal('derived'),
+)
+
+const planTierValidator = v.union(
+  v.literal('free'),
+  v.literal('premium'),
+  v.literal('enterprise'),
+)
+
+const subscriptionScopeTypeValidator = v.union(
+  v.literal('org'),
+  v.literal('user'),
+)
+
+const subscriptionStatusValidator = v.union(
+  v.literal('active'),
+  v.literal('trialing'),
+  v.literal('canceled'),
+  v.literal('past_due'),
+  v.literal('paused'),
+)
+
+const billingModeValidator = v.union(
+  v.literal('manual'),
+  v.literal('external'),
+)
+
 export const getEntitlementOverrideToken = query({
   args: {
     targetType: overrideTargetTypeValidator,
@@ -346,6 +408,19 @@ export const getEntitlementOverrideToken = query({
       .withIndex('by_target', (q) => q.eq('targetType', args.targetType).eq('targetValue', args.targetValue))
       .unique()
     return typeof row?.token === 'string' ? row.token : null
+  },
+})
+
+export const getEntitlementOverride = query({
+  args: {
+    targetType: overrideTargetTypeValidator,
+    targetValue: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query('entitlementOverrides')
+      .withIndex('by_target', (q) => q.eq('targetType', args.targetType).eq('targetValue', args.targetValue))
+      .unique()
   },
 })
 
@@ -641,7 +716,10 @@ export const upsertEntitlementOverride = mutation({
   args: {
     targetType: overrideTargetTypeValidator,
     targetValue: v.string(),
-    token: v.string(),
+    mode: overrideModeValidator,
+    token: v.optional(v.string()),
+    tier: v.optional(planTierValidator),
+    capabilities: v.optional(v.array(v.string())),
     note: v.string(),
     updatedAt: v.string(),
     updatedBy: v.string(),
@@ -653,7 +731,10 @@ export const upsertEntitlementOverride = mutation({
       .unique()
     if (existing) {
       await ctx.db.patch(existing._id, {
-        token: args.token,
+        mode: args.mode,
+        ...(args.token ? { token: args.token } : {}),
+        ...(args.tier ? { tier: args.tier } : {}),
+        capabilities: args.capabilities ?? [],
         note: args.note,
         updatedAt: args.updatedAt,
         updatedBy: args.updatedBy,
@@ -663,7 +744,10 @@ export const upsertEntitlementOverride = mutation({
     const id = await ctx.db.insert('entitlementOverrides', {
       targetType: args.targetType,
       targetValue: args.targetValue,
-      token: args.token,
+      mode: args.mode,
+      ...(args.token ? { token: args.token } : {}),
+      ...(args.tier ? { tier: args.tier } : {}),
+      capabilities: args.capabilities ?? [],
       note: args.note,
       updatedAt: args.updatedAt,
       updatedBy: args.updatedBy,
@@ -687,6 +771,292 @@ export const deleteEntitlementOverride = mutation({
       return { deleted: true }
     }
     return { deleted: false }
+  },
+})
+
+export const getSubscriptionRecord = query({
+  args: {
+    scopeType: subscriptionScopeTypeValidator,
+    scopeId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const scopeId = normalizeScopeId(args.scopeType, args.scopeId)
+    if (!scopeId) return null
+    return await ctx.db
+      .query('subscriptionRecords')
+      .withIndex('by_scope', (q) => q.eq('scopeType', args.scopeType).eq('scopeId', scopeId))
+      .unique()
+  },
+})
+
+export const listSubscriptionRecords = query({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db
+      .query('subscriptionRecords')
+      .withIndex('by_updated_at')
+      .collect()
+  },
+})
+
+export const upsertSubscriptionRecord = mutation({
+  args: {
+    scopeType: subscriptionScopeTypeValidator,
+    scopeId: v.string(),
+    tier: planTierValidator,
+    status: subscriptionStatusValidator,
+    billingMode: billingModeValidator,
+    seatLimit: v.optional(v.number()),
+    storageLimitBytes: v.optional(v.number()),
+    renewalAt: v.optional(v.string()),
+    endAt: v.optional(v.string()),
+    note: v.optional(v.string()),
+    updatedAt: v.string(),
+    updatedBy: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const scopeId = normalizeScopeId(args.scopeType, args.scopeId)
+    const existing = await ctx.db
+      .query('subscriptionRecords')
+      .withIndex('by_scope', (q) => q.eq('scopeType', args.scopeType).eq('scopeId', scopeId))
+      .unique()
+    const payload = {
+      scopeType: args.scopeType,
+      scopeId,
+      tier: args.tier,
+      status: args.status,
+      billingMode: args.billingMode,
+      ...(args.seatLimit === undefined ? {} : { seatLimit: args.seatLimit }),
+      ...(args.storageLimitBytes === undefined ? {} : { storageLimitBytes: args.storageLimitBytes }),
+      ...(args.renewalAt === undefined ? {} : { renewalAt: args.renewalAt }),
+      ...(args.endAt === undefined ? {} : { endAt: args.endAt }),
+      ...(args.note === undefined ? {} : { note: args.note }),
+      updatedAt: args.updatedAt,
+      updatedBy: args.updatedBy,
+    }
+    if (existing) {
+      await ctx.db.patch(existing._id, payload)
+      return { id: String(existing._id) }
+    }
+    const id = await ctx.db.insert('subscriptionRecords', payload)
+    return { id: String(id) }
+  },
+})
+
+export const listVaultSummariesByOrg = query({
+  args: { orgId: v.string() },
+  handler: async (ctx, args) => {
+    const snapshots = await ctx.db
+      .query('vaultSnapshots')
+      .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+      .collect()
+    const blobs = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+      .collect()
+
+    const blobUsageByVault = new Map<string, number>()
+    const blobCountByVault = new Map<string, number>()
+    for (const blob of blobs) {
+      blobUsageByVault.set(blob.vaultId, (blobUsageByVault.get(blob.vaultId) || 0) + Math.max(0, blob.sizeBytes))
+      blobCountByVault.set(blob.vaultId, (blobCountByVault.get(blob.vaultId) || 0) + 1)
+    }
+
+    const latestByVault = new Map<string, typeof snapshots[number]>()
+    for (const row of snapshots) {
+      const current = latestByVault.get(row.vaultId)
+      if (!current || row.updatedAt > current.updatedAt || (row.updatedAt === current.updatedAt && row.revision > current.revision)) {
+        latestByVault.set(row.vaultId, row)
+      }
+    }
+
+    return Array.from(latestByVault.values())
+      .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))
+      .map((row) => ({
+        vaultId: row.vaultId,
+        ownerId: row.ownerId,
+        revision: row.revision,
+        updatedAt: row.updatedAt,
+        updatedBy: row.ownerId,
+        blobCount: blobCountByVault.get(row.vaultId) || 0,
+        storageBytes: blobUsageByVault.get(row.vaultId) || 0,
+      }))
+  },
+})
+
+export const deleteVaultsByOrg = mutation({
+  args: {
+    orgId: v.string(),
+    vaultId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const snapshots = await ctx.db
+      .query('vaultSnapshots')
+      .withIndex('by_org_vault', (q) => q.eq('orgId', args.orgId).eq('vaultId', args.vaultId))
+      .collect()
+    const blobs = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_org_vault_blobs', (q) => q.eq('orgId', args.orgId).eq('vaultId', args.vaultId))
+      .collect()
+    for (const row of snapshots) {
+      await ctx.db.delete(row._id)
+    }
+    for (const row of blobs) {
+      await ctx.db.delete(row._id)
+    }
+    return { deleted: snapshots.length > 0 || blobs.length > 0 }
+  },
+})
+
+export const getOrgUsageSummary = query({
+  args: { orgId: v.string() },
+  handler: async (ctx, args) => {
+    const members = await ctx.db
+      .query('orgMembers')
+      .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+      .collect()
+    const snapshots = await ctx.db
+      .query('vaultSnapshots')
+      .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+      .collect()
+    const blobs = await ctx.db
+      .query('vaultBlobs')
+      .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+      .collect()
+
+    const vaultIds = new Set(snapshots.map((row) => row.vaultId))
+    let storageBytes = 0
+    for (const row of blobs) {
+      storageBytes += Math.max(0, row.sizeBytes)
+      vaultIds.add(row.vaultId)
+    }
+    const lastVaultActivityAt = snapshots
+      .map((row) => row.updatedAt)
+      .sort((a, b) => (b > a ? 1 : -1))[0] ?? null
+
+    return {
+      orgId: args.orgId,
+      memberCount: members.length,
+      vaultCount: vaultIds.size,
+      storageBytes,
+      lastVaultActivityAt,
+    }
+  },
+})
+
+export const getOperatorOverview = query({
+  args: {},
+  handler: async (ctx) => {
+    const orgs = await ctx.db.query('orgs').collect()
+    const members = await ctx.db.query('orgMembers').collect()
+    const snapshots = await ctx.db.query('vaultSnapshots').collect()
+    const blobs = await ctx.db.query('vaultBlobs').collect()
+    const subscriptions = await ctx.db.query('subscriptionRecords').collect()
+
+    const subscriptionsByTier = { free: 0, premium: 0, enterprise: 0 }
+    const subscriptionsByStatus = { active: 0, trialing: 0, canceled: 0, past_due: 0, paused: 0 }
+    for (const record of subscriptions) {
+      subscriptionsByTier[record.tier] += 1
+      subscriptionsByStatus[record.status] += 1
+    }
+
+    return {
+      totalOrgs: orgs.length,
+      totalMembers: members.length,
+      totalVaults: snapshots.length,
+      totalStorageBytes: blobs.reduce((total, row) => total + Math.max(0, row.sizeBytes), 0),
+      subscriptionsByTier,
+      subscriptionsByStatus,
+      provider: 'convex',
+    }
+  },
+})
+
+export const searchCustomers = query({
+  args: { query: v.string() },
+  handler: async (ctx, args) => {
+    const needle = args.query.trim().toLowerCase()
+    if (!needle) return []
+
+    const orgs = await ctx.db.query('orgs').collect()
+    const members = await ctx.db.query('orgMembers').collect()
+    const subscriptions = await ctx.db.query('subscriptionRecords').collect()
+    const snapshots = await ctx.db.query('vaultSnapshots').collect()
+
+    const memberCountByOrg = new Map<string, number>()
+    const matchingMembersByOrg = new Map<string, string[]>()
+    const lastActivityByOrg = new Map<string, string>()
+    const subscriptionByOrg = new Map<string, typeof subscriptions[number]>()
+
+    for (const row of members) {
+      memberCountByOrg.set(row.orgId, (memberCountByOrg.get(row.orgId) || 0) + 1)
+      if (row.memberId.toLowerCase().includes(needle)) {
+        const rows = matchingMembersByOrg.get(row.orgId) ?? []
+        rows.push(row.memberId)
+        matchingMembersByOrg.set(row.orgId, rows)
+      }
+    }
+    for (const row of snapshots) {
+      if (!row.orgId) continue
+      const current = lastActivityByOrg.get(row.orgId)
+      if (!current || row.updatedAt > current) {
+        lastActivityByOrg.set(row.orgId, row.updatedAt)
+      }
+    }
+    for (const row of subscriptions) {
+      if (row.scopeType !== 'org') continue
+      subscriptionByOrg.set(row.scopeId, row)
+    }
+
+    return orgs
+      .filter((org) => (
+        org.orgId.toLowerCase().includes(needle)
+        || org.name.toLowerCase().includes(needle)
+        || matchingMembersByOrg.has(org.orgId)
+      ))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((org) => ({
+        orgId: org.orgId,
+        orgName: org.name,
+        memberCount: memberCountByOrg.get(org.orgId) || 0,
+        matchedMembers: matchingMembersByOrg.get(org.orgId) ?? [],
+        subscriptionTier: subscriptionByOrg.get(org.orgId)?.tier ?? null,
+        lastActivityAt: lastActivityByOrg.get(org.orgId) ?? null,
+      }))
+  },
+})
+
+export const getEffectiveEntitlementSummary = query({
+  args: {
+    scopeType: subscriptionScopeTypeValidator,
+    scopeId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const scopeId = normalizeScopeId(args.scopeType, args.scopeId)
+    const record = await ctx.db
+      .query('subscriptionRecords')
+      .withIndex('by_scope', (q) => q.eq('scopeType', args.scopeType).eq('scopeId', scopeId))
+      .unique()
+    if (record && isSubscriptionEffective(record.status)) {
+      return {
+        source: 'subscription',
+        tier: record.tier,
+        capabilities: getCapabilitiesForTier(record.tier),
+        flags: DEFAULT_FLAGS,
+        reason: `${record.tier} subscription`,
+        storageLimitBytes: record.storageLimitBytes ?? (record.tier === 'premium' ? DEFAULT_STORAGE_LIMIT_PREMIUM_BYTES : null),
+        seatLimit: record.seatLimit ?? null,
+      }
+    }
+    return {
+      source: 'free',
+      tier: 'free' as const,
+      capabilities: [] as string[],
+      flags: DEFAULT_FLAGS,
+      reason: 'Free plan active',
+      storageLimitBytes: 0,
+      seatLimit: null,
+    }
   },
 })
 

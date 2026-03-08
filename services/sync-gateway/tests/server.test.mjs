@@ -86,6 +86,15 @@ function spawnServer(envOverrides = {}) {
   return { child, baseUrl, cleanup }
 }
 
+async function fetchJson(url, init = {}) {
+  const response = await fetch(url, init)
+  const text = await response.text()
+  return {
+    status: response.status,
+    body: text ? JSON.parse(text) : null,
+  }
+}
+
 test('v2 auth status and entitlement endpoints respond', async (t) => {
   const server = spawnServer()
   t.after(async () => {
@@ -380,4 +389,267 @@ test('v2 admin endpoints enforce allowlist+capability and support overrides', as
   }).then((res) => res.json())
   assert.equal(Array.isArray(overrides.overrides), true)
   assert.equal(overrides.overrides.length > 0, true)
+})
+
+test('v2 operator endpoints expose vaults, usage, overview, and customer search', async (t) => {
+  const entitlement = createSignedEntitlementToken()
+  const bearer = 'admin-seed-token'
+  const orgMemberToken = 'member-1'
+  const server = spawnServer({
+    SYNC_ENTITLEMENT_TOKEN: entitlement.token,
+    SYNC_ENTITLEMENT_VERIFY_JWKS: JSON.stringify(entitlement.jwks),
+    SYNC_ADMIN_ALLOWLIST_SUBJECTS: `user:${bearer}`,
+  })
+  t.after(async () => {
+    await server.cleanup()
+  })
+
+  await waitForReady(server.baseUrl)
+
+  const createdOrg = await fetchJson(`${server.baseUrl}/v2/admin/orgs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ orgId: 'org_customer_ops', name: 'Customer Ops' }),
+  })
+  assert.equal(createdOrg.status, 200)
+  assert.equal(createdOrg.body.org?.id, 'org_customer_ops')
+
+  const memberUpsert = await fetchJson(`${server.baseUrl}/v2/admin/orgs/org_customer_ops/members`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ memberId: `user:${orgMemberToken}`, role: 'owner' }),
+  })
+  assert.equal(memberUpsert.status, 200)
+
+  const snapshot = {
+    format: 'armadillo-v1',
+    vaultId: 'vault-customer-1',
+    revision: 3,
+    updatedAt: new Date().toISOString(),
+    kdf: {
+      algorithm: 'ARGON2ID',
+      iterations: 3,
+      memoryKiB: 65536,
+      parallelism: 1,
+      salt: 'c2FsdA==',
+    },
+    wrappedVaultKey: {
+      nonce: 'bm9uY2U=',
+      ciphertext: 'Y2lwaGVy',
+    },
+    vaultData: {
+      nonce: 'bm9uY2U=',
+      ciphertext: 'Y2lwaGVy',
+    },
+  }
+
+  const pushResponse = await fetchJson(`${server.baseUrl}/v2/vaults/${encodeURIComponent(snapshot.vaultId)}/push`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_customer_ops',
+    },
+    body: JSON.stringify({
+      revision: snapshot.revision,
+      encryptedFile: JSON.stringify(snapshot),
+      updatedAt: snapshot.updatedAt,
+    }),
+  })
+  assert.equal(pushResponse.status, 200)
+  assert.equal(pushResponse.body.accepted, true)
+
+  const blobPut = await fetchJson(`${server.baseUrl}/v2/vaults/${encodeURIComponent(snapshot.vaultId)}/blobs/blob-1`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_customer_ops',
+    },
+    body: JSON.stringify({
+      blobId: 'blob-1',
+      vaultId: snapshot.vaultId,
+      nonce: 'bm9uY2U=',
+      ciphertext: 'Y2lwaGVy',
+      sizeBytes: 6,
+      sha256: 'c2hh',
+      mimeType: 'text/plain',
+      fileName: 'ops.txt',
+      updatedAt: snapshot.updatedAt,
+    }),
+  })
+  assert.equal(blobPut.status, 200)
+
+  const vaults = await fetchJson(`${server.baseUrl}/v2/admin/orgs/org_customer_ops/vaults`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  })
+  assert.equal(vaults.status, 200)
+  assert.equal(vaults.body.vaults.length, 1)
+  assert.equal(vaults.body.vaults[0]?.vaultId, 'vault-customer-1')
+  assert.equal(vaults.body.vaults[0]?.storageBytes, 6)
+
+  const usage = await fetchJson(`${server.baseUrl}/v2/admin/orgs/org_customer_ops/usage`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  })
+  assert.equal(usage.status, 200)
+  assert.equal(usage.body.memberCount >= 1, true)
+  assert.equal(usage.body.vaultCount, 1)
+  assert.equal(usage.body.storageBytes, 6)
+
+  const overview = await fetchJson(`${server.baseUrl}/v2/admin/overview`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  })
+  assert.equal(overview.status, 200)
+  assert.equal(overview.body.provider, 'self_hosted')
+  assert.equal(overview.body.totalVaults >= 1, true)
+  assert.equal(overview.body.totalOrgs >= 1, true)
+
+  const search = await fetchJson(`${server.baseUrl}/v2/admin/customers/search?q=member-1`, {
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  })
+  assert.equal(search.status, 200)
+  assert.equal(search.body.results.some((row) => row.orgId === 'org_customer_ops'), true)
+
+  const removed = await fetchJson(`${server.baseUrl}/v2/admin/orgs/org_customer_ops/vaults/vault-customer-1`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+    },
+  })
+  assert.equal(removed.status, 200)
+  assert.equal(removed.body.deleted, true)
+})
+
+test('v2 subscription precedence prefers manual override over subscription and restricts enterprise writes', async (t) => {
+  const entitlement = createSignedEntitlementToken()
+  const bearer = 'admin-seed-token'
+  const orgMemberToken = 'member-1'
+  const server = spawnServer({
+    SYNC_ENTITLEMENT_TOKEN: entitlement.token,
+    SYNC_ENTITLEMENT_VERIFY_JWKS: JSON.stringify(entitlement.jwks),
+    SYNC_ADMIN_ALLOWLIST_SUBJECTS: `user:${bearer}`,
+  })
+  t.after(async () => {
+    await server.cleanup()
+  })
+
+  await waitForReady(server.baseUrl)
+
+  await fetchJson(`${server.baseUrl}/v2/admin/orgs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ orgId: 'org_subscription_ops', name: 'Subscription Ops' }),
+  })
+
+  await fetchJson(`${server.baseUrl}/v2/admin/orgs/org_subscription_ops/members`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ memberId: `user:${orgMemberToken}`, role: 'owner' }),
+  })
+
+  const savedSubscription = await fetchJson(`${server.baseUrl}/v2/admin/subscriptions`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({
+      scopeType: 'org',
+      scopeId: 'org_subscription_ops',
+      tier: 'premium',
+      status: 'active',
+      billingMode: 'manual',
+      seatLimit: 8,
+      storageLimitBytes: 4096,
+      note: 'premium org plan',
+    }),
+  })
+  assert.equal(savedSubscription.status, 200)
+  assert.equal(savedSubscription.body.subscription?.tier, 'premium')
+
+  const memberSubscriptionRead = await fetchJson(`${server.baseUrl}/v2/admin/subscriptions?scopeType=org&scopeId=org_subscription_ops`, {
+    headers: {
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_subscription_ops',
+    },
+  })
+  assert.equal(memberSubscriptionRead.status, 200)
+  assert.equal(memberSubscriptionRead.body.effective.tier, 'premium')
+
+  const memberEnterpriseWrite = await fetchJson(`${server.baseUrl}/v2/admin/subscriptions`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_subscription_ops',
+    },
+    body: JSON.stringify({
+      scopeType: 'org',
+      scopeId: 'org_subscription_ops',
+      tier: 'enterprise',
+      status: 'active',
+      billingMode: 'manual',
+    }),
+  })
+  assert.equal(memberEnterpriseWrite.status, 403)
+
+  const entitlementFromSubscription = await fetchJson(`${server.baseUrl}/v2/entitlements/me`, {
+    headers: {
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_subscription_ops',
+    },
+  })
+  assert.equal(entitlementFromSubscription.status, 200)
+  assert.equal(entitlementFromSubscription.body.token, null)
+  assert.equal(entitlementFromSubscription.body.derived?.source, 'subscription')
+  assert.equal(entitlementFromSubscription.body.derived?.tier, 'premium')
+
+  const overrideSaved = await fetchJson(`${server.baseUrl}/v2/admin/entitlements/overrides`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({
+      targetType: 'subject',
+      targetValue: `user:${orgMemberToken}`,
+      tier: 'enterprise',
+      capabilities: ['cloud.sync', 'vault.storage', 'enterprise.org_admin'],
+      note: 'manual enterprise override',
+    }),
+  })
+  assert.equal(overrideSaved.status, 200)
+  assert.equal(overrideSaved.body.override?.mode, 'derived')
+  assert.equal(overrideSaved.body.override?.tier, 'enterprise')
+
+  const entitlementFromOverride = await fetchJson(`${server.baseUrl}/v2/entitlements/me`, {
+    headers: {
+      Authorization: `Bearer ${orgMemberToken}`,
+      'x-armadillo-org': 'org_subscription_ops',
+    },
+  })
+  assert.equal(entitlementFromOverride.status, 200)
+  assert.equal(entitlementFromOverride.body.token, null)
+  assert.equal(entitlementFromOverride.body.derived?.source, 'override')
+  assert.equal(entitlementFromOverride.body.derived?.tier, 'enterprise')
 })

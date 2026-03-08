@@ -1,23 +1,12 @@
 const { contextBridge, ipcRenderer, shell } = require('electron');
-const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const vaultDir = path.join(os.homedir(), '.armadillo');
 const defaultVaultPath = path.join(vaultDir, 'vault.armadillo');
 
-function readVaultFile(filePath = defaultVaultPath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    return fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
-}
-
 function writeVaultFile(contents, filePath = defaultVaultPath) {
+  const fs = require('fs');
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, contents, 'utf8');
@@ -28,6 +17,7 @@ function writeVaultFile(contents, filePath = defaultVaultPath) {
 }
 
 function deleteVaultFile(filePath = defaultVaultPath) {
+  const fs = require('fs');
   try {
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
@@ -42,7 +32,8 @@ contextBridge.exposeInMainWorld('armadilloShell', {
   isElectron: true,
   platform: process.platform,
   getDefaultVaultPath: () => defaultVaultPath,
-  readVaultFile,
+  readVaultFile: (filePath) => ipcRenderer.invoke('armadillo:read-vault-file', filePath),
+  readVaultFileMeta: (filePath) => ipcRenderer.invoke('armadillo:read-vault-file-meta', filePath),
   writeVaultFile,
   deleteVaultFile,
   openExternal: (url) => shell.openExternal(url),

@@ -18,7 +18,12 @@ interface Window {
     isElectron: boolean
     platform: string
     getDefaultVaultPath?: () => string
-    readVaultFile?: (path?: string) => string | null
+    readVaultFile?: (path?: string) => Promise<string | null>
+    readVaultFileMeta?: (path?: string) => Promise<{
+      vaultId: string
+      revision: number
+      updatedAt: string
+    } | null>
     writeVaultFile?: (contents: string, path?: string) => boolean
     deleteVaultFile?: (path?: string) => boolean
     chooseVaultSavePath?: (currentPath?: string) => Promise<string | null>

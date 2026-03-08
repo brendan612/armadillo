@@ -1,4 +1,5 @@
 import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
+import type { CapabilityKey, PlanTier, RolloutFlagMap } from '../types/entitlements'
 
 export type Role = 'owner' | 'admin' | 'editor' | 'viewer'
 export type OverrideTargetType = 'userId' | 'tokenIdentifier' | 'subject' | 'email'
@@ -78,6 +79,14 @@ export type EntitlementFetchResponse = {
   reason: string
   expiresAt?: string | null
   fetchedAt?: string
+  derived?: {
+    source: 'subscription' | 'server_default' | 'free' | 'override'
+    tier: PlanTier
+    capabilities: CapabilityKey[]
+    flags: RolloutFlagMap
+    expiresAt?: string | null
+    subject?: string | null
+  } | null
 }
 
 export type VaultUpdateEvent = {
@@ -160,6 +169,7 @@ export type EntitlementStatusResponse = {
 export type SyncProviderClient = {
   configured: () => boolean
   setAuthToken: (token: string | null) => void
+  getAuthToken?: () => string | null
   setAuthContext?: (context: AuthContext | null) => void
   pullRemoteVaultByOwner: () => Promise<PullResponse | null>
   listRemoteVaultsByOwner: () => Promise<ListByOwnerResponse | null>

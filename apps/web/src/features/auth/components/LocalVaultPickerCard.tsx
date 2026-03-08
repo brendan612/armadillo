@@ -22,7 +22,21 @@ function vaultFolderLabel(path: string) {
   return trimmed.slice(0, slashIndex)
 }
 
-export function LocalVaultPickerCard() {
+function cloudSnapshotKey(snapshot: ArmadilloVaultFile) {
+  return `${snapshot.vaultId}:${snapshot.revision}:${snapshot.updatedAt}`
+}
+
+function cloudSnapshotLabel(snapshot: ArmadilloVaultFile, localVaultNameById: Record<string, string>) {
+  const localName = localVaultNameById[snapshot.vaultId]
+  const label = localName || `Vault ${snapshot.vaultId.slice(0, 8)}`
+  return `${label} - r${snapshot.revision} - ${new Date(snapshot.updatedAt).toLocaleString()}`
+}
+
+type LocalVaultPickerCardProps = {
+  mode?: 'full' | 'compact'
+}
+
+export function LocalVaultPickerCard({ mode = 'full' }: LocalVaultPickerCardProps) {
   const {
     phase,
     storageMode,
@@ -31,6 +45,7 @@ export function LocalVaultPickerCard() {
     recentLocalVaultPaths,
     recentLocalVaultPathStatuses,
     cloudVaultCandidates,
+    selectedCloudVaultSnapshot,
     localVaultNameById,
   } = useVaultAppState()
   const {
@@ -41,26 +56,36 @@ export function LocalVaultPickerCard() {
     selectRecentLocalVaultPath,
     removeRecentLocalVaultPath,
     loadVaultFromCloud,
+    selectCloudVaultSnapshot,
+    useLocalUnlockSource,
   } = useVaultAppActions()
+  const isCompact = mode === 'compact'
   const hasLocal = window.armadilloShell?.isElectron && storageMode === 'local_file'
   const hasCloud = cloudVaultCandidates.length > 0
   const [preferredTab, setPreferredTab] = useState<'cloud' | 'local' | null>(null)
+  const [showSelector, setShowSelector] = useState(false)
   const [selectedCloudSnapshotKey, setSelectedCloudSnapshotKey] = useState('')
   const [isDeletingCloudVault, setIsDeletingCloudVault] = useState(false)
   const [newVaultName, setNewVaultName] = useState('')
+
+  const selectedCloudSnapshot = useMemo<ArmadilloVaultFile | null>(() => {
+    if (!cloudVaultCandidates.length) return selectedCloudVaultSnapshot ?? null
+    return cloudVaultCandidates.find((entry) => cloudSnapshotKey(entry) === selectedCloudSnapshotKey)
+      ?? (selectedCloudVaultSnapshot
+        ? cloudVaultCandidates.find((entry) => cloudSnapshotKey(entry) === cloudSnapshotKey(selectedCloudVaultSnapshot)) ?? null
+        : null)
+      ?? cloudVaultCandidates[0]
+  }, [cloudVaultCandidates, selectedCloudSnapshotKey, selectedCloudVaultSnapshot])
+
   const activeTab: 'cloud' | 'local' = useMemo(() => {
     if (preferredTab === 'cloud' && hasCloud) return 'cloud'
     if (preferredTab === 'local' && hasLocal) return 'local'
-    return hasCloud ? 'cloud' : 'local'
-  }, [preferredTab, hasCloud, hasLocal])
+    if (isCompact && selectedCloudVaultSnapshot && hasCloud) return 'cloud'
+    return hasCloud && !hasLocal ? 'cloud' : 'local'
+  }, [preferredTab, hasCloud, hasLocal, isCompact, selectedCloudVaultSnapshot])
 
-  const selectedCloudSnapshot = useMemo<ArmadilloVaultFile | null>(() => {
-    if (!cloudVaultCandidates.length) return null
-    return cloudVaultCandidates.find((entry) => `${entry.vaultId}:${entry.revision}:${entry.updatedAt}` === selectedCloudSnapshotKey)
-      ?? cloudVaultCandidates[0]
-  }, [cloudVaultCandidates, selectedCloudSnapshotKey])
   const selectedCloudSnapshotResolvedKey = selectedCloudSnapshot
-    ? `${selectedCloudSnapshot.vaultId}:${selectedCloudSnapshot.revision}:${selectedCloudSnapshot.updatedAt}`
+    ? cloudSnapshotKey(selectedCloudSnapshot)
     : ''
   const selectedLocalStatusForDisplay = useMemo(() => {
     if (phase === 'create' && selectedLocalVaultStatus === 'missing' && localVaultPath.trim()) {
@@ -70,9 +95,152 @@ export function LocalVaultPickerCard() {
   }, [phase, selectedLocalVaultStatus, localVaultPath])
   const localVaultFileName = useMemo(() => (localVaultPath ? vaultFileLabel(localVaultPath) : ''), [localVaultPath])
   const localVaultFolder = useMemo(() => (localVaultPath ? vaultFolderLabel(localVaultPath) : ''), [localVaultPath])
+  const compactSummaryText = useMemo(() => {
+    if (selectedCloudVaultSnapshot) {
+      const localName = localVaultNameById[selectedCloudVaultSnapshot.vaultId]
+      return localName
+        ? `Using latest version of ${localName}`
+        : `Using latest version from vault ${selectedCloudVaultSnapshot.vaultId.slice(0, 8)}`
+    }
+    if (localVaultFileName) {
+      return `Using local vault ${localVaultFileName}`
+    }
+    if (hasCloud) {
+      return 'Using latest cloud version'
+    }
+    return 'Choose a vault to unlock'
+  }, [selectedCloudVaultSnapshot, localVaultNameById, localVaultFileName, hasCloud])
+  const compactSummaryMeta = useMemo(() => {
+    if (selectedCloudVaultSnapshot) {
+      return `Cloud - r${selectedCloudVaultSnapshot.revision} - ${new Date(selectedCloudVaultSnapshot.updatedAt).toLocaleString()}`
+    }
+    if (localVaultPath) {
+      return localVaultPath
+    }
+    return hasLocal ? 'Local file' : ''
+  }, [selectedCloudVaultSnapshot, localVaultPath, hasLocal])
 
-  if (!hasLocal && !hasCloud) {
+  if (!hasLocal && !hasCloud && !selectedCloudVaultSnapshot) {
     return null
+  }
+
+  if (isCompact) {
+    return (
+      <section className="vault-picker-inline">
+        <div className="vault-picker-summary">
+          <div className="vault-picker-summary-copy">
+            <p className="vault-picker-summary-label">Vault version</p>
+            <p className="vault-picker-summary-text">{compactSummaryText}</p>
+            {compactSummaryMeta && <p className="vault-picker-summary-meta" title={compactSummaryMeta}>{compactSummaryMeta}</p>}
+          </div>
+          {(hasLocal || hasCloud) && (
+            <button
+              className="auth-link-btn"
+              type="button"
+              onClick={() => setShowSelector((prev) => !prev)}
+            >
+              {showSelector ? 'Hide' : 'Change'}
+            </button>
+          )}
+        </div>
+
+        {showSelector && (
+          <div className="vault-picker-change-panel">
+            {hasLocal && hasCloud && (
+              <div className="vault-tabs">
+                <button
+                  className={activeTab === 'cloud' ? 'solid' : 'ghost'}
+                  type="button"
+                  onClick={() => {
+                    setPreferredTab('cloud')
+                    if (selectedCloudSnapshot) {
+                      selectCloudVaultSnapshot(selectedCloudSnapshot)
+                    }
+                  }}
+                >
+                  Cloud
+                </button>
+                <button
+                  className={activeTab === 'local' ? 'solid' : 'ghost'}
+                  type="button"
+                  onClick={() => {
+                    setPreferredTab('local')
+                    useLocalUnlockSource()
+                  }}
+                >
+                  Local
+                </button>
+              </div>
+            )}
+
+            {activeTab === 'cloud' && hasCloud && (
+              <div className="vault-picker-recent">
+                <p className="muted" style={{ margin: 0 }}>Choose which cloud version to unlock.</p>
+                <select
+                  className="vault-picker-select"
+                  value={selectedCloudSnapshotResolvedKey}
+                  onChange={(event) => {
+                    const nextSnapshot = cloudVaultCandidates.find((snapshot) => cloudSnapshotKey(snapshot) === event.target.value) ?? null
+                    setSelectedCloudSnapshotKey(event.target.value)
+                    if (nextSnapshot) {
+                      selectCloudVaultSnapshot(nextSnapshot)
+                    }
+                  }}
+                >
+                  {cloudVaultCandidates.map((snapshot) => (
+                    <option key={cloudSnapshotKey(snapshot)} value={cloudSnapshotKey(snapshot)}>
+                      {cloudSnapshotLabel(snapshot, localVaultNameById)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {activeTab === 'local' && hasLocal && (
+              <div className="vault-picker-recent">
+                <p className="muted" style={{ margin: 0 }}>Choose a local vault file.</p>
+                {recentLocalVaultPaths.length > 0 && (
+                  <select
+                    className="vault-picker-select"
+                    value={localVaultPath}
+                    onChange={(event) => {
+                      useLocalUnlockSource()
+                      selectRecentLocalVaultPath(event.target.value)
+                    }}
+                  >
+                    {!localVaultPath && <option value="">Select saved vault...</option>}
+                    {recentLocalVaultPaths.map((entry) => {
+                      const rawStatus = recentLocalVaultPathStatuses[entry.path] ?? 'unknown'
+                      const status = phase === 'create' && entry.path === localVaultPath && rawStatus === 'missing'
+                        ? 'pending'
+                        : rawStatus
+                      const usedAt = new Date(entry.lastUsedAt).toLocaleString()
+                      return (
+                        <option key={entry.path} value={entry.path}>
+                          {`${vaultFileLabel(entry.path)} - ${status === 'pending' ? 'New' : statusLabel(status)} - ${usedAt}`}
+                        </option>
+                      )
+                    })}
+                  </select>
+                )}
+                <div className="vault-picker-actions vault-picker-actions-single">
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() => {
+                      useLocalUnlockSource()
+                      void browseExistingLocalVault()
+                    }}
+                  >
+                    Browse Local Vault
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    )
   }
 
   return (
@@ -81,7 +249,8 @@ export function LocalVaultPickerCard() {
         <div className="vault-tabs">
           {hasCloud && (
             <button
-                className={activeTab === 'cloud' ? 'solid' : 'ghost'}
+              className={activeTab === 'cloud' ? 'solid' : 'ghost'}
+              type="button"
               onClick={() => setPreferredTab('cloud')}
             >
               Cloud
@@ -89,7 +258,8 @@ export function LocalVaultPickerCard() {
           )}
           {hasLocal && (
             <button
-                className={activeTab === 'local' ? 'solid' : 'ghost'}
+              className={activeTab === 'local' ? 'solid' : 'ghost'}
+              type="button"
               onClick={() => setPreferredTab('local')}
             >
               Local
@@ -126,8 +296,8 @@ export function LocalVaultPickerCard() {
             </div>
           )}
           <div className="vault-picker-actions">
-            <button className="ghost" onClick={() => void browseExistingLocalVault()}>Browse</button>
-            <button className="ghost" onClick={() => void chooseLocalVaultLocation()}>New Location</button>
+            <button className="ghost" type="button" onClick={() => void browseExistingLocalVault()}>Browse</button>
+            <button className="ghost" type="button" onClick={() => void chooseLocalVaultLocation()}>New Location</button>
           </div>
           <div className="vault-picker-create-row">
             <input
@@ -138,6 +308,7 @@ export function LocalVaultPickerCard() {
             />
             <button
               className="solid vault-picker-remove"
+              type="button"
               onClick={() => {
                 prepareNamedLocalVault(newVaultName)
                 setNewVaultName('')
@@ -170,6 +341,7 @@ export function LocalVaultPickerCard() {
                 </select>
                 <button
                   className="ghost danger vault-picker-remove"
+                  type="button"
                   onClick={() => removeRecentLocalVaultPath(localVaultPath)}
                   disabled={!localVaultPath}
                 >
@@ -193,18 +365,17 @@ export function LocalVaultPickerCard() {
                 onChange={(event) => setSelectedCloudSnapshotKey(event.target.value)}
               >
                 {cloudVaultCandidates.map((snapshot) => {
-                  const key = `${snapshot.vaultId}:${snapshot.revision}:${snapshot.updatedAt}`
-                  const localName = localVaultNameById[snapshot.vaultId]
-                  const label = localName || `Vault ${snapshot.vaultId.slice(0, 8)}`
+                  const key = cloudSnapshotKey(snapshot)
                   return (
                     <option key={key} value={key}>
-                      {`${label} - r${snapshot.revision} - ${new Date(snapshot.updatedAt).toLocaleString()}`}
+                      {cloudSnapshotLabel(snapshot, localVaultNameById)}
                     </option>
                   )
                 })}
               </select>
               <button
                 className="solid vault-picker-remove"
+                type="button"
                 onClick={() => {
                   if (selectedCloudSnapshot) {
                     loadVaultFromCloud(selectedCloudSnapshot)
@@ -216,6 +387,7 @@ export function LocalVaultPickerCard() {
               </button>
               <button
                 className="ghost danger vault-picker-remove"
+                type="button"
                 disabled={!selectedCloudSnapshot || isDeletingCloudVault}
                 onClick={() => {
                   if (!selectedCloudSnapshot || isDeletingCloudVault) {

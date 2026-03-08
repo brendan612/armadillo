@@ -9,6 +9,7 @@ import { ItemDetailPane } from '../features/items/components/ItemDetailPane'
 import { HomePane } from '../features/home/components/HomePane'
 import { StorageListPane } from '../features/storage/components/StorageListPane'
 import { StorageDetailPane } from '../features/storage/components/StorageDetailPane'
+import { AdminCenter } from '../features/admin/components/AdminCenter'
 import { FolderContextMenu } from '../features/nav/components/FolderContextMenu'
 import { TreeContextMenu } from '../features/nav/components/TreeContextMenu'
 import { ItemContextMenu } from '../features/items/components/ItemContextMenu'
@@ -61,7 +62,8 @@ export function AppShell() {
   const expiringCount = expiryAlerts.filter((a) => a.status === 'expiring').length
   const showExpiryBar = expiryAlerts.length > 0 && !expiryAlertsDismissed
   const showHomePane = workspaceSection === 'passwords' && selectedNode === 'home'
-  const showDetailPane = !showHomePane
+  const showAdminPane = workspaceSection === 'admin'
+  const showDetailPane = !showHomePane && !showAdminPane
   const updateRequired = appBuildInfo.channel === 'production' && updateCheckResult.status === 'required'
 
   function resetPullRefreshGesture() {
@@ -144,14 +146,22 @@ export function AppShell() {
         </section>
       ) : !showSettings && (
         <main
-          className={`workspace density-compact ${showHomePane ? 'workspace-home' : ''}`}
+          className={`workspace density-compact ${showHomePane ? 'workspace-home' : ''} ${showAdminPane ? 'workspace-admin' : ''}`}
           onTouchStart={effectivePlatform === 'mobile' ? handleWorkspaceTouchStart : undefined}
           onTouchMove={effectivePlatform === 'mobile' ? handleWorkspaceTouchMove : undefined}
           onTouchEnd={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
           onTouchCancel={effectivePlatform === 'mobile' ? resetPullRefreshGesture : undefined}
         >
           <SidebarPane />
-          {showHomePane ? <HomePane /> : workspaceSection === 'storage' ? <StorageListPane /> : <ItemListPane />}
+          {showAdminPane ? (
+            <AdminCenter />
+          ) : showHomePane ? (
+            <HomePane />
+          ) : workspaceSection === 'storage' ? (
+            <StorageListPane />
+          ) : (
+            <ItemListPane />
+          )}
           {showDetailPane && (workspaceSection === 'storage' ? <StorageDetailPane /> : <ItemDetailPane />)}
         </main>
       )}

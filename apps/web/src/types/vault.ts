@@ -1,3 +1,5 @@
+import type { VaultAiSettings } from './copilot'
+
 export type RiskState = 'safe' | 'weak' | 'reused' | 'exposed' | 'stale'
 export const VAULT_SCHEMA_VERSION = 6 as const
 
@@ -121,6 +123,17 @@ export type VaultThemeSettings = {
   motionLevel: ThemeMotionLevel
 }
 
+export type VaultKeybindAction = 'lockVault' | 'copyUsername' | 'copyPassword' | 'autofillItem'
+
+export type VaultKeybindShortcut = {
+  key: string
+  mod?: boolean
+  alt?: boolean
+  shift?: boolean
+}
+
+export type VaultKeybindSettings = Record<VaultKeybindAction, VaultKeybindShortcut | null>
+
 export type AutoFolderMatchType = 'domain' | 'titleToken' | 'tag'
 
 export type AutoFolderCustomMapping = {
@@ -133,10 +146,12 @@ export type AutoFolderCustomMapping = {
 export type VaultSettings = {
   trashRetentionDays: number
   generatorPresets: GeneratorPreset[]
+  keybinds?: VaultKeybindSettings
   autoFolderExcludedItemIds?: string[]
   autoFolderLockedFolderPaths?: string[]
   autoFolderCustomMappings?: AutoFolderCustomMapping[]
   theme?: VaultThemeSettings
+  ai?: VaultAiSettings
   breachCheck?: {
     enabled: boolean
     provider: 'hibp'
