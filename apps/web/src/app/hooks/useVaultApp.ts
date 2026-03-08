@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { flushSync } from 'react-dom'
 import { ConvexHttpClient } from 'convex/browser'
 import { useConvexAuth } from 'convex/react'
 import { useAuthActions, useAuthToken } from '@convex-dev/auth/react'
@@ -60,6 +61,8 @@ import {
   mapAnalysisToRisk,
   recomputeItemRisks,
 } from '../../shared/utils/passwordStrength'
+import { buildCopilotModel, defaultAiSettings, normalizeAiSettings } from '../../shared/utils/copilot'
+import { defaultKeybindSettings, normalizeKeybindSettings } from '../../shared/utils/keybinds'
 import { checkPasswordCompromised, scanPasswords, type BreachCheckStatus } from '../../lib/breachCheck'
 import { LocalNotifications } from '@capacitor/local-notifications'
 import AutofillBridge, { type CapturedCredentialDTO } from '../../plugins/autofillBridge'
@@ -67,11 +70,11 @@ import {
   clearCachedVaultSnapshot,
   clearLocalVaultFile,
   createVaultFile,
+  getActiveLocalVaultPath,
   getCachedVaultExpiresAt,
   getCachedVaultStatus,
   getCloudCacheTtlHours,
   getLocalVaultPath,
-  getLocalVaultPathStatus,
   getVaultStorageMode,
   listRecentLocalVaultPaths,
   loadCachedVaultSnapshot,
@@ -130,6 +133,10 @@ import {
   type UpdateCheckResult,
 } from '../../lib/updateManifest'
 import type {
+  VaultAiInputSnapshot,
+  VaultSuggestion,
+} from '../../types/copilot'
+import type {
   ArmadilloVaultFile,
   StorageKind,
   SecurityQuestion,
@@ -149,6 +156,8 @@ import type {
   CapabilityKey,
   DevFlagOverride,
   EntitlementState,
+  PlanTier,
+  RolloutFlagMap,
 } from '../../types/entitlements'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
@@ -158,8 +167,8 @@ type SyncState = 'local' | 'syncing' | 'live' | 'error'
 type CloudAuthState = 'unknown' | 'checking' | 'connected' | 'disconnected' | 'error'
 type FolderFilterMode = 'direct' | 'recursive'
 type SettingsCategoryId = 'general' | 'cloud' | 'security' | 'vault' | 'billing' | 'danger'
-type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'reused' | 'unfiled' | 'trash' | `folder:${string}`
-type WorkspaceSection = 'passwords' | 'storage'
+type SidebarNode = 'home' | 'all' | 'expiring' | 'expired' | 'weak' | 'reused' | 'exposed' | 'stale' | 'unfiled' | 'trash' | `folder:${string}`
+type WorkspaceSection = 'passwords' | 'storage' | 'admin'
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type StorageContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
@@ -176,7 +185,6 @@ const CLOUD_LIVE_REFRESH_INTERVAL_MS_MOBILE = 4000
 const CLOUD_LIVE_REFRESH_INTERVAL_MS_WEB = 10000
 const CLOUD_LIVE_REFRESH_INTERVAL_MS_DESKTOP = 15000
 const CLOUD_LIVE_REFRESH_INTERVAL_MS_SELF_HOSTED_FALLBACK = 60000
-const UNLOCK_SPINNER_MIN_VISIBLE_MS = 240
 const DEFAULT_FOLDER_COLOR = '#7f9cff'
 const DEFAULT_FOLDER_ICON = 'folder'
 const OAUTH_VERIFIER_STORAGE_KEY = '__convexAuthOAuthVerifier'
@@ -188,6 +196,9 @@ const BILLING_URL = (import.meta.env.VITE_BILLING_URL || '').trim()
 const APP_BUILD_INFO = getAppBuildInfo()
 const STORAGE_FILE_LIMIT_BYTES = 20 * 1024 * 1024
 const STORAGE_TOTAL_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+const LAST_OPENED_VAULT_ID_KEY = 'armadillo.last_opened_vault_id'
+const COPILOT_DISMISSED_SUGGESTIONS_KEY_PREFIX = 'armadillo.copilot.dismissed.'
+const COPILOT_STALE_ITEM_DAYS = 180
 
 type BackupManifestBlob = {
   blobId: string
@@ -226,6 +237,57 @@ function toIsoOrNull(value: unknown) {
   const parsed = Date.parse(value)
   if (!Number.isFinite(parsed)) return null
   return new Date(parsed).toISOString()
+}
+
+function getLastOpenedVaultId() {
+  return localStorage.getItem(LAST_OPENED_VAULT_ID_KEY)?.trim() || ''
+}
+
+function rememberLastOpenedVaultId(vaultId: string) {
+  const trimmed = vaultId.trim()
+  if (!trimmed) return
+  localStorage.setItem(LAST_OPENED_VAULT_ID_KEY, trimmed)
+}
+
+function dismissedCopilotSuggestionStorageKey(vaultId: string) {
+  return `${COPILOT_DISMISSED_SUGGESTIONS_KEY_PREFIX}${vaultId}`
+}
+
+function loadDismissedCopilotSuggestionIds(vaultId: string) {
+  if (!vaultId) return []
+  try {
+    const raw = localStorage.getItem(dismissedCopilotSuggestionStorageKey(vaultId))
+    const parsed = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  } catch {
+    return []
+  }
+}
+
+function saveDismissedCopilotSuggestionIds(vaultId: string, ids: string[]) {
+  if (!vaultId) return
+  if (ids.length === 0) {
+    localStorage.removeItem(dismissedCopilotSuggestionStorageKey(vaultId))
+    return
+  }
+  localStorage.setItem(dismissedCopilotSuggestionStorageKey(vaultId), JSON.stringify(ids))
+}
+
+function isPasswordOnlySidebarNode(node: SidebarNode) {
+  return node === 'home'
+    || node === 'expiring'
+    || node === 'expired'
+    || node === 'weak'
+    || node === 'reused'
+    || node === 'exposed'
+    || node === 'stale'
+}
+
+function isCopilotStaleItem(item: Pick<VaultItem, 'updatedAt'>) {
+  const parsed = Date.parse(item.updatedAt)
+  if (!Number.isFinite(parsed)) return false
+  return Date.now() - parsed >= COPILOT_STALE_ITEM_DAYS * 24 * 60 * 60 * 1000
 }
 
 /* shell sections moved inline into sidebar nav */
@@ -770,10 +832,12 @@ function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
   const normalizedTheme = normalizeThemeSettings(settings.theme)
   return {
     ...settings,
+    keybinds: normalizeKeybindSettings(settings.keybinds),
     autoFolderExcludedItemIds: uniqueNonEmptyStrings(settings.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: uniqueNonEmptyStrings(settings.autoFolderLockedFolderPaths).map((path) => normalizeAutoFolderPath(path)).filter(Boolean),
     autoFolderCustomMappings: normalizeAutoFolderMappings(settings.autoFolderCustomMappings),
     theme: normalizedTheme,
+    ai: normalizeAiSettings(settings.ai),
     breachCheck: normalizeBreachCheckSettings(settings.breachCheck),
   }
 }
@@ -782,9 +846,7 @@ function hasUnlockableVault(mode: VaultStorageMode) {
   if (mode === 'cloud_only') {
     return Boolean(loadCachedVaultSnapshot())
   }
-  const localPath = getLocalVaultPath()
-  const localFile = localPath ? loadLocalVaultFileAtPath(localPath) : loadLocalVaultFile()
-  return Boolean(localFile || loadCachedVaultSnapshot())
+  return Boolean(getActiveLocalVaultPath() || loadLocalVaultFile() || loadCachedVaultSnapshot())
 }
 
 function useSafeConvexAuth() {
@@ -847,12 +909,15 @@ export function useVaultApp() {
   const [vaultSettings, setVaultSettings] = useState<VaultSettings>({
     trashRetentionDays: 30,
     generatorPresets: [],
+    keybinds: defaultKeybindSettings(),
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
     theme: defaultThemeSettings(),
+    ai: defaultAiSettings(),
     breachCheck: defaultBreachCheckSettings(),
   })
+  const [dismissedCopilotSuggestionIds, setDismissedCopilotSuggestionIds] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [homeSearchQuery, setHomeSearchQuery] = useState('')
   const [workspaceSection, setWorkspaceSection] = useState<WorkspaceSection>('passwords')
@@ -881,9 +946,14 @@ export function useVaultApp() {
   const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>('unknown')
   const [cloudIdentity, setCloudIdentity] = useState('')
   const [isOrgMember, setIsOrgMember] = useState(false)
+  const [orgRoles, setOrgRoles] = useState<Array<'owner' | 'admin' | 'editor' | 'viewer'>>([])
   const [localVaultPath, setLocalVaultPath] = useState(() => (initialStorageMode === 'cloud_only' ? '' : getLocalVaultPath()))
   const [recentLocalVaultPaths, setRecentLocalVaultPaths] = useState<RecentLocalVaultEntry[]>(() =>
     initialStorageMode === 'cloud_only' ? [] : listRecentLocalVaultPaths())
+  const [selectedLocalVaultStatus, setSelectedLocalVaultStatus] = useState<LocalVaultPathStatus>('unknown')
+  const [recentLocalVaultPathStatuses, setRecentLocalVaultPathStatuses] = useState<Record<string, LocalVaultPathStatus>>({})
+  const [localVaultNameById, setLocalVaultNameById] = useState<Record<string, string>>({})
+  const [selectedLocalVaultFile, setSelectedLocalVaultFile] = useState<ArmadilloVaultFile | null>(null)
   const [cloudVaultSnapshot, setCloudVaultSnapshot] = useState<ArmadilloVaultFile | null>(null)
   const [cloudVaultCandidates, setCloudVaultCandidates] = useState<ArmadilloVaultFile[]>([])
   const [showAllCloudSnapshots, setShowAllCloudSnapshots] = useState(false)
@@ -930,6 +1000,7 @@ export function useVaultApp() {
   const consumeCapturedAutofillCredentialsRef = useRef<() => Promise<void>>(async () => {})
   const appliedThemeOverrideKeysRef = useRef<string[]>([])
   const riskBackfillRunIdRef = useRef(0)
+  const deferredSessionWorkRunIdRef = useRef(0)
   const { isAuthenticated } = useSafeConvexAuth()
   const { signIn, signOut } = useSafeAuthActions()
   const authToken = useSafeAuthToken()
@@ -973,45 +1044,16 @@ export function useVaultApp() {
     const parts = rawPath.split(/[\\/]/).filter(Boolean)
     return parts[parts.length - 1] || 'vault.armadillo'
   }, [localVaultPath, storageMode])
-  const selectedLocalVaultStatus = useMemo<LocalVaultPathStatus>(() => {
-    if (storageMode !== 'local_file') return 'unknown'
-    if (!localVaultPath.trim()) return 'unknown'
-    return getLocalVaultPathStatus(localVaultPath)
-  }, [localVaultPath, storageMode])
-  const recentLocalVaultPathStatuses = useMemo<Record<string, LocalVaultPathStatus>>(() => {
-    const statuses: Record<string, LocalVaultPathStatus> = {}
-    for (const entry of recentLocalVaultPaths) {
-      statuses[entry.path] = getLocalVaultPathStatus(entry.path)
-    }
-    return statuses
-  }, [recentLocalVaultPaths])
   const unlockSourceAvailable = useMemo(() => {
     if (storageMode === 'cloud_only') {
-      return Boolean(loadCachedVaultSnapshot())
+      return Boolean(cloudVaultSnapshot || loadCachedVaultSnapshot())
     }
-    return selectedLocalVaultStatus === 'exists' || Boolean(loadCachedVaultSnapshot())
-  }, [storageMode, selectedLocalVaultStatus])
+    if (window.armadilloShell?.isElectron) {
+      return Boolean(cloudVaultSnapshot || selectedLocalVaultFile || loadCachedVaultSnapshot())
+    }
+    return Boolean(cloudVaultSnapshot || selectedLocalVaultFile || loadLocalVaultFile() || loadCachedVaultSnapshot())
+  }, [cloudVaultSnapshot, selectedLocalVaultFile, storageMode])
   const quickUnlockCapabilities = useMemo(() => getQuickUnlockCapabilities(), [])
-  const localVaultNameById = useMemo<Record<string, string>>(() => {
-    if (storageMode !== 'local_file') return {}
-    const map: Record<string, string> = {}
-    const orderedPaths = [localVaultPath, ...recentLocalVaultPaths.map((entry) => entry.path)]
-      .map((value) => value.trim())
-      .filter(Boolean)
-    const seen = new Set<string>()
-    for (const path of orderedPaths) {
-      if (seen.has(path)) continue
-      seen.add(path)
-      const status = recentLocalVaultPathStatuses[path] ?? getLocalVaultPathStatus(path)
-      if (status !== 'exists') continue
-      const meta = readLocalVaultFileMeta(path)
-      if (!meta?.vaultId) continue
-      if (!map[meta.vaultId]) {
-        map[meta.vaultId] = fileNameFromPath(path)
-      }
-    }
-    return map
-  }, [storageMode, localVaultPath, recentLocalVaultPaths, recentLocalVaultPathStatuses])
   const recoveryConfig = vaultSession?.file.recovery
   const recoveryKitEnabled = Boolean(recoveryConfig)
   const recoveryKeyFingerprintSuffix = recoveryConfig?.recoveryKeyFingerprint
@@ -1019,6 +1061,56 @@ export function useVaultApp() {
     : ''
   const recoveryEnabledAt = recoveryConfig?.enabledAt ?? ''
   const recoveryRotatedAt = recoveryConfig?.rotatedAt ?? ''
+
+  useEffect(() => {
+    if (storageMode !== 'local_file' || !window.armadilloShell?.isElectron) {
+      setSelectedLocalVaultStatus('unknown')
+      setSelectedLocalVaultFile(null)
+      setRecentLocalVaultPathStatuses({})
+      setLocalVaultNameById({})
+      return
+    }
+
+    let cancelled = false
+
+    async function refreshLocalVaultState() {
+      const orderedPaths = [localVaultPath, ...recentLocalVaultPaths.map((entry) => entry.path)]
+        .map((value) => value.trim())
+        .filter(Boolean)
+      const uniquePaths = Array.from(new Set(orderedPaths))
+      const nextStatuses: Record<string, LocalVaultPathStatus> = {}
+      const nextLocalVaultNameById: Record<string, string> = {}
+
+      await Promise.all(uniquePaths.map(async (path) => {
+        const meta = await readLocalVaultFileMeta(path)
+        nextStatuses[path] = meta ? 'exists' : 'missing'
+        if (meta?.vaultId && !nextLocalVaultNameById[meta.vaultId]) {
+          nextLocalVaultNameById[meta.vaultId] = fileNameFromPath(path)
+        }
+      }))
+
+      let nextSelectedStatus: LocalVaultPathStatus = 'unknown'
+      let nextSelectedFile: ArmadilloVaultFile | null = null
+      if (localVaultPath.trim()) {
+        nextSelectedStatus = nextStatuses[localVaultPath] ?? 'unknown'
+        if (nextSelectedStatus === 'exists') {
+          nextSelectedFile = await loadLocalVaultFileAtPath(localVaultPath)
+        }
+      }
+
+      if (cancelled) return
+      setRecentLocalVaultPathStatuses(nextStatuses)
+      setLocalVaultNameById(nextLocalVaultNameById)
+      setSelectedLocalVaultStatus(nextSelectedStatus)
+      setSelectedLocalVaultFile(nextSelectedFile)
+    }
+
+    void refreshLocalVaultState()
+
+    return () => {
+      cancelled = true
+    }
+  }, [localVaultPath, recentLocalVaultPaths, storageMode])
 
   const completeGoogleSignInFromCallback = useCallback(async (callbackUrl: string, source: 'desktop' | 'android') => {
     try {
@@ -1085,58 +1177,70 @@ export function useVaultApp() {
     }
   }, [])
 
-  function applySession(session: VaultSession, options: ApplySessionOptions = {}) {
+  const applySession = useCallback((session: VaultSession, options: ApplySessionOptions = {}) => {
     const { resetNavigation = false } = options
+    const deferredRunId = ++deferredSessionWorkRunIdRef.current
+    const nextItems = session.payload.items
+    const nextStorageItems = session.payload.storageItems
+    const nextTrash = purgeExpiredTrash(session.payload.trash)
+    const alerts = computeExpiryAlerts(nextItems)
+    const firstId = nextItems[0]?.id || ''
+    const firstStorageId = nextStorageItems[0]?.id || ''
+    const currentSelectedIdStillExists = nextItems.some((item) => item.id === selectedId)
+    const currentSelectedStorageStillExists = nextStorageItems.some((item) => item.id === selectedStorageId)
+    const nextSelectedId = currentSelectedIdStillExists ? selectedId : firstId
+    const nextSelectedStorageId = currentSelectedStorageStillExists ? selectedStorageId : firstStorageId
+    rememberLastOpenedVaultId(session.file.vaultId)
     setVaultSession(session)
-    setItems(session.payload.items)
-    setStorageItems(session.payload.storageItems)
+    setItems(nextItems)
+    setStorageItems(nextStorageItems)
     setFolders(session.payload.folders)
-    setTrash(purgeExpiredTrash(session.payload.trash))
+    setTrash(nextTrash)
     const settings = normalizeAutoFolderSettings({
       ...session.payload.settings,
       trashRetentionDays: getSafeRetentionDays(session.payload.settings.trashRetentionDays),
       generatorPresets: session.payload.settings.generatorPresets ?? [],
     })
     setVaultSettings(settings)
+    setDismissedCopilotSuggestionIds(loadDismissedCopilotSuggestionIds(session.file.vaultId))
     const nextThemeSettings = normalizeThemeSettings(settings.theme)
     setThemeSettings(nextThemeSettings)
     setThemeSettingsDirty(false)
-    saveThemeSettingsToMirror(nextThemeSettings)
-    setAutoFolderPreview(null)
-    setAutoFolderPreviewDraft(null)
-    setShowAutoFolderPreview(false)
-    setAutoFolderPreferencesDirty(false)
-    setAutoFolderWarnings([])
-    setBreachScanRunning(false)
-    setBreachScanProgress({ done: 0, total: 0 })
-    setBreachScanSummary(null)
-    const alerts = computeExpiryAlerts(session.payload.items)
-    setExpiryAlerts(alerts)
-    setExpiryAlertsDismissed(false)
-    scheduleExpiryNotifications(alerts)
-    const firstId = session.payload.items[0]?.id || ''
-    const firstStorageId = session.payload.storageItems[0]?.id || ''
-    const currentSelectedIdStillExists = session.payload.items.some((item) => item.id === selectedId)
-    const currentSelectedStorageStillExists = session.payload.storageItems.some((item) => item.id === selectedStorageId)
-    const nextSelectedId = resetNavigation
-      ? firstId
-      : (currentSelectedIdStillExists ? selectedId : firstId)
-    const nextSelectedStorageId = resetNavigation
-      ? firstStorageId
-      : (currentSelectedStorageStillExists ? selectedStorageId : firstStorageId)
     setSelectedId(nextSelectedId)
-    setDraft(session.payload.items.find((item) => item.id === nextSelectedId) ?? null)
+    setDraft(nextItems.find((item) => item.id === nextSelectedId) ?? null)
     setSelectedStorageId(nextSelectedStorageId)
-    setStorageDraft(session.payload.storageItems.find((item) => item.id === nextSelectedStorageId) ?? null)
+    setStorageDraft(nextStorageItems.find((item) => item.id === nextSelectedStorageId) ?? null)
+    setPhase('ready')
     if (resetNavigation) {
+      const hasPasswords = nextItems.length > 0
       setWorkspaceSection('passwords')
-      setSelectedNode('home')
+      setSelectedNode(hasPasswords ? 'all' : 'home')
+      setActivePanel('details')
       setFolderFilterMode('direct')
-      setMobileStep('home')
+      setMobileStep(hasPasswords ? 'detail' : 'home')
       setHomeSearchQuery('')
+      setQuery('')
     }
-    syncCredentialsToNative(session.payload.items)
-  }
+
+    window.setTimeout(() => {
+      if (deferredRunId !== deferredSessionWorkRunIdRef.current) return
+      saveThemeSettingsToMirror(nextThemeSettings)
+      scheduleExpiryNotifications(alerts)
+      startTransition(() => {
+        if (deferredRunId !== deferredSessionWorkRunIdRef.current) return
+        setAutoFolderPreview(null)
+        setAutoFolderPreviewDraft(null)
+        setShowAutoFolderPreview(false)
+        setAutoFolderPreferencesDirty(false)
+        setAutoFolderWarnings([])
+        setBreachScanRunning(false)
+        setBreachScanProgress({ done: 0, total: 0 })
+        setBreachScanSummary(null)
+        setExpiryAlerts(alerts)
+        setExpiryAlertsDismissed(false)
+      })
+    }, 0)
+  }, [selectedId, selectedStorageId])
 
   function syncCredentialsToNative(vaultItems: VaultItem[], attempt = 0) {
     if (!isNativeAndroid()) return
@@ -1320,14 +1424,19 @@ export function useVaultApp() {
     setRecentLocalVaultPaths(listRecentLocalVaultPaths())
   }, [cloudCacheTtlHours, storageMode])
 
-  const getUnlockSourceFile = useCallback(() => {
+  const getUnlockSourceFile = useCallback(async () => {
     if (storageMode === 'cloud_only') {
+      return cloudVaultSnapshot || loadCachedVaultSnapshot()
+    }
+    if (cloudVaultSnapshot) return cloudVaultSnapshot
+    if (selectedLocalVaultFile) return selectedLocalVaultFile
+    const fromSelectedPath = localVaultPath.trim() ? await loadLocalVaultFileAtPath(localVaultPath) : null
+    if (fromSelectedPath) return fromSelectedPath
+    if (window.armadilloShell?.isElectron) {
       return loadCachedVaultSnapshot()
     }
-    const fromSelectedPath = localVaultPath.trim() ? loadLocalVaultFileAtPath(localVaultPath) : null
-    if (fromSelectedPath) return fromSelectedPath
-    return loadCachedVaultSnapshot()
-  }, [localVaultPath, storageMode])
+    return loadLocalVaultFile() || loadCachedVaultSnapshot()
+  }, [cloudVaultSnapshot, localVaultPath, selectedLocalVaultFile, storageMode])
 
   const buildEntitlementStateFromToken = useCallback(async (
     token: string,
@@ -1364,6 +1473,32 @@ export function useVaultApp() {
     }
   }, [])
 
+  const buildEntitlementStateFromDerived = useCallback((
+    derived: {
+      tier: PlanTier
+      capabilities: CapabilityKey[]
+      flags: RolloutFlagMap
+      expiresAt?: string | null
+      subject?: string | null
+    },
+    lastRefreshAt: string | null,
+  ): EntitlementState => {
+    const staleAt = getEntitlementStaleAt(lastRefreshAt)
+    const stale = isEntitlementStale(lastRefreshAt)
+    return {
+      source: 'remote',
+      status: stale ? 'stale' : 'verified',
+      tier: derived.tier,
+      capabilities: derived.capabilities,
+      flags: derived.flags,
+      expiresAt: toIsoOrNull(derived.expiresAt ?? null),
+      lastRefreshAt,
+      staleAt,
+      reason: stale ? 'Entitlement is stale. Reconnect to refresh your plan.' : `${derived.tier} entitlement verified`,
+      subject: typeof derived.subject === 'string' ? derived.subject : undefined,
+    }
+  }, [])
+
   const refreshEntitlements = useCallback(async () => {
     const nowIso = new Date().toISOString()
     const manualToken = getManualEntitlementToken()
@@ -1392,6 +1527,14 @@ export function useVaultApp() {
         cacheToken = remoteToken
         cacheSource = 'remote'
         lastRefreshAt = fetchedAt
+      } else if (remote?.derived) {
+        const fetchedAt = toIsoOrNull(remote?.fetchedAt) || nowIso
+        setCachedEntitlementToken(null)
+        setEntitlementLastRefreshAt(fetchedAt)
+        const derivedState = buildEntitlementStateFromDerived(remote.derived, fetchedAt)
+        setEntitlementState(derivedState)
+        setEntitlementStatusMessage(remote.reason || derivedState.reason)
+        return
       } else if (remote && !remote.ok && remote.reason) {
         setEntitlementStatusMessage(remote.reason)
       }
@@ -1409,7 +1552,7 @@ export function useVaultApp() {
     const cachedState = await buildEntitlementStateFromToken(cacheToken, cacheSource, lastRefreshAt)
     setEntitlementState(cachedState)
     setEntitlementStatusMessage(cachedState.reason)
-  }, [buildEntitlementStateFromToken])
+  }, [buildEntitlementStateFromDerived, buildEntitlementStateFromToken])
 
   const applyManualEntitlementToken = useCallback(async (tokenRaw: string) => {
     const token = tokenRaw.trim()
@@ -1657,6 +1800,7 @@ export function useVaultApp() {
       if (!syncConfigured()) {
         setCloudAuthState('unknown')
         setCloudIdentity('')
+        setOrgRoles([])
         return
       }
 
@@ -1664,11 +1808,13 @@ export function useVaultApp() {
         if (!isAuthenticated) {
           setCloudAuthState('disconnected')
           setCloudIdentity('')
+          setOrgRoles([])
           return
         }
 
         if (!authToken) {
           setCloudAuthState('checking')
+          setOrgRoles([])
           return
         }
       }
@@ -1679,6 +1825,9 @@ export function useVaultApp() {
         if (cancelled) return
         setSyncAuthContext(status?.authContext ?? null)
         setIsOrgMember(Boolean(status?.authContext?.orgId))
+        setOrgRoles(Array.isArray(status?.authContext?.roles)
+          ? status.authContext.roles.filter((role): role is 'owner' | 'admin' | 'editor' | 'viewer' => role === 'owner' || role === 'admin' || role === 'editor' || role === 'viewer')
+          : [])
 
         if (status?.authenticated || syncProvider === 'self_hosted') {
           const identityLabel = status?.authenticated
@@ -1689,11 +1838,13 @@ export function useVaultApp() {
         } else {
           setCloudAuthState('disconnected')
           setCloudIdentity('')
+          setOrgRoles([])
         }
       } catch {
         if (cancelled) return
         setCloudAuthState('error')
         setCloudIdentity('')
+        setOrgRoles([])
       }
     }
 
@@ -1763,13 +1914,14 @@ export function useVaultApp() {
 
         if ((remote?.snapshots?.length || 0) > 0) {
           const snapshots = remote?.snapshots || []
-          const latest = snapshots[0]
-          setCloudVaultSnapshot(latest)
+          const preferredVaultId = getLastOpenedVaultId()
+          const preferred = snapshots.find((snapshot) => snapshot.vaultId === preferredVaultId) ?? snapshots[0]
+          setCloudVaultSnapshot(preferred)
           setCloudVaultCandidates(snapshots)
 
-          // Keep create mode stable so users can create a new local vault even
-          // when cloud snapshots are available; loading from cloud is explicit.
-          setAuthMessage('Cloud vault found! You can load it below.')
+          // Keep create mode stable so users can still create a new local vault
+          // even when cloud snapshots are available.
+          setAuthMessage('Cloud vault found. Latest version is ready.')
         } else {
           setCloudVaultSnapshot(null)
           setCloudVaultCandidates([])
@@ -2162,6 +2314,11 @@ export function useVaultApp() {
   }, [vaultSession, cloudSyncEnabled, refreshVaultFromCloud])
 
   const effectivePlatform = getAutoPlatform()
+  const deferredItems = useDeferredValue(items)
+  const deferredQuery = useDeferredValue(query)
+  const deferredHomeSearchQuery = useDeferredValue(homeSearchQuery)
+  const deferredSelectedId = useDeferredValue(selectedId)
+  const showHomePane = workspaceSection === 'passwords' && selectedNode === 'home'
   const folderMap = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders])
   const folderPathById = useMemo(() => {
     const map = new Map<string, string>()
@@ -2170,28 +2327,55 @@ export function useVaultApp() {
     }
     return map
   }, [folders, folderMap])
-  const expiredItems = useMemo(
-    () => items.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired'),
-    [items],
-  )
-  const expiringSoonItems = useMemo(
-    () => items.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring'),
-    [items],
-  )
+  const expiredItems = useMemo(() => {
+    if (workspaceSection !== 'passwords') return []
+    return deferredItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired')
+  }, [deferredItems, workspaceSection])
+  const expiringSoonItems = useMemo(() => {
+    if (workspaceSection !== 'passwords') return []
+    return deferredItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring')
+  }, [deferredItems, workspaceSection])
   const reusedItems = useMemo(() => {
+    if (workspaceSection !== 'passwords') return []
     const passwordCount = new Map<string, number>()
-    for (const item of items) {
+    for (const item of deferredItems) {
       const pw = item.passwordMasked?.trim()
       if (!pw) continue
       passwordCount.set(pw, (passwordCount.get(pw) ?? 0) + 1)
     }
-    return items.filter((item) => {
+    return deferredItems.filter((item) => {
       const pw = item.passwordMasked?.trim()
       return !!pw && (passwordCount.get(pw) ?? 0) > 1
     })
-  }, [items])
+  }, [deferredItems, workspaceSection])
+  const weakItems = useMemo(() => {
+    if (workspaceSection !== 'passwords') return []
+    return deferredItems.filter((item) => item.risk === 'weak')
+  }, [deferredItems, workspaceSection])
+  const staleItems = useMemo(() => {
+    if (workspaceSection !== 'passwords') return []
+    return deferredItems.filter((item) => isCopilotStaleItem(item))
+  }, [deferredItems, workspaceSection])
+  const copilotModel = useMemo(() => buildCopilotModel({
+    items: deferredItems,
+    folders,
+    folderPathById,
+    aiSettings: vaultSettings.ai,
+  }), [deferredItems, folders, folderPathById, vaultSettings.ai])
+  const vaultSuggestions = useMemo(() => (
+    copilotModel.vaultSuggestions.filter((suggestion) => !dismissedCopilotSuggestionIds.includes(suggestion.id))
+  ), [copilotModel.vaultSuggestions, dismissedCopilotSuggestionIds])
+  const selectedCopilotSuggestions = useMemo(() => {
+    if (!deferredSelectedId) return []
+    return copilotModel.itemSuggestionsById.get(deferredSelectedId) ?? []
+  }, [copilotModel.itemSuggestionsById, deferredSelectedId])
+  const selectedAiInputSnapshot = useMemo<VaultAiInputSnapshot | null>(() => {
+    if (!deferredSelectedId) return null
+    return copilotModel.aiInputsByItemId.get(deferredSelectedId) ?? null
+  }, [copilotModel.aiInputsByItemId, deferredSelectedId])
   const homeRecentItems = useMemo(() => {
-    const ranked = items
+    if (!showHomePane) return []
+    const ranked = deferredItems
       .map((item, index) => ({ item, index, parsedUpdatedAt: Date.parse(item.updatedAt) }))
       .sort((a, b) => {
         const aValid = Number.isFinite(a.parsedUpdatedAt)
@@ -2205,12 +2389,13 @@ export function useVaultApp() {
         return a.index - b.index
       })
     return ranked.slice(0, HOME_RECENT_ITEMS_LIMIT).map((row) => row.item)
-  }, [items])
+  }, [deferredItems, showHomePane])
   const homeSearchResults = useMemo(() => {
-    const value = homeSearchQuery.trim().toLowerCase()
+    if (!showHomePane) return []
+    const value = deferredHomeSearchQuery.trim().toLowerCase()
     if (!value) return []
-    return items.filter((item) => itemMatchesQuery(item, value)).slice(0, HOME_SEARCH_RESULTS_LIMIT)
-  }, [items, homeSearchQuery])
+    return deferredItems.filter((item) => itemMatchesQuery(item, value)).slice(0, HOME_SEARCH_RESULTS_LIMIT)
+  }, [deferredHomeSearchQuery, deferredItems, showHomePane])
 
   const scopedItems = useMemo(() => {
     if (selectedNode === 'all') return items
@@ -2226,6 +2411,15 @@ export function useVaultApp() {
     if (selectedNode === 'reused') {
       return reusedItems
     }
+    if (selectedNode === 'weak') {
+      return weakItems
+    }
+    if (selectedNode === 'exposed') {
+      return items.filter((item) => item.risk === 'exposed')
+    }
+    if (selectedNode === 'stale') {
+      return staleItems
+    }
     if (selectedNode === 'unfiled') {
       return items.filter((item) => !item.folderId)
     }
@@ -2239,19 +2433,19 @@ export function useVaultApp() {
       return items.filter((item) => item.folderId && ids.has(item.folderId))
     }
     return items.filter((item) => item.folderId === folderId)
-  }, [items, selectedNode, folderFilterMode, folders, expiringSoonItems, expiredItems, reusedItems])
+  }, [items, selectedNode, folderFilterMode, folders, expiringSoonItems, expiredItems, reusedItems, weakItems, staleItems])
 
   const filtered = useMemo(() => {
-    const value = query.trim().toLowerCase()
+    const value = deferredQuery.trim().toLowerCase()
     const base = !value
       ? scopedItems
       : scopedItems.filter((item) => itemMatchesQuery(item, value))
 
     return base
-  }, [scopedItems, query])
+  }, [deferredQuery, scopedItems])
 
   const scopedStorageItems = useMemo(() => {
-    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired' || selectedNode === 'reused' || selectedNode === 'trash') {
+    if (isPasswordOnlySidebarNode(selectedNode) || selectedNode === 'trash') {
       return []
     }
     if (selectedNode === 'all') return storageItems
@@ -2266,12 +2460,12 @@ export function useVaultApp() {
   }, [storageItems, selectedNode, folderFilterMode, folders])
 
   const filteredStorage = useMemo(() => {
-    const value = query.trim().toLowerCase()
+    const value = deferredQuery.trim().toLowerCase()
     const base = !value
       ? scopedStorageItems
       : scopedStorageItems.filter((item) => storageItemMatchesQuery(item, value))
     return base
-  }, [scopedStorageItems, query])
+  }, [deferredQuery, scopedStorageItems])
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
   const selected = itemById.get(selectedId) ?? null
@@ -2284,6 +2478,16 @@ export function useVaultApp() {
       .sort((a, b) => a.label.localeCompare(b.label))
   }, [folders, folderPathById])
   const storageFeatureEnabled = hasCapability('vault.storage') && isFlagEnabled('experiments.storage_tab')
+  const adminCenterEnabled = orgRoles.includes('owner') || orgRoles.includes('admin')
+
+  useEffect(() => {
+    if (workspaceSection === 'admin' && !adminCenterEnabled) {
+      setWorkspaceSection('passwords')
+      if (effectivePlatform === 'mobile') {
+        setMobileStep(selectedNode === 'home' ? 'home' : 'list')
+      }
+    }
+  }, [adminCenterEnabled, effectivePlatform, selectedNode, workspaceSection])
 
   useEffect(() => {
     // Seed folder editor when the selected draft changes.
@@ -2308,8 +2512,6 @@ export function useVaultApp() {
 
   useEffect(() => {
     if (phase !== 'ready' || !vaultSession || items.length === 0) return
-    const quickCheck = recomputeItemRisks(items)
-    if (!quickCheck.changed) return
 
     type IdleWindow = Window & {
       requestIdleCallback?: (callback: (deadline: IdleDeadline) => void, options?: IdleRequestOptions) => number
@@ -2317,74 +2519,82 @@ export function useVaultApp() {
     }
 
     const win = window as IdleWindow
-    const runId = ++riskBackfillRunIdRef.current
     let canceled = false
+    let kickoffTimeoutId: number | null = null
     let timeoutId: number | null = null
     let idleId: number | null = null
-    let cursor = 0
-    let changed = false
-    const working = [...items]
-    const reuseCounts = computePasswordReuseCounts(items)
-    const indexById = new Map(items.map((item, index) => [item.id, index]))
-    const prioritizedIndices: number[] = []
-    const prioritizedIds = [selectedId, ...filtered.map((item) => item.id)]
-    for (const id of prioritizedIds) {
-      if (!id) continue
-      const index = indexById.get(id)
-      if (typeof index === 'number' && !prioritizedIndices.includes(index)) {
-        prioritizedIndices.push(index)
-      }
-    }
-    const allIndices = items.map((_, index) => index)
-    const remainingIndices = allIndices.filter((index) => !prioritizedIndices.includes(index))
-    const queue = [...prioritizedIndices, ...remainingIndices]
+    kickoffTimeoutId = window.setTimeout(() => {
+      if (canceled) return
+      const quickCheck = recomputeItemRisks(items)
+      if (!quickCheck.changed) return
 
-    const processSlice = () => {
-      if (canceled || runId !== riskBackfillRunIdRef.current) return
-      const end = Math.min(cursor + 50, queue.length)
-      for (; cursor < end; cursor += 1) {
-        const index = queue[cursor]
-        const item = working[index]
-        if (!item || item.risk === 'exposed' || item.risk === 'stale') continue
-        const analysis = analyzePassword(item.passwordMasked ?? '', buildPasswordStrengthContextFromItem(item))
-        const nextRisk = mapAnalysisToRisk(analysis, (reuseCounts.get(item.passwordMasked || '') ?? 0) > 1)
-        if (nextRisk !== item.risk) {
-          working[index] = { ...item, risk: nextRisk }
-          changed = true
+      const runId = ++riskBackfillRunIdRef.current
+      let cursor = 0
+      let changed = false
+      const working = [...items]
+      const reuseCounts = computePasswordReuseCounts(items)
+      const indexById = new Map(items.map((item, index) => [item.id, index]))
+      const prioritizedIndices: number[] = []
+      const prioritizedIds = [deferredSelectedId, ...filtered.map((item) => item.id)]
+      for (const id of prioritizedIds) {
+        if (!id) continue
+        const index = indexById.get(id)
+        if (typeof index === 'number' && !prioritizedIndices.includes(index)) {
+          prioritizedIndices.push(index)
+        }
+      }
+      const allIndices = items.map((_, index) => index)
+      const remainingIndices = allIndices.filter((index) => !prioritizedIndices.includes(index))
+      const queue = [...prioritizedIndices, ...remainingIndices]
+
+      const processSlice = () => {
+        if (canceled || runId !== riskBackfillRunIdRef.current) return
+        const end = Math.min(cursor + 50, queue.length)
+        for (; cursor < end; cursor += 1) {
+          const index = queue[cursor]
+          const item = working[index]
+          if (!item || item.risk === 'exposed' || item.risk === 'stale') continue
+          const analysis = analyzePassword(item.passwordMasked ?? '', buildPasswordStrengthContextFromItem(item))
+          const nextRisk = mapAnalysisToRisk(analysis, (reuseCounts.get(item.passwordMasked || '') ?? 0) > 1)
+          if (nextRisk !== item.risk) {
+            working[index] = { ...item, risk: nextRisk }
+            changed = true
+          }
+        }
+
+        if (cursor < queue.length) {
+          schedule()
+          return
+        }
+
+        if (changed) {
+          void persistPayload({ items: working })
         }
       }
 
-      if (cursor < queue.length) {
-        schedule()
-        return
+      const schedule = () => {
+        if (canceled || runId !== riskBackfillRunIdRef.current) return
+        if (typeof win.requestIdleCallback === 'function') {
+          idleId = win.requestIdleCallback(() => {
+            processSlice()
+          }, { timeout: 300 })
+        } else {
+          timeoutId = window.setTimeout(processSlice, 24)
+        }
       }
 
-      if (changed) {
-        void persistPayload({ items: working })
-      }
-    }
-
-    const schedule = () => {
-      if (canceled || runId !== riskBackfillRunIdRef.current) return
-      if (typeof win.requestIdleCallback === 'function') {
-        idleId = win.requestIdleCallback(() => {
-          processSlice()
-        }, { timeout: 300 })
-      } else {
-        timeoutId = window.setTimeout(processSlice, 24)
-      }
-    }
-
-    schedule()
+      schedule()
+    }, 0)
 
     return () => {
       canceled = true
+      if (kickoffTimeoutId !== null) window.clearTimeout(kickoffTimeoutId)
       if (timeoutId !== null) window.clearTimeout(timeoutId)
       if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
         win.cancelIdleCallback(idleId)
       }
     }
-  }, [phase, vaultSession, items, selectedId, filtered, persistPayload])
+  }, [deferredSelectedId, filtered, items, persistPayload, phase, vaultSession])
 
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
@@ -2506,7 +2716,6 @@ export function useVaultApp() {
       const session = await createVaultFile(createPassword)
       persistVaultSnapshot(session.file)
       applySession(session, { resetNavigation: true })
-      setPhase('ready')
       setSyncState('local')
       setSyncMessage(storageMode === 'cloud_only' ? 'Encrypted cloud-only vault created (cached locally)' : 'Encrypted local vault created (.armadillo)')
       setCreatePassword('')
@@ -2518,16 +2727,10 @@ export function useVaultApp() {
 
   async function unlockVault() {
     if (isUnlocking) return
-    const unlockStartedAt = Date.now()
-    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
-    const ensureUnlockVisualFeedback = async () => {
-      const elapsed = Date.now() - unlockStartedAt
-      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
-        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
-      }
-    }
-    setIsUnlocking(true)
-    setVaultError('')
+    flushSync(() => {
+      setIsUnlocking(true)
+      setVaultError('')
+    })
     await new Promise<void>((resolve) => {
       if (typeof window.requestAnimationFrame !== 'function') {
         resolve()
@@ -2536,7 +2739,7 @@ export function useVaultApp() {
       window.requestAnimationFrame(() => resolve())
     })
     try {
-      const file = getUnlockSourceFile()
+      const file = await getUnlockSourceFile()
       if (!file) {
         const cacheStatus = getCachedVaultStatus()
         if (storageMode === 'cloud_only' && cacheStatus === 'expired') {
@@ -2567,8 +2770,6 @@ export function useVaultApp() {
           throw new Error('Local unlock failed for all password variants')
         }
         applySession(session, { resetNavigation: true })
-        await ensureUnlockVisualFeedback()
-        setPhase('ready')
         setSyncMessage(storageMode === 'cloud_only' ? 'Vault unlocked from encrypted cloud cache' : 'Vault unlocked locally')
         setUnlockPassword('')
         setUnlockRecoveryKey('')
@@ -2602,8 +2803,6 @@ export function useVaultApp() {
                 }
                 persistVaultSnapshot(candidate)
                 applySession(recovered, { resetNavigation: true })
-                await ensureUnlockVisualFeedback()
-                setPhase('ready')
                 setSyncMessage('Vault unlocked from cloud save')
                 setAuthMessage('Recovered using a matching cloud vault save')
                 setUnlockPassword('')
@@ -2638,6 +2837,18 @@ export function useVaultApp() {
     setCloudVaultSnapshot(null)
     setCloudVaultCandidates([])
     setAuthMessage('Cloud vault loaded. Enter your master password to unlock it.')
+    setPhase('unlock')
+  }
+
+  function selectCloudVaultSnapshot(snapshot: ArmadilloVaultFile | null) {
+    setCloudVaultSnapshot(snapshot)
+    setVaultError('')
+    setPhase('unlock')
+  }
+
+  function useLocalUnlockSource() {
+    setCloudVaultSnapshot(null)
+    setVaultError('')
     setPhase('unlock')
   }
 
@@ -2698,6 +2909,7 @@ export function useVaultApp() {
 
 
   function lockVault() {
+    deferredSessionWorkRunIdRef.current += 1
     setVaultSession(null)
     setItems([])
     setStorageItems([])
@@ -3353,7 +3565,7 @@ export function useVaultApp() {
       return
     }
     setWorkspaceSection('storage')
-    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+    if (selectedNode === 'trash' || isPasswordOnlySidebarNode(selectedNode)) {
       setSelectedNode('all')
     }
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
@@ -3378,7 +3590,7 @@ export function useVaultApp() {
       return
     }
     setWorkspaceSection('storage')
-    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+    if (selectedNode === 'trash' || isPasswordOnlySidebarNode(selectedNode)) {
       setSelectedNode('all')
     }
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
@@ -3663,9 +3875,16 @@ export function useVaultApp() {
       return
     }
     setWorkspaceSection('storage')
-    if (selectedNode === 'home' || selectedNode === 'expiring' || selectedNode === 'expired') {
+    if (selectedNode === 'trash' || isPasswordOnlySidebarNode(selectedNode)) {
       setSelectedNode('all')
     }
+    if (effectivePlatform === 'mobile') {
+      setMobileStep('list')
+    }
+  }
+
+  function openAdminWorkspace() {
+    setWorkspaceSection('admin')
     if (effectivePlatform === 'mobile') {
       setMobileStep('list')
     }
@@ -3676,17 +3895,57 @@ export function useVaultApp() {
       openStorageWorkspace()
       return
     }
+    if (section === 'admin') {
+      openAdminWorkspace()
+      return
+    }
     setWorkspaceSection('passwords')
     if (selectedNode !== 'home' && effectivePlatform === 'mobile' && mobileStep === 'home') {
       setMobileStep('list')
     }
   }
 
-  function openSmartView(view: 'expired' | 'expiring' | 'reused') {
+  function openSmartView(view: 'expired' | 'expiring' | 'reused' | 'weak' | 'exposed' | 'stale' | 'unfiled') {
     setWorkspaceSection('passwords')
     setQuery('')
     setSelectedNode(view)
     setMobileStep('list')
+  }
+
+  function openCopilotSuggestion(suggestion: VaultSuggestion) {
+    if (suggestion.action?.type === 'open_item') {
+      openItemFromHome(suggestion.action.itemId)
+      return
+    }
+    if (suggestion.action?.type === 'open_smart_view') {
+      openSmartView(suggestion.action.view)
+      return
+    }
+    if (suggestion.itemId) {
+      openItemFromHome(suggestion.itemId)
+      return
+    }
+    if (suggestion.target.scope === 'items' && suggestion.target.itemIds[0]) {
+      openItemFromHome(suggestion.target.itemIds[0])
+    }
+  }
+
+  function dismissCopilotSuggestion(suggestionId: string) {
+    if (!vaultSession) return
+    const trimmed = suggestionId.trim()
+    if (!trimmed) return
+    setDismissedCopilotSuggestionIds((current) => {
+      if (current.includes(trimmed)) return current
+      const next = [...current, trimmed]
+      saveDismissedCopilotSuggestionIds(vaultSession.file.vaultId, next)
+      return next
+    })
+  }
+
+  function clearDismissedCopilotSuggestions() {
+    if (!vaultSession) return
+    setDismissedCopilotSuggestionIds([])
+    saveDismissedCopilotSuggestionIds(vaultSession.file.vaultId, [])
   }
 
   function updateHomeSearch(value: string) {
@@ -3772,6 +4031,22 @@ export function useVaultApp() {
     if (node === 'unfiled') {
       return sourceItems.filter((item) => !item.folderId)
     }
+    if (node === 'weak') {
+      return sourceItems.filter((item) => item.risk === 'weak')
+    }
+    if (node === 'reused') {
+      const passwordCount = computePasswordReuseCounts(sourceItems)
+      return sourceItems.filter((item) => {
+        const password = item.passwordMasked?.trim()
+        return !!password && (passwordCount.get(password) ?? 0) > 1
+      })
+    }
+    if (node === 'exposed') {
+      return sourceItems.filter((item) => item.risk === 'exposed')
+    }
+    if (node === 'stale') {
+      return sourceItems.filter((item) => isCopilotStaleItem(item))
+    }
     const folderId = node.slice('folder:'.length)
     if (!folderId) return sourceItems
     if (mode === 'recursive') {
@@ -3783,7 +4058,7 @@ export function useVaultApp() {
 
   function scopeStorageItemsForSelection(sourceItems: VaultStorageItem[], node: SidebarNode, mode: FolderFilterMode) {
     if (node === 'all') return sourceItems
-    if (node === 'home' || node === 'trash' || node === 'expiring' || node === 'expired') return []
+    if (node === 'trash' || isPasswordOnlySidebarNode(node)) return []
     if (node === 'unfiled') return sourceItems.filter((item) => !item.folderId)
     const folderId = node.slice('folder:'.length)
     if (!folderId) return sourceItems
@@ -4716,14 +4991,6 @@ export function useVaultApp() {
       setVaultError(quickUnlockCapabilities.unavailableReason || 'Quick unlock is not supported on this device')
       return
     }
-    const unlockStartedAt = Date.now()
-    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
-    const ensureUnlockVisualFeedback = async () => {
-      const elapsed = Date.now() - unlockStartedAt
-      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
-        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
-      }
-    }
     setIsUnlocking(true)
     setVaultError('')
     await new Promise<void>((resolve) => {
@@ -4733,7 +5000,7 @@ export function useVaultApp() {
       }
       window.requestAnimationFrame(() => resolve())
     })
-    const file = getUnlockSourceFile()
+    const file = await getUnlockSourceFile()
     if (!file) {
       if (storageMode === 'cloud_only') {
         setVaultError('No cached cloud vault found.')
@@ -4749,8 +5016,6 @@ export function useVaultApp() {
     try {
       const session = await unlockWithQuickUnlock(file)
       applySession(session, { resetNavigation: true })
-      await ensureUnlockVisualFeedback()
-      setPhase('ready')
       setUnlockPassword('')
       setUnlockRecoveryKey('')
       setSyncMessage(quickUnlockCapabilities.method === 'android-native' ? 'Vault unlocked with biometrics' : 'Vault unlocked with passkey')
@@ -4799,14 +5064,6 @@ export function useVaultApp() {
 
   async function unlockVaultWithRecoveryKey() {
     if (isUnlocking) return
-    const unlockStartedAt = Date.now()
-    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
-    const ensureUnlockVisualFeedback = async () => {
-      const elapsed = Date.now() - unlockStartedAt
-      if (elapsed < UNLOCK_SPINNER_MIN_VISIBLE_MS) {
-        await wait(UNLOCK_SPINNER_MIN_VISIBLE_MS - elapsed)
-      }
-    }
     setIsUnlocking(true)
     setVaultError('')
     await new Promise<void>((resolve) => {
@@ -4823,15 +5080,13 @@ export function useVaultApp() {
       return
     }
     try {
-      const file = getUnlockSourceFile()
+      const file = await getUnlockSourceFile()
       if (!file) {
         setVaultError('Select a vault to unlock.')
         return
       }
       const session = await unlockVaultFileWithRecoveryKey(file, parsedRecoveryKey)
       applySession(session, { resetNavigation: true })
-      await ensureUnlockVisualFeedback()
-      setPhase('ready')
       setUnlockPassword('')
       setUnlockRecoveryKey('')
       setSyncMessage('Vault unlocked with recovery key')
@@ -4996,6 +5251,7 @@ export function useVaultApp() {
       setSyncAuthToken(null)
       setSyncAuthContext(null)
       setIsOrgMember(false)
+      setOrgRoles([])
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
         setCloudCacheExpiresAt('')
@@ -5017,6 +5273,7 @@ export function useVaultApp() {
       setCloudAuthState('disconnected')
       setCloudIdentity('')
       setIsOrgMember(false)
+      setOrgRoles([])
       void refreshEntitlements()
     } catch {
       setAuthMessage('Sign out failed')
@@ -5129,11 +5386,13 @@ export function useVaultApp() {
       cloudAuthState,
       cloudIdentity,
       isOrgMember,
+      orgRoles,
       localVaultPath,
       selectedLocalVaultStatus,
       recentLocalVaultPaths,
       recentLocalVaultPathStatuses,
       localVaultNameById,
+      selectedCloudVaultSnapshot: cloudVaultSnapshot,
       cloudVaultCandidates,
       showAllCloudSnapshots,
       windowMaximized,
@@ -5170,15 +5429,21 @@ export function useVaultApp() {
       folderPathById,
       expiredItems,
       expiringSoonItems,
+      weakItems,
       reusedItems,
+      staleItems,
       homeRecentItems,
       homeSearchResults,
+      vaultSuggestions,
+      selectedCopilotSuggestions,
+      selectedAiInputSnapshot,
       filtered,
       filteredStorage,
       selected,
       selectedStorage,
       folderOptions,
       storageFeatureEnabled,
+      adminCenterEnabled,
       hasCapability,
       isFlagEnabled,
     },
@@ -5232,7 +5497,11 @@ export function useVaultApp() {
       setStorageDraftField,
       openHome,
       openStorageWorkspace,
+      openAdminWorkspace,
       openSmartView,
+      openCopilotSuggestion,
+      dismissCopilotSuggestion,
+      clearDismissedCopilotSuggestions,
       updateHomeSearch,
       submitHomeSearch,
       openItemFromHome,
@@ -5246,6 +5515,8 @@ export function useVaultApp() {
       unlockVaultBiometric,
       unlockVaultWithRecoveryKey,
       loadVaultFromCloud,
+      selectCloudVaultSnapshot,
+      useLocalUnlockSource,
       deleteVaultFromCloud,
       browseExistingLocalVault,
       chooseLocalVaultLocation,

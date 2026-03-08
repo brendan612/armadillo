@@ -612,6 +612,36 @@ if (!singleInstanceLock) {
 
 app.whenReady().then(() => {
   registerDeepLinkHandlers();
+  ipcMain.handle('armadillo:read-vault-file', async (_event, filePath) => {
+    const resolvedPath = typeof filePath === 'string' && filePath.trim()
+      ? filePath.trim()
+      : path.join(app.getPath('home'), '.armadillo', 'vault.armadillo');
+    try {
+      const raw = await fs.promises.readFile(resolvedPath, 'utf8');
+      return raw;
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle('armadillo:read-vault-file-meta', async (_event, filePath) => {
+    const resolvedPath = typeof filePath === 'string' && filePath.trim()
+      ? filePath.trim()
+      : path.join(app.getPath('home'), '.armadillo', 'vault.armadillo');
+    try {
+      const raw = await fs.promises.readFile(resolvedPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.format !== 'armadillo-v1' || typeof parsed.vaultId !== 'string' || !parsed.vaultId) {
+        return null;
+      }
+      return {
+        vaultId: parsed.vaultId,
+        revision: Number.isFinite(parsed.revision) ? parsed.revision : 0,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      };
+    } catch {
+      return null;
+    }
+  });
   ipcMain.handle('armadillo:get-oauth-callback-url', async () => {
     return await ensureOAuthServer();
   });

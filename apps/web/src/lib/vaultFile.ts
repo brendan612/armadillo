@@ -23,6 +23,8 @@ import {
   type VaultTrashEntry,
 } from '../types/vault'
 import { defaultThemeSettings, normalizeThemeSettings } from '../shared/utils/theme'
+import { defaultAiSettings, normalizeAiSettings } from '../shared/utils/copilot'
+import { defaultKeybindSettings, normalizeKeybindSettings } from '../shared/utils/keybinds'
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
 const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
@@ -61,10 +63,12 @@ export function defaultVaultSettings(): VaultSettings {
   return {
     trashRetentionDays: 30,
     generatorPresets: [],
+    keybinds: defaultKeybindSettings(),
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
     theme: defaultThemeSettings(),
+    ai: defaultAiSettings(),
   }
 }
 
@@ -328,10 +332,12 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
   const settings: VaultSettings = {
     trashRetentionDays: safeRetentionDays(settingsSource.trashRetentionDays),
     generatorPresets: Array.isArray(settingsSource.generatorPresets) ? settingsSource.generatorPresets : [],
+    keybinds: normalizeKeybindSettings(settingsSource.keybinds),
     autoFolderExcludedItemIds: normalizeStringArray(settingsSource.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: normalizeStringArray(settingsSource.autoFolderLockedFolderPaths),
     autoFolderCustomMappings: normalizeAutoFolderCustomMappings(settingsSource.autoFolderCustomMappings),
     theme: normalizeThemeSettings(settingsSource.theme),
+    ai: normalizeAiSettings(settingsSource.ai as VaultSettings['ai']),
   }
 
   const trashSource = Array.isArray(base.trash) ? base.trash : []
@@ -646,23 +652,23 @@ export function setActiveLocalVaultPath(path: string) {
   localStorage.setItem(LOCAL_VAULT_PATH_KEY, trimmed)
 }
 
-export function getLocalVaultPathStatus(path: string): LocalVaultPathStatus {
+export async function getLocalVaultPathStatus(path: string): Promise<LocalVaultPathStatus> {
   const trimmed = path.trim()
   if (!trimmed) return 'unknown'
   const shell = window.armadilloShell
   if (shell?.isElectron && shell.readVaultFile) {
-    const raw = shell.readVaultFile(trimmed)
+    const raw = await shell.readVaultFile(trimmed)
     return raw ? 'exists' : 'missing'
   }
   return 'unknown'
 }
 
-export function loadLocalVaultFileAtPath(path: string): ArmadilloVaultFile | null {
+export async function loadLocalVaultFileAtPath(path: string): Promise<ArmadilloVaultFile | null> {
   const trimmed = path.trim()
   if (!trimmed) return null
   const shell = window.armadilloShell
   if (shell?.isElectron && shell.readVaultFile) {
-    const rawFromFile = shell.readVaultFile(trimmed)
+    const rawFromFile = await shell.readVaultFile(trimmed)
     if (!rawFromFile) {
       return null
     }
@@ -679,38 +685,21 @@ export function loadLocalVaultFileAtPath(path: string): ArmadilloVaultFile | nul
   return null
 }
 
-export function readLocalVaultFileMeta(path: string): LocalVaultFileMeta | null {
+export async function readLocalVaultFileMeta(path: string): Promise<LocalVaultFileMeta | null> {
   const trimmed = path.trim()
   if (!trimmed) return null
   const shell = window.armadilloShell
-  if (!shell?.isElectron || !shell.readVaultFile) return null
-  const raw = shell.readVaultFile(trimmed)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as ArmadilloVaultFile
-    if (parsed.format !== 'armadillo-v1' || typeof parsed.vaultId !== 'string' || !parsed.vaultId) {
-      return null
-    }
-    return {
-      vaultId: parsed.vaultId,
-      revision: Number.isFinite(parsed.revision) ? parsed.revision : 0,
-      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
-    }
-  } catch {
-    return null
+  if (!shell?.isElectron || !shell.readVaultFileMeta) return null
+  const meta = await shell.readVaultFileMeta(trimmed)
+  if (!meta) return null
+  return {
+    vaultId: meta.vaultId,
+    revision: meta.revision,
+    updatedAt: meta.updatedAt,
   }
 }
 
 export function loadLocalVaultFile(): ArmadilloVaultFile | null {
-  const shell = window.armadilloShell
-  const activePath = getActiveLocalVaultPath()
-  if (activePath) {
-    const loaded = loadLocalVaultFileAtPath(activePath)
-    if (loaded) return loaded
-  }
-  if (shell?.isElectron) {
-    return null
-  }
   return parseVaultFileJson(localStorage.getItem(LOCAL_VAULT_FILE_KEY))
 }
 

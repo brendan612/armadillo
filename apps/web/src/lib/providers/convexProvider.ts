@@ -3,6 +3,7 @@ import {
   convexConfigured,
   deleteRemoteVault,
   deleteRemoteBlob,
+  getConvexAuthToken,
   getCloudAuthStatus,
   getRemoteBlob,
   getEntitlementStatus,
@@ -18,6 +19,7 @@ import {
 export const convexProvider: SyncProviderClient = {
   configured: convexConfigured,
   setAuthToken: setConvexAuthToken,
+  getAuthToken: getConvexAuthToken,
   setAuthContext: setConvexAuthContext,
   pullRemoteVaultByOwner,
   listRemoteVaultsByOwner,

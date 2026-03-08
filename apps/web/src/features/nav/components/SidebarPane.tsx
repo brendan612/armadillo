@@ -3,7 +3,7 @@ import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../
 
 export function SidebarPane() {
   const { items, storageItems, trash, selectedNode, mobileStep, workspaceSection } = useVaultAppState()
-  const { expiredItems, expiringSoonItems, storageFeatureEnabled } = useVaultAppDerived()
+  const { expiredItems, expiringSoonItems, storageFeatureEnabled, adminCenterEnabled } = useVaultAppDerived()
   const {
     setSelectedNode,
     setMobileStep,
@@ -12,9 +12,11 @@ export function SidebarPane() {
     setTreeContextMenu,
     openHome,
     openStorageWorkspace,
+    openAdminWorkspace,
     openSmartView,
   } = useVaultAppActions()
   const isStorage = workspaceSection === 'storage'
+  const isAdmin = workspaceSection === 'admin'
   const activeItems = isStorage ? storageItems : items
 
   function handleTreeContextMenu(event: React.MouseEvent) {
@@ -28,8 +30,8 @@ export function SidebarPane() {
   return (
     <aside className={`pane pane-left ${mobileStep === 'nav' ? 'mobile-active' : ''}`}>
       <div className="sidebar-header">
-        <h2>{isStorage ? 'Storage' : 'Vault'}</h2>
-        <span className="sidebar-count">{activeItems.length} items</span>
+        <h2>{isAdmin ? 'Admin' : isStorage ? 'Storage' : 'Vault'}</h2>
+        <span className="sidebar-count">{isAdmin ? 'Org controls' : `${activeItems.length} items`}</span>
       </div>
 
       <div className="tab-row">
@@ -42,9 +44,17 @@ export function SidebarPane() {
         >
           Storage
         </button>
+        {adminCenterEnabled && (
+          <button className={workspaceSection === 'admin' ? 'active' : ''} onClick={openAdminWorkspace}>Admin</button>
+        )}
       </div>
 
       <nav className="sidebar-nav">
+        {isAdmin && (
+          <button className="sidebar-nav-item active" onClick={openAdminWorkspace}>
+            <span>Admin Center</span>
+          </button>
+        )}
         {!isStorage && (
           <button
             className={`sidebar-nav-item ${selectedNode === 'home' ? 'active' : ''}`}
@@ -53,6 +63,7 @@ export function SidebarPane() {
             <span>Home</span>
           </button>
         )}
+        {!isAdmin && (
         <button
           className={`sidebar-nav-item ${selectedNode === 'all' ? 'active' : ''}`}
           onClick={() => {
@@ -63,6 +74,7 @@ export function SidebarPane() {
           <span>{isStorage ? 'All Storage' : 'All Items'}</span>
           <span className="sidebar-badge">{activeItems.length}</span>
         </button>
+        )}
         {!isStorage && (
           <>
             <button
@@ -81,37 +93,45 @@ export function SidebarPane() {
             </button>
           </>
         )}
-        <button
-          className={`sidebar-nav-item ${selectedNode === 'unfiled' ? 'active' : ''}`}
-          onClick={() => {
-            setSelectedNode('unfiled')
-            setMobileStep('list')
-          }}
-        >
-          <span>Unfiled</span>
-          <span className="sidebar-badge">{activeItems.filter((item) => !item.folderId).length}</span>
-        </button>
-        <button
-          className={`sidebar-nav-item ${selectedNode === 'trash' ? 'active' : ''}`}
-          onClick={() => {
-            setSelectedNode('trash')
-            setMobileStep('list')
-          }}
-        >
-          <span>Trash</span>
-          <span className="sidebar-badge">{trash.length}</span>
-        </button>
-        <button className="sidebar-nav-item" onClick={isStorage ? createStorageItem : () => createSubfolder(null)}>
-          <span>{isStorage ? '+ New Storage Item' : '+ New Folder'}</span>
-        </button>
+        {!isAdmin && (
+          <button
+            className={`sidebar-nav-item ${selectedNode === 'unfiled' ? 'active' : ''}`}
+            onClick={() => {
+              setSelectedNode('unfiled')
+              setMobileStep('list')
+            }}
+          >
+            <span>Unfiled</span>
+            <span className="sidebar-badge">{activeItems.filter((item) => !item.folderId).length}</span>
+          </button>
+        )}
+        {!isAdmin && (
+          <button
+            className={`sidebar-nav-item ${selectedNode === 'trash' ? 'active' : ''}`}
+            onClick={() => {
+              setSelectedNode('trash')
+              setMobileStep('list')
+            }}
+          >
+            <span>Trash</span>
+            <span className="sidebar-badge">{trash.length}</span>
+          </button>
+        )}
+        {!isAdmin && (
+          <button className="sidebar-nav-item" onClick={isStorage ? createStorageItem : () => createSubfolder(null)}>
+            <span>{isStorage ? '+ New Storage Item' : '+ New Folder'}</span>
+          </button>
+        )}
       </nav>
 
-      <div className="sidebar-section">
-        <h3>Folders</h3>
-        <div className="folder-tree" onContextMenu={handleTreeContextMenu}>
-          <FolderTree parentId={null} />
+      {!isAdmin && (
+        <div className="sidebar-section">
+          <h3>Folders</h3>
+          <div className="folder-tree" onContextMenu={handleTreeContextMenu}>
+            <FolderTree parentId={null} />
+          </div>
         </div>
-      </div>
+      )}
     </aside>
   )
 }

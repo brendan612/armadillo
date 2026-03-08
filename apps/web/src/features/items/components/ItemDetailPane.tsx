@@ -4,6 +4,7 @@ import { ChevronLeft, CircleHelp, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, 
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
 import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
 import { analyzePassword, buildPasswordStrengthContextFromItem } from '../../../shared/utils/passwordStrength'
+import { buildItemRiskNarrative } from '../../../shared/utils/copilot'
 import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
@@ -55,7 +56,7 @@ export function ItemDetailPane() {
     vaultSettings,
     syncProvider,
   } = useVaultAppState()
-  const { selected, folderOptions, hasCapability } = useVaultAppDerived()
+  const { selected, folderOptions, hasCapability, selectedCopilotSuggestions, selectedAiInputSnapshot } = useVaultAppDerived()
   const {
     closeOpenItem,
     setDraftField,
@@ -66,6 +67,7 @@ export function ItemDetailPane() {
     saveCurrentItem,
     removeCurrentItem,
     setMobileStep,
+    openItemFromHome,
     addGeneratorPreset,
     removeGeneratorPreset,
   } = useVaultAppActions()
@@ -316,6 +318,9 @@ export function ItemDetailPane() {
   const weakFeedback = useMemo(() => (
     passwordStrength.score <= 2 ? passwordStrength.feedback.slice(0, 3) : []
   ), [passwordStrength])
+  const copilotNarrative = useMemo(() => (
+    selectedAiInputSnapshot ? buildItemRiskNarrative(selectedAiInputSnapshot) : []
+  ), [selectedAiInputSnapshot])
   const usernameSuggestions = useMemo(() => {
     if (!draft) return []
     const query = draft.username.trim().toLowerCase()
@@ -340,6 +345,25 @@ export function ItemDetailPane() {
   }, [draft, items])
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+  const visibleCopilotSuggestions = useMemo(() => {
+    if (!draft) return selectedCopilotSuggestions
+    return selectedCopilotSuggestions.filter((suggestion) => {
+      if (suggestion.kind === 'move_to_folder' && suggestion.payload?.suggestedFolder) {
+        return suggestion.payload.suggestedFolder.trim().toLowerCase() !== (newFolderValue.trim() || draft.folder.trim()).toLowerCase()
+      }
+      if (suggestion.kind === 'add_tags' && suggestion.payload?.suggestedTags) {
+        const existingTags = new Set(draft.tags.map((tag) => tag.trim().toLowerCase()))
+        return suggestion.payload.suggestedTags.some((tag) => !existingTags.has(tag.trim().toLowerCase()))
+      }
+      if (suggestion.kind === 'normalize_title' && suggestion.payload?.suggestedTitle) {
+        return suggestion.payload.suggestedTitle.trim() !== draft.title.trim()
+      }
+      if (suggestion.kind === 'set_expiry_date' && suggestion.payload?.suggestedExpiryDate) {
+        return suggestion.payload.suggestedExpiryDate !== (draft.passwordExpiryDate ?? '')
+      }
+      return true
+    })
+  }, [draft, newFolderValue, selectedCopilotSuggestions])
   const hasUnsavedChanges = useMemo(() => {
     if (!draft || !selected) return false
     return JSON.stringify(snapshotItemForDirtyCheck(draft)) !== JSON.stringify(snapshotItemForDirtyCheck(selected))
@@ -380,6 +404,69 @@ export function ItemDetailPane() {
   function applyUsernameSuggestion(value: string) {
     setDraftField('username', value)
     setShowUsernameSuggestions(false)
+  }
+
+  function applyCopilotTags(tags: string[]) {
+    if (!draft || tags.length === 0) return
+    const deduped = new Map<string, string>()
+    for (const value of [...draft.tags, ...tags]) {
+      const trimmed = value.trim()
+      if (!trimmed) continue
+      const key = trimmed.toLowerCase()
+      if (!deduped.has(key)) {
+        deduped.set(key, trimmed)
+      }
+    }
+    const nextTags = Array.from(deduped.values())
+    setDraftField('tags', nextTags)
+    setTagInputById((current) => ({ ...current, [draft.id]: nextTags.join(', ') }))
+  }
+
+  function applyCopilotSuggestion(suggestion: NonNullable<typeof selectedCopilotSuggestions>[number]) {
+    if (!draft) return
+    if (suggestion.kind === 'rotate_password') {
+      const nextPassword = generatePassword({
+        length: 24,
+        uppercase: true,
+        lowercase: true,
+        digits: true,
+        symbols: true,
+      })
+      setDraftField('passwordMasked', nextPassword)
+      setPasswordConfirmById((current) => ({ ...current, [draft.id]: nextPassword }))
+      setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+      return
+    }
+    if (suggestion.kind === 'move_to_folder' && suggestion.payload?.suggestedFolder) {
+      setNewFolderValue(suggestion.payload.suggestedFolder)
+      setDraftField('folder', suggestion.payload.suggestedFolder)
+      return
+    }
+    if (suggestion.kind === 'add_tags' && suggestion.payload?.suggestedTags) {
+      applyCopilotTags(suggestion.payload.suggestedTags)
+      return
+    }
+    if (suggestion.kind === 'normalize_title' && suggestion.payload?.suggestedTitle) {
+      setDraftField('title', suggestion.payload.suggestedTitle)
+      return
+    }
+    if (suggestion.kind === 'set_expiry_date' && suggestion.payload?.suggestedExpiryDate) {
+      setDraftField('passwordExpiryDate', suggestion.payload.suggestedExpiryDate)
+      return
+    }
+    if (suggestion.kind === 'review_duplicates' && suggestion.payload?.relatedItemIds?.[0]) {
+      openItemFromHome(suggestion.payload.relatedItemIds[0])
+    }
+  }
+
+  function renderCopilotActionLabel(suggestion: NonNullable<typeof selectedCopilotSuggestions>[number]) {
+    if (suggestion.kind === 'rotate_password') return 'Apply Generated Password'
+    if (suggestion.kind === 'move_to_folder') return 'Apply Folder'
+    if (suggestion.kind === 'add_tags') return 'Add Tags'
+    if (suggestion.kind === 'normalize_title') return 'Rename'
+    if (suggestion.kind === 'set_expiry_date') return 'Set Review Date'
+    if (suggestion.kind === 'review_duplicates') return 'Open Similar Item'
+    return ''
   }
 
   return (
@@ -859,6 +946,56 @@ export function ItemDetailPane() {
                 </p>
               )}
             </div>
+            {vaultSettings.ai?.enabled !== false && (
+              <div className="copilot-panel">
+                <div className="copilot-panel-head">
+                  <div>
+                    <p className="kicker">AI Security Copilot</p>
+                    <h3>Why this is risky</h3>
+                  </div>
+                  <span className="copilot-mode-badge">Local only</span>
+                </div>
+                <ul className="copilot-reason-list">
+                  {copilotNarrative.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                <p className="copilot-privacy-note">
+                  Copilot only uses title, username, URL hosts, tags, folder, timestamps, and risk metadata. It ignores passwords, notes, security answers, and recovery material by default.
+                </p>
+                <div className="copilot-suggestion-block">
+                  <div className="copilot-suggestion-head">
+                    <h4>Suggested fixes</h4>
+                    <span>{visibleCopilotSuggestions.length}</span>
+                  </div>
+                  {visibleCopilotSuggestions.length === 0 ? (
+                    <p className="muted" style={{ margin: 0 }}>No urgent fixes for this item right now.</p>
+                  ) : (
+                    <div className="copilot-suggestion-list">
+                      {visibleCopilotSuggestions.map((suggestion) => {
+                        const actionLabel = renderCopilotActionLabel(suggestion)
+                        return (
+                          <div key={suggestion.id} className={`copilot-suggestion copilot-suggestion--${suggestion.priority}`}>
+                            <div className="copilot-suggestion-copy">
+                              <strong>{suggestion.title}</strong>
+                              <p>{suggestion.detail}</p>
+                              <span>{suggestion.rationale}</span>
+                            </div>
+                            {actionLabel ? (
+                              <button className="ghost" type="button" onClick={() => applyCopilotSuggestion(suggestion)}>
+                                {actionLabel}
+                              </button>
+                            ) : (
+                              <span className="copilot-suggestion-static">Review in place</span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Password Confirm */}

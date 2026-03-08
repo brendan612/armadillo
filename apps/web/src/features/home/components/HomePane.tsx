@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, Clock3, Copy, FolderOpen, KeyRound, Plus, Search, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Clock3, Copy, FolderOpen, KeyRound, Plus, Search, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 function getInitials(title: string) {
@@ -9,14 +9,22 @@ function getInitials(title: string) {
 }
 
 export function HomePane() {
-  const { items, storageItems, mobileStep, homeSearchQuery } = useVaultAppState()
-  const { homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems, reusedItems } = useVaultAppDerived()
-  const { updateHomeSearch, submitHomeSearch, openSmartView, setSelectedNode, setMobileStep, setQuery, openItemFromHome, createEntry } = useVaultAppActions()
+  const { items, storageItems, mobileStep, homeSearchQuery, vaultSettings } = useVaultAppState()
+  const { homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems, reusedItems, vaultSuggestions } = useVaultAppDerived()
+  const { updateHomeSearch, submitHomeSearch, openSmartView, openCopilotSuggestion, dismissCopilotSuggestion, setSelectedNode, setMobileStep, setQuery, openItemFromHome, createEntry } = useVaultAppActions()
   const [showEntryTypePicker, setShowEntryTypePicker] = useState(false)
 
   const unfiledCount = items.filter((item) => !item.folderId).length
   const queryActive = homeSearchQuery.trim().length > 0
   const vaultIsEmpty = items.length === 0 && storageItems.length === 0
+  const copilotEnabled = vaultSettings.ai?.enabled !== false
+
+  function formatPriority(priority: 'critical' | 'high' | 'medium' | 'low') {
+    if (priority === 'critical') return 'Critical'
+    if (priority === 'high') return 'High'
+    if (priority === 'medium') return 'Medium'
+    return 'Low'
+  }
 
   return (
     <section className={`pane pane-middle home-pane ${mobileStep === 'home' ? 'mobile-active' : ''}`}>
@@ -100,6 +108,51 @@ export function HomePane() {
                       </li>
                     ))}
                   </ul>
+                )}
+              </div>
+            )}
+
+            {copilotEnabled && (
+              <div className="home-section home-copilot-card">
+                <div className="home-section-head home-copilot-head">
+                  <div className="home-copilot-title">
+                    <ShieldAlert size={14} aria-hidden="true" />
+                    <h3>Recommended Actions</h3>
+                  </div>
+                  <span className="home-section-count">{vaultSuggestions.length}</span>
+                </div>
+                {vaultSuggestions.length === 0 ? (
+                  <div className="home-empty home-copilot-empty">
+                    <ShieldCheck size={18} aria-hidden="true" />
+                    <p>No urgent fixes right now. Copilot will surface the next high-value cleanup pass here.</p>
+                  </div>
+                ) : (
+                  <div className="home-copilot-list">
+                    {vaultSuggestions.slice(0, 5).map((suggestion) => (
+                      <div key={suggestion.id} className={`home-copilot-item home-copilot-item--${suggestion.priority}`}>
+                        <button className="home-copilot-main" onClick={() => openCopilotSuggestion(suggestion)}>
+                          <div className="home-copilot-copy">
+                            <div className="home-copilot-row">
+                              <strong>{suggestion.title}</strong>
+                              <span className={`home-copilot-priority home-copilot-priority--${suggestion.priority}`}>
+                                {formatPriority(suggestion.priority)}
+                              </span>
+                            </div>
+                            <p>{suggestion.detail}</p>
+                          </div>
+                          <ArrowRight size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          className="home-copilot-dismiss"
+                          title="Dismiss suggestion"
+                          aria-label={`Dismiss ${suggestion.title}`}
+                          onClick={() => dismissCopilotSuggestion(suggestion.id)}
+                        >
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             )}

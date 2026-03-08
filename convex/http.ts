@@ -29,8 +29,18 @@ const ADMIN_ALLOWLIST_SUBJECTS = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 )
+const DEFAULT_FLAGS = {
+  'billing.plans_section': true,
+  'billing.manual_token_entry': true,
+  'experiments.enterprise_team_ui': false,
+  'experiments.storage_tab': true,
+}
 
 type Role = 'owner' | 'admin' | 'editor' | 'viewer'
+type PlanTier = 'free' | 'premium' | 'enterprise'
+type SubscriptionScopeType = 'org' | 'user'
+type SubscriptionStatus = 'active' | 'trialing' | 'canceled' | 'past_due' | 'paused'
+type BillingMode = 'manual' | 'external'
 type AdminPermissionResult = {
   allowlisted: boolean
   capability: boolean
@@ -50,12 +60,54 @@ type AdminContext = {
   identity: AdminIdentity
   permissions: AdminPermissionResult
 }
+type EntitlementSummary = {
+  source: 'subscription' | 'server_default' | 'free' | 'override'
+  tier: PlanTier
+  capabilities: string[]
+  flags: Record<string, boolean>
+  reason: string
+  storageLimitBytes: number | null
+  seatLimit: number | null
+}
+type SubscriptionRecord = {
+  id: string
+  scopeType: SubscriptionScopeType
+  scopeId: string
+  tier: PlanTier
+  status: SubscriptionStatus
+  billingMode: BillingMode
+  seatLimit: number | null
+  storageLimitBytes: number | null
+  renewalAt: string | null
+  endAt: string | null
+  note: string
+  updatedAt: string
+  updatedBy: string
+}
+type EntitlementOverrideMode = 'token' | 'derived'
+type EntitlementOverrideRecord = {
+  id: string
+  targetType: EntitlementOverrideTargetType
+  targetValue: string
+  mode: EntitlementOverrideMode
+  token: string | null
+  tier: PlanTier | null
+  capabilities: string[]
+  note: string
+  updatedAt: string
+  updatedBy: string
+}
 
 const ROLE_RANK: Record<Role, number> = {
   viewer: 1,
   editor: 2,
   admin: 3,
   owner: 4,
+}
+const PLAN_CAPABILITIES: Record<PlanTier, string[]> = {
+  free: [],
+  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan'],
+  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan', 'enterprise.self_hosted', 'enterprise.org_admin'],
 }
 
 function json(data: unknown, status = 200) {
@@ -103,7 +155,45 @@ function normalizeOverrideTargetValue(targetType: 'userId' | 'tokenIdentifier' |
 
 type EntitlementOverrideTargetType = 'userId' | 'tokenIdentifier' | 'subject' | 'email'
 
-async function findEntitlementOverrideToken(
+function mapEntitlementOverride(row: unknown): EntitlementOverrideRecord | null {
+  if (!row || typeof row !== 'object') return null
+  const record = row as Record<string, unknown>
+  const targetType = isTargetType(record.targetType) ? record.targetType : null
+  const targetValue = typeof record.targetValue === 'string' ? record.targetValue : ''
+  const updatedAt = typeof record.updatedAt === 'string' ? record.updatedAt : ''
+  const updatedBy = typeof record.updatedBy === 'string' ? record.updatedBy : ''
+  const tier = isPlanTier(record.tier) ? record.tier : null
+  if (!targetType || !targetValue || !updatedAt || !updatedBy) return null
+  return {
+    id: typeof record._id === 'string' ? record._id : typeof record.id === 'string' ? record.id : `${targetType}:${targetValue}`,
+    targetType,
+    targetValue,
+    mode: record.mode === 'derived' ? 'derived' : 'token',
+    token: typeof record.token === 'string' ? record.token : null,
+    tier,
+    capabilities: Array.isArray(record.capabilities)
+      ? record.capabilities.filter((value): value is string => typeof value === 'string')
+      : [],
+    note: typeof record.note === 'string' ? record.note : '',
+    updatedAt,
+    updatedBy,
+  }
+}
+
+function buildEntitlementSummaryFromOverride(override: EntitlementOverrideRecord): EntitlementSummary {
+  const tier = override.tier ?? 'free'
+  return {
+    source: 'override',
+    tier,
+    capabilities: override.capabilities,
+    flags: DEFAULT_FLAGS,
+    reason: override.note || `${tier} entitlement override`,
+    storageLimitBytes: null,
+    seatLimit: null,
+  }
+}
+
+async function findEntitlementOverride(
   ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
   args: {
     targetType: EntitlementOverrideTargetType
@@ -113,15 +203,14 @@ async function findEntitlementOverrideToken(
   const normalized = normalizeOverrideTargetValue(args.targetType, args.targetValue)
   if (!normalized) return null
 
-  const tokenRaw = await ctx.runQuery(api.sync.getEntitlementOverrideToken, {
+  const row = await ctx.runQuery(api.sync.getEntitlementOverride, {
     targetType: args.targetType,
     targetValue: normalized,
   })
-  const token = typeof tokenRaw === 'string' ? tokenRaw.trim() : ''
-  return token || null
+  return mapEntitlementOverride(row)
 }
 
-async function resolveEntitlementTokenForIdentity(
+async function resolveEntitlementOverrideForIdentity(
   ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
   identity: { subject: string | null; email: string | null; name: string | null; tokenIdentifier: string | null } | null,
 ) {
@@ -137,10 +226,52 @@ async function resolveEntitlementTokenForIdentity(
 
   for (const candidate of candidates) {
     if (!candidate.targetValue) continue
-    const token = await findEntitlementOverrideToken(ctx, candidate)
-    if (token) {
-      return { token, source: `${candidate.targetType}:${normalizeOverrideTargetValue(candidate.targetType, candidate.targetValue)}` }
+    const override = await findEntitlementOverride(ctx, candidate)
+    if (override) {
+      return { override, source: `${candidate.targetType}:${normalizeOverrideTargetValue(candidate.targetType, candidate.targetValue)}` }
     }
+  }
+  return null
+}
+
+async function findSubscriptionRecord(
+  ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
+  scopeType: SubscriptionScopeType,
+  scopeId: string,
+) {
+  const normalizedScopeId = normalizeScopeId(scopeType, scopeId)
+  if (!normalizedScopeId) return null
+  const row = await ctx.runQuery(api.sync.getSubscriptionRecord, {
+    scopeType,
+    scopeId: normalizedScopeId,
+  })
+  return mapSubscriptionRecord(row)
+}
+
+async function resolveSubscriptionForIdentity(
+  ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
+  identity: { subject: string | null; email: string | null; tokenIdentifier: string | null } | null,
+  orgId: string,
+) {
+  if (identity) {
+    const userIdFromSubject = identity.subject ? identity.subject.split('|')[0] : ''
+    const candidates = [
+      userIdFromSubject,
+      identity.tokenIdentifier || '',
+      identity.subject || '',
+      identity.email || '',
+    ]
+    for (const candidate of candidates) {
+      if (!candidate) continue
+      const record = await findSubscriptionRecord(ctx, 'user', candidate)
+      if (record && isSubscriptionEffective(record.status)) {
+        return record
+      }
+    }
+  }
+  const orgRecord = await findSubscriptionRecord(ctx, 'org', orgId)
+  if (orgRecord && isSubscriptionEffective(orgRecord.status)) {
+    return orgRecord
   }
   return null
 }
@@ -179,6 +310,112 @@ function parseJwksKeys() {
     return []
   }
   return []
+}
+
+function normalizeScopeId(scopeType: SubscriptionScopeType, scopeId: string) {
+  const trimmed = scopeId.trim()
+  return scopeType === 'user' && trimmed.includes('@') ? trimmed.toLowerCase() : trimmed
+}
+
+function isPlanTier(value: unknown): value is PlanTier {
+  return value === 'free' || value === 'premium' || value === 'enterprise'
+}
+
+function isSubscriptionStatus(value: unknown): value is SubscriptionStatus {
+  return value === 'active' || value === 'trialing' || value === 'canceled' || value === 'past_due' || value === 'paused'
+}
+
+function isBillingMode(value: unknown): value is BillingMode {
+  return value === 'manual' || value === 'external'
+}
+
+function isSubscriptionEffective(status: SubscriptionStatus) {
+  return status === 'active' || status === 'trialing'
+}
+
+function parseEntitlementClaimsFromToken(token: string) {
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const payload = decodeJsonPart<Record<string, unknown>>(parts[1])
+  if (!payload || !isPlanTier(payload.tier)) return null
+  return {
+    tier: payload.tier,
+    capabilities: Array.isArray(payload.capabilities) ? payload.capabilities.filter((value): value is string => typeof value === 'string') : [],
+    flags: payload.flags && typeof payload.flags === 'object' ? payload.flags as Record<string, boolean> : {},
+    iss: typeof payload.iss === 'string' ? payload.iss : null,
+    sub: typeof payload.sub === 'string' ? payload.sub : null,
+    exp: Number(payload.exp),
+  }
+}
+
+function mapSubscriptionRecord(row: unknown): SubscriptionRecord | null {
+  if (!row || typeof row !== 'object') return null
+  const record = row as Record<string, unknown>
+  if (
+    !isPlanTier(record.tier)
+    || !isSubscriptionStatus(record.status)
+    || !isBillingMode(record.billingMode)
+    || (record.scopeType !== 'org' && record.scopeType !== 'user')
+    || typeof record.scopeId !== 'string'
+    || typeof record.updatedAt !== 'string'
+    || typeof record.updatedBy !== 'string'
+  ) {
+    return null
+  }
+  return {
+    id: String(record._id ?? record.id ?? ''),
+    scopeType: record.scopeType,
+    scopeId: record.scopeId,
+    tier: record.tier,
+    status: record.status,
+    billingMode: record.billingMode,
+    seatLimit: typeof record.seatLimit === 'number' ? record.seatLimit : null,
+    storageLimitBytes: typeof record.storageLimitBytes === 'number' ? record.storageLimitBytes : null,
+    renewalAt: typeof record.renewalAt === 'string' ? record.renewalAt : null,
+    endAt: typeof record.endAt === 'string' ? record.endAt : null,
+    note: typeof record.note === 'string' ? record.note : '',
+    updatedAt: record.updatedAt,
+    updatedBy: record.updatedBy,
+  }
+}
+
+function buildEntitlementSummaryFromSubscription(record: SubscriptionRecord | null): EntitlementSummary {
+  if (record && isSubscriptionEffective(record.status)) {
+    return {
+      source: 'subscription',
+      tier: record.tier,
+      capabilities: [...PLAN_CAPABILITIES[record.tier]],
+      flags: DEFAULT_FLAGS,
+      reason: `${record.tier} subscription`,
+      storageLimitBytes: typeof record.storageLimitBytes === 'number' ? record.storageLimitBytes : null,
+      seatLimit: typeof record.seatLimit === 'number' ? record.seatLimit : null,
+    }
+  }
+  return {
+    source: 'free',
+    tier: 'free',
+    capabilities: [],
+    flags: DEFAULT_FLAGS,
+    reason: 'Free plan active',
+    storageLimitBytes: 0,
+    seatLimit: null,
+  }
+}
+
+function buildDefaultEntitlementSummary(): EntitlementSummary {
+  const parsed = parseEntitlementClaimsFromToken(SYNC_ENTITLEMENT_TOKEN)
+  if (parsed && isPlanTier(parsed.tier)) {
+    return {
+      source: 'server_default',
+      tier: parsed.tier,
+      capabilities: parsed.capabilities,
+      flags: parsed.flags,
+      reason: 'Server-issued entitlement token',
+      storageLimitBytes: null,
+      seatLimit: null,
+    }
+  }
+  return buildEntitlementSummaryFromSubscription(null)
 }
 
 function normalizeOrgId(value: string) {
@@ -383,8 +620,8 @@ async function resolveAdminContext(ctx: AdminContextDeps, request: Request) {
     const allowlisted = ADMIN_ALLOWLIST_SUBJECTS.has(identity.subject)
       || Boolean(identity.email && ADMIN_ALLOWLIST_EMAILS.has(identity.email.toLowerCase()))
 
-    const resolvedEntitlement = await resolveEntitlementTokenForIdentity(ctx, identity)
-    const entitlementToken = resolvedEntitlement?.token || SYNC_ENTITLEMENT_TOKEN
+    const resolvedEntitlement = await resolveEntitlementOverrideForIdentity(ctx, identity)
+    const entitlementToken = resolvedEntitlement?.override.mode === 'token' ? (resolvedEntitlement.override.token || '') : SYNC_ENTITLEMENT_TOKEN
     const capabilityResult = entitlementToken
       ? await verifyEntitlementCapability(entitlementToken)
       : { ok: false, reason: 'No signed entitlement token available' }
@@ -393,16 +630,19 @@ async function resolveAdminContext(ctx: AdminContextDeps, request: Request) {
       ? ((await getMemberRole(ctx, orgId, identity.subject)) ?? 'owner')
       : await ensureMemberRole(ctx, orgId, identity.subject)
 
+    const orgAdminAllowed = hasRole(memberRole, 'admin')
     const reasons: string[] = []
-    if (!allowlisted) reasons.push('Identity is not in admin allowlist')
-    if (!capabilityResult.ok) reasons.push(capabilityResult.reason)
-    if (!superAdmin && !hasRole(memberRole, 'admin')) reasons.push('Org role is not admin or owner')
+    if (!superAdmin && !orgAdminAllowed) {
+      reasons.push('Org role is not admin or owner')
+      if (!allowlisted) reasons.push('Identity is not in admin allowlist')
+      if (!capabilityResult.ok) reasons.push(capabilityResult.reason)
+    }
 
     const permissions: AdminPermissionResult = {
       allowlisted,
       capability: capabilityResult.ok,
       superAdmin,
-      allowed: reasons.length === 0,
+      allowed: superAdmin || orgAdminAllowed,
       reasons,
     }
     const adminIdentity: AdminIdentity = {
@@ -433,7 +673,12 @@ async function resolveOwner(
     const identity = await ctx.auth?.getUserIdentity?.()
     if (identity?.subject) {
       const userId = identity.subject.split('|')[0]
-      return { ownerId: `user:${userId}`, ownerSource: 'auth' as OwnerSource }
+      const requestedOrgId = normalizeOrgId(request.headers.get('x-armadillo-org') || '')
+      return {
+        ownerId: `user:${userId}`,
+        ownerSource: 'auth' as OwnerSource,
+        orgId: requestedOrgId || defaultOrgIdForSubject(identity.subject),
+      }
     }
   } catch {
     // Fall through to anonymous owner hint for offline/unauthenticated mode.
@@ -445,7 +690,7 @@ async function resolveOwner(
     return null
   }
 
-  return { ownerId: `anon:${ownerHint}`, ownerSource: 'anonymous' as OwnerSource }
+  return { ownerId: `anon:${ownerHint}`, ownerSource: 'anonymous' as OwnerSource, orgId: null }
 }
 
 http.route({
@@ -493,12 +738,20 @@ http.route({
     if (!identity) {
       return json({ authenticated: false })
     }
+    const orgId = defaultOrgIdForSubject(identity.subject)
+    const role = await ensureMemberRole(ctx, orgId, identity.subject)
     const response = {
       authenticated: true,
       subject: identity.subject,
       email: identity.email,
       name: identity.name,
       tokenIdentifier: identity.tokenIdentifier,
+      authContext: {
+        subject: identity.subject,
+        orgId,
+        roles: [role],
+        sessionId: identity.tokenIdentifier || identity.subject,
+      },
     }
     return json(response)
   }),
@@ -507,29 +760,78 @@ http.route({
 http.route({
   path: '/api/v2/entitlements/me',
   method: 'GET',
-  handler: httpAction(async (ctx) => {
+  handler: httpAction(async (ctx, request) => {
     try {
-      const identity = await resolveIdentity(ctx)
-      const override = await resolveEntitlementTokenForIdentity(ctx, identity)
-      const token = override?.token || SYNC_ENTITLEMENT_TOKEN
-      const source = override ? `User override (${override.source})` : 'Server-issued entitlement token'
-      return json(
-        token
-          ? {
-            ok: true,
-            token,
-            reason: source,
+      const identity = await resolveIdentityWithProfile(ctx)
+      const requestedOrgId = normalizeOrgId(request.headers.get('x-armadillo-org') || '')
+      const orgId = identity?.subject ? (requestedOrgId || defaultOrgIdForSubject(identity.subject)) : requestedOrgId
+      const override = await resolveEntitlementOverrideForIdentity(ctx, identity)
+      if (override?.override.mode === 'token' && override.override.token) {
+        return json({
+          ok: true,
+          token: override.override.token,
+          reason: `User override (${override.source})`,
+          expiresAt: null,
+          fetchedAt: nowIso(),
+        })
+      }
+      if (override?.override.mode === 'derived') {
+        const effective = buildEntitlementSummaryFromOverride(override.override)
+        return json({
+          ok: true,
+          token: null,
+          reason: effective.reason,
+          fetchedAt: nowIso(),
+          derived: {
+            source: effective.source,
+            tier: effective.tier,
+            capabilities: effective.capabilities,
+            flags: effective.flags,
             expiresAt: null,
-            fetchedAt: nowIso(),
-          }
-          : {
-            ok: false,
-            token: null,
-            reason: 'No signed entitlement token configured',
-            expiresAt: null,
-            fetchedAt: nowIso(),
+            subject: identity?.subject || null,
           },
-      )
+        })
+      }
+
+      if (orgId) {
+        const subscription = await resolveSubscriptionForIdentity(ctx, identity, orgId)
+        if (subscription) {
+          const effective = buildEntitlementSummaryFromSubscription(subscription)
+          return json({
+            ok: true,
+            token: null,
+            reason: effective.reason,
+            fetchedAt: nowIso(),
+            derived: {
+              source: effective.source,
+              tier: effective.tier,
+              capabilities: effective.capabilities,
+              flags: effective.flags,
+              expiresAt: subscription.endAt,
+              subject: identity?.subject || null,
+            },
+          })
+        }
+      }
+
+      if (SYNC_ENTITLEMENT_TOKEN) {
+        const parsed = parseEntitlementClaimsFromToken(SYNC_ENTITLEMENT_TOKEN)
+        return json({
+          ok: true,
+          token: SYNC_ENTITLEMENT_TOKEN,
+          reason: 'Server-issued entitlement token',
+          expiresAt: parsed && Number.isFinite(parsed.exp) ? new Date(parsed.exp * 1000).toISOString() : null,
+          fetchedAt: nowIso(),
+        })
+      }
+
+      return json({
+        ok: false,
+        token: null,
+        reason: 'No signed entitlement token configured',
+        expiresAt: null,
+        fetchedAt: nowIso(),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Entitlement lookup failed'
       return json(
@@ -572,6 +874,42 @@ http.route({
 
 http.route({
   path: '/api/v2/admin/orgs',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/vaults',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/usage',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/subscriptions',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/overview',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/customers/search',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/admin/system',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
 })
@@ -687,8 +1025,8 @@ http.route({
     if ('error' in resolved) {
       return json({ error: resolved.error }, resolved.status)
     }
-    if (!resolved.context.permissions.allowed) {
-      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
     }
 
     const rows = await ctx.runQuery(api.sync.listAdminOrgs, {
@@ -724,8 +1062,8 @@ http.route({
     if ('error' in resolved) {
       return json({ error: resolved.error }, resolved.status)
     }
-    if (!resolved.context.permissions.allowed) {
-      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
     }
 
     const body = await request.json() as { orgId?: unknown; name?: unknown }
@@ -779,8 +1117,8 @@ http.route({
     if ('error' in resolved) {
       return json({ error: resolved.error }, resolved.status)
     }
-    if (!resolved.context.permissions.allowed) {
-      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
     }
 
     const url = new URL(request.url)
@@ -816,8 +1154,8 @@ http.route({
     if ('error' in resolved) {
       return json({ error: resolved.error }, resolved.status)
     }
-    if (!resolved.context.permissions.allowed) {
-      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
     }
 
     const url = new URL(request.url)
@@ -871,6 +1209,275 @@ http.route({
 })
 
 http.route({
+  path: '/api/v2/admin/vaults',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const orgId = normalizeOrgId(new URL(request.url).searchParams.get('orgId') || '')
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
+      return json({ error: 'orgId is required and must match your admin org' }, 400)
+    }
+
+    const vaults = await ctx.runQuery(api.sync.listVaultSummariesByOrg, { orgId }) as Array<{
+      vaultId: string
+      ownerId?: string | null
+      revision: number
+      updatedAt: string
+      updatedBy?: string | null
+      blobCount?: number
+      storageBytes?: number
+    }>
+    return json({
+      vaults: vaults.map((row) => ({
+        vaultId: row.vaultId,
+        ownerId: row.ownerId ?? null,
+        revision: row.revision,
+        updatedAt: row.updatedAt,
+        updatedBy: row.updatedBy ?? null,
+        blobCount: row.blobCount ?? 0,
+        storageBytes: row.storageBytes ?? 0,
+      })),
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/vaults',
+  method: 'DELETE',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const url = new URL(request.url)
+    const orgId = normalizeOrgId(url.searchParams.get('orgId') || '')
+    const vaultId = (url.searchParams.get('vaultId') || '').trim()
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
+      return json({ error: 'orgId is required and must match your admin org' }, 400)
+    }
+    if (!vaultId) {
+      return json({ error: 'vaultId is required' }, 400)
+    }
+
+    const deletion = await ctx.runMutation(api.sync.deleteVaultsByOrg, { orgId, vaultId }) as { deleted?: boolean } | null
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: resolved.context.identity.subject,
+      action: 'org.vault.delete',
+      target: vaultId,
+    })
+    return json({ ok: true, deleted: Boolean(deletion?.deleted) })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/usage',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const orgId = normalizeOrgId(new URL(request.url).searchParams.get('orgId') || '')
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
+      return json({ error: 'orgId is required and must match your admin org' }, 400)
+    }
+
+    const usage = await ctx.runQuery(api.sync.getOrgUsageSummary, { orgId }) as {
+      orgId: string
+      memberCount: number
+      vaultCount: number
+      storageBytes: number
+      lastVaultActivityAt: string | null
+    }
+    return json(usage)
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/subscriptions',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const url = new URL(request.url)
+    const scopeType = url.searchParams.get('scopeType')
+    const scopeIdRaw = url.searchParams.get('scopeId') || ''
+    if ((scopeType !== 'org' && scopeType !== 'user') || !scopeIdRaw.trim()) {
+      return json({ error: 'scopeType and scopeId are required' }, 400)
+    }
+    const scopeId = normalizeScopeId(scopeType, scopeIdRaw)
+    if (!resolved.context.permissions.superAdmin && (scopeType !== 'org' || scopeId !== resolved.context.identity.orgId)) {
+      return json({ error: 'forbidden' }, 403)
+    }
+
+    const record = mapSubscriptionRecord(await ctx.runQuery(api.sync.getSubscriptionRecord, { scopeType, scopeId }))
+    const effective = record ? buildEntitlementSummaryFromSubscription(record) : buildDefaultEntitlementSummary()
+    return json({ subscription: record, effective })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/subscriptions',
+  method: 'PUT',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const body = await request.json() as {
+      scopeType?: unknown
+      scopeId?: unknown
+      tier?: unknown
+      status?: unknown
+      billingMode?: unknown
+      seatLimit?: unknown
+      storageLimitBytes?: unknown
+      renewalAt?: unknown
+      endAt?: unknown
+      note?: unknown
+    }
+    if ((body.scopeType !== 'org' && body.scopeType !== 'user') || typeof body.scopeId !== 'string') {
+      return json({ error: 'scopeType and scopeId are required' }, 400)
+    }
+    const scopeType = body.scopeType
+    const scopeId = normalizeScopeId(scopeType, body.scopeId)
+    const tier = body.tier
+    const status = body.status
+    const billingMode = body.billingMode
+    if (!isPlanTier(tier) || !isSubscriptionStatus(status) || !isBillingMode(billingMode)) {
+      return json({ error: 'tier, status, and billingMode are required' }, 400)
+    }
+    if (!scopeId) {
+      return json({ error: 'scopeId is required' }, 400)
+    }
+
+    if (!resolved.context.permissions.superAdmin) {
+      if (scopeType !== 'org' || scopeId !== resolved.context.identity.orgId) {
+        return json({ error: 'forbidden' }, 403)
+      }
+      if (tier === 'enterprise') {
+        return json({ error: 'Enterprise plans are operator-managed' }, 403)
+      }
+    }
+
+    const now = nowIso()
+    const seatLimit = typeof body.seatLimit === 'number' && Number.isFinite(body.seatLimit) ? Math.max(0, Math.round(body.seatLimit)) : undefined
+    const storageLimitBytes = typeof body.storageLimitBytes === 'number' && Number.isFinite(body.storageLimitBytes) ? Math.max(0, Math.round(body.storageLimitBytes)) : undefined
+    const renewalAt = typeof body.renewalAt === 'string' && body.renewalAt.trim() ? body.renewalAt : undefined
+    const endAt = typeof body.endAt === 'string' && body.endAt.trim() ? body.endAt : undefined
+    const note = typeof body.note === 'string' ? body.note.trim() : ''
+
+    const result = await ctx.runMutation(api.sync.upsertSubscriptionRecord, {
+      scopeType,
+      scopeId,
+      tier,
+      status,
+      billingMode,
+      ...(seatLimit === undefined ? {} : { seatLimit }),
+      ...(storageLimitBytes === undefined ? {} : { storageLimitBytes }),
+      ...(renewalAt === undefined ? {} : { renewalAt }),
+      ...(endAt === undefined ? {} : { endAt }),
+      note,
+      updatedAt: now,
+      updatedBy: resolved.context.identity.subject,
+    }) as { id?: string } | null
+    const record = mapSubscriptionRecord(await ctx.runQuery(api.sync.getSubscriptionRecord, { scopeType, scopeId }))
+    const effective = record ? buildEntitlementSummaryFromSubscription(record) : buildDefaultEntitlementSummary()
+    await appendAdminAudit(ctx, {
+      orgId: scopeType === 'org' ? scopeId : resolved.context.identity.orgId,
+      actorSubject: resolved.context.identity.subject,
+      action: 'subscription.upsert',
+      target: `${scopeType}:${scopeId}`,
+      metadata: { tier, status, billingMode, id: result?.id || null },
+    })
+    return json({ subscription: record, effective })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/overview',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
+    }
+    const overview = await ctx.runQuery(api.sync.getOperatorOverview, {}) as Record<string, unknown>
+    return json(overview)
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/customers/search',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
+    }
+    const queryText = (new URL(request.url).searchParams.get('q') || '').trim()
+    if (!queryText) {
+      return json({ results: [] })
+    }
+    const results = await ctx.runQuery(api.sync.searchCustomers, { query: queryText }) as unknown[]
+    return json({ results })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/system',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.superAdmin) {
+      return json({ error: 'superadmin required' }, 403)
+    }
+    return json({
+      provider: 'convex',
+      health: { ok: true, now: nowIso() },
+      readiness: { ok: true },
+      metrics: null,
+      note: 'Convex does not expose sync-gateway style health and metrics counters.',
+    })
+  }),
+})
+
+http.route({
   path: '/api/v2/admin/entitlements/overrides',
   method: 'GET',
   handler: httpAction(async (ctx, request) => {
@@ -891,6 +1498,10 @@ http.route({
       _id: string
       targetType: EntitlementOverrideTargetType
       targetValue: string
+      mode?: EntitlementOverrideMode
+      token?: string
+      tier?: PlanTier
+      capabilities?: string[]
       note?: string
       updatedAt: string
       updatedBy: string
@@ -913,6 +1524,9 @@ http.route({
         id: String(row._id),
         targetType: row.targetType,
         targetValue: row.targetValue,
+        mode: row.mode === 'derived' ? 'derived' : 'token',
+        tier: isPlanTier(row.tier) ? row.tier : null,
+        capabilities: Array.isArray(row.capabilities) ? row.capabilities.filter((value): value is string => typeof value === 'string') : [],
         note: row.note ?? '',
         updatedAt: row.updatedAt,
         updatedBy: row.updatedBy,
@@ -938,6 +1552,8 @@ http.route({
       targetType?: unknown
       targetValue?: unknown
       token?: unknown
+      tier?: unknown
+      capabilities?: unknown
       note?: unknown
     }
     if (!isTargetType(body.targetType)) {
@@ -945,12 +1561,20 @@ http.route({
     }
     const targetValue = normalizeOverrideTargetValue(body.targetType, typeof body.targetValue === 'string' ? body.targetValue : '')
     const token = typeof body.token === 'string' ? body.token.trim() : ''
+    const tier = isPlanTier(body.tier) ? body.tier : 'free'
+    const capabilities = Array.isArray(body.capabilities)
+      ? Array.from(new Set(body.capabilities.filter((value): value is string => typeof value === 'string')))
+      : PLAN_CAPABILITIES[tier]
     const note = typeof body.note === 'string' ? body.note.trim() : ''
     if (!targetValue) {
       return json({ error: 'targetValue is required' }, 400)
     }
-    if (token.split('.').length !== 3) {
+    const mode: EntitlementOverrideMode = token ? 'token' : 'derived'
+    if (mode === 'token' && token.split('.').length !== 3) {
       return json({ error: 'token must be a signed JWT' }, 400)
+    }
+    if (mode === 'derived' && capabilities.length === 0 && tier === 'free') {
+      return json({ error: 'Select at least one capability or a non-free tier' }, 400)
     }
 
     const now = nowIso()
@@ -958,7 +1582,9 @@ http.route({
     const upserted = await ctx.runMutation(api.sync.upsertEntitlementOverride, {
       targetType: body.targetType,
       targetValue,
-      token,
+      mode,
+      ...(token ? { token } : {}),
+      ...(mode === 'derived' ? { tier, capabilities } : {}),
       note,
       updatedAt: now,
       updatedBy,
@@ -977,6 +1603,9 @@ http.route({
         id: upserted?.id || '',
         targetType: body.targetType,
         targetValue,
+        mode,
+        tier: mode === 'derived' ? tier : null,
+        capabilities: mode === 'derived' ? capabilities : [],
         note,
         updatedAt: now,
         updatedBy,
@@ -1314,6 +1943,7 @@ http.route({
 
     const result = await ctx.runMutation(api.sync.pushByOwnerVault, {
       ownerId: owner.ownerId,
+      ...(owner.orgId ? { orgId: owner.orgId } : {}),
       vaultId: payload.vaultId,
       revision: payload.revision,
       encryptedFile: payload.encryptedFile,
@@ -1346,6 +1976,7 @@ http.route({
 
     const result = await ctx.runMutation(api.sync.pushByOwnerVault, {
       ownerId: owner.ownerId,
+      ...(owner.orgId ? { orgId: owner.orgId } : {}),
       vaultId: payload.vaultId,
       revision: payload.revision,
       encryptedFile: payload.encryptedFile,
@@ -1389,6 +2020,7 @@ http.route({
     try {
       const result = await ctx.runMutation(api.sync.putBlobByOwnerVault, {
         ownerId: owner.ownerId,
+        ...(owner.orgId ? { orgId: owner.orgId } : {}),
         vaultId: payload.vaultId,
         blobId: payload.blobId,
         nonce: payload.nonce,

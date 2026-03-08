@@ -317,6 +317,7 @@ export const selfHostedProvider: SyncProviderClient = {
   setAuthToken: (token) => {
     authToken = token || import.meta.env.VITE_SYNC_AUTH_TOKEN || null
   },
+  getAuthToken: () => authToken,
   setAuthContext: (context) => {
     authContext = context
   },

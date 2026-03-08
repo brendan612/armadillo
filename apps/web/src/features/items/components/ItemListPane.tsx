@@ -300,6 +300,26 @@ export function ItemListPane() {
           title: 'No Expired Passwords',
           message: 'No credentials are currently marked as expired.',
         }
+      : selectedNode === 'weak'
+        ? {
+            title: 'No Weak Passwords',
+            message: 'No credentials are currently flagged as weak.',
+          }
+        : selectedNode === 'reused'
+          ? {
+              title: 'No Reused Passwords',
+              message: 'No credentials are currently sharing the same password.',
+            }
+          : selectedNode === 'exposed'
+            ? {
+                title: 'No Exposed Passwords',
+                message: 'No credentials are currently flagged as exposed.',
+              }
+            : selectedNode === 'stale'
+              ? {
+                  title: 'No Stale Entries',
+                  message: 'No credentials currently look stale enough for review.',
+                }
       : selectedNode === 'unfiled'
         ? {
             title: 'No Unfiled Credentials',

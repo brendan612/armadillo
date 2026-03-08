@@ -1,9 +1,10 @@
-import { House, KeyRound, PenSquare } from 'lucide-react'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { House, KeyRound, PenSquare, Shield } from 'lucide-react'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function MobileNav() {
   const { mobileStep, selectedNode, workspaceSection } = useVaultAppState()
-  const { setMobileStep, setSelectedNode, openHome, openStorageWorkspace } = useVaultAppActions()
+  const { adminCenterEnabled } = useVaultAppDerived()
+  const { setMobileStep, setSelectedNode, openHome, openStorageWorkspace, openAdminWorkspace } = useVaultAppActions()
 
   return (
     <>
@@ -26,10 +27,17 @@ export function MobileNav() {
           <KeyRound size={20} strokeWidth={1.8} aria-hidden="true" />
           {workspaceSection === 'storage' ? 'Storage' : 'Vault'}
         </button>
-        <button className={mobileStep === 'detail' ? 'active' : ''} onClick={() => setMobileStep('detail')}>
-          <PenSquare size={20} strokeWidth={1.8} aria-hidden="true" />
-          Detail
-        </button>
+        {adminCenterEnabled ? (
+          <button className={workspaceSection === 'admin' ? 'active' : ''} onClick={openAdminWorkspace}>
+            <Shield size={20} strokeWidth={1.8} aria-hidden="true" />
+            Admin
+          </button>
+        ) : (
+          <button className={mobileStep === 'detail' ? 'active' : ''} onClick={() => setMobileStep('detail')}>
+            <PenSquare size={20} strokeWidth={1.8} aria-hidden="true" />
+            Detail
+          </button>
+        )}
       </div>
       <div className="mobile-nav-spacer" />
     </>

@@ -12,7 +12,14 @@ export default defineSchema({
       v.literal('email'),
     ),
     targetValue: v.string(),
-    token: v.string(),
+    mode: v.optional(v.union(v.literal('token'), v.literal('derived'))),
+    token: v.optional(v.string()),
+    tier: v.optional(v.union(
+      v.literal('free'),
+      v.literal('premium'),
+      v.literal('enterprise'),
+    )),
+    capabilities: v.optional(v.array(v.string())),
     note: v.optional(v.string()),
     updatedAt: v.string(),
     updatedBy: v.string(),
@@ -55,15 +62,19 @@ export default defineSchema({
     .index('by_created', ['createdAt']),
   vaultSnapshots: defineTable({
     ownerId: v.string(),
+    orgId: v.optional(v.string()),
     vaultId: v.string(),
     revision: v.number(),
     encryptedFile: v.string(),
     updatedAt: v.string(),
   })
     .index('by_owner_vault', ['ownerId', 'vaultId'])
-    .index('by_owner', ['ownerId']),
+    .index('by_owner', ['ownerId'])
+    .index('by_org', ['orgId'])
+    .index('by_org_vault', ['orgId', 'vaultId']),
   vaultBlobs: defineTable({
     ownerId: v.string(),
+    orgId: v.optional(v.string()),
     vaultId: v.string(),
     blobId: v.string(),
     nonce: v.string(),
@@ -75,5 +86,33 @@ export default defineSchema({
     updatedAt: v.string(),
   })
     .index('by_owner_vault_blob', ['ownerId', 'vaultId', 'blobId'])
-    .index('by_owner_vault_blobs', ['ownerId', 'vaultId']),
+    .index('by_owner_vault_blobs', ['ownerId', 'vaultId'])
+    .index('by_org_vault_blobs', ['orgId', 'vaultId'])
+    .index('by_org', ['orgId']),
+  subscriptionRecords: defineTable({
+    scopeType: v.union(v.literal('org'), v.literal('user')),
+    scopeId: v.string(),
+    tier: v.union(
+      v.literal('free'),
+      v.literal('premium'),
+      v.literal('enterprise'),
+    ),
+    status: v.union(
+      v.literal('active'),
+      v.literal('trialing'),
+      v.literal('canceled'),
+      v.literal('past_due'),
+      v.literal('paused'),
+    ),
+    billingMode: v.union(v.literal('manual'), v.literal('external')),
+    seatLimit: v.optional(v.number()),
+    storageLimitBytes: v.optional(v.number()),
+    renewalAt: v.optional(v.string()),
+    endAt: v.optional(v.string()),
+    note: v.optional(v.string()),
+    updatedAt: v.string(),
+    updatedBy: v.string(),
+  })
+    .index('by_scope', ['scopeType', 'scopeId'])
+    .index('by_updated_at', ['updatedAt']),
 })

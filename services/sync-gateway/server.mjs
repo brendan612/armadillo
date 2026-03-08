@@ -24,6 +24,17 @@ const ENTITLEMENT_TOKEN = (process.env.SYNC_ENTITLEMENT_TOKEN || '').trim()
 const ENTITLEMENT_VERIFY_JWKS = (process.env.SYNC_ENTITLEMENT_VERIFY_JWKS || '').trim()
 const ADMIN_ALLOWLIST_EMAILS = new Set((process.env.SYNC_ADMIN_ALLOWLIST_EMAILS || '').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean))
 const ADMIN_ALLOWLIST_SUBJECTS = new Set((process.env.SYNC_ADMIN_ALLOWLIST_SUBJECTS || '').split(',').map((v) => v.trim()).filter(Boolean))
+const PLAN_CAPABILITIES = {
+  free: [],
+  premium: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan'],
+  enterprise: ['cloud.sync', 'cloud.cloud_only', 'vault.storage', 'vault.storage.blobs', 'security.breach_scan', 'enterprise.self_hosted', 'enterprise.org_admin'],
+}
+const DEFAULT_FLAGS = {
+  'billing.plans_section': true,
+  'billing.manual_token_entry': true,
+  'experiments.enterprise_team_ui': false,
+  'experiments.storage_tab': true,
+}
 
 const defaultCorsOrigins = ['http://localhost:4000', 'http://127.0.0.1:4000']
 const corsOrigins = (process.env.SYNC_CORS_ORIGINS || defaultCorsOrigins.join(',')).split(',').map((v) => v.trim()).filter(Boolean)
@@ -66,6 +77,33 @@ function normalizeTargetValue(targetType, value) {
   return targetType === 'email' ? trimmed.toLowerCase() : trimmed
 }
 function entitlementOverrideKey(targetType, targetValue) { return `${targetType}:${targetValue}` }
+function subscriptionRecordKey(scopeType, scopeId) { return `${scopeType}:${scopeId}` }
+function normalizeScopeId(scopeType, scopeId) { const trimmed = String(scopeId || '').trim(); return scopeType === 'user' && trimmed.includes('@') ? trimmed.toLowerCase() : trimmed }
+function isPlanTier(value) { return value === 'free' || value === 'premium' || value === 'enterprise' }
+function isSubscriptionStatus(value) { return value === 'active' || value === 'trialing' || value === 'canceled' || value === 'past_due' || value === 'paused' }
+function isBillingMode(value) { return value === 'manual' || value === 'external' }
+function isSubscriptionEffective(status) { return status === 'active' || status === 'trialing' }
+function parseEntitlementClaims(token) {
+  const parts = String(token || '').trim().split('.')
+  if (parts.length !== 3) return null
+  try {
+    const payload = JSON.parse(decodeBase64Url(parts[1]).toString('utf8'))
+    return isPlanTier(payload?.tier)
+      ? {
+        tier: payload.tier,
+        capabilities: Array.isArray(payload.capabilities) ? payload.capabilities.filter((value) => typeof value === 'string') : [],
+        flags: payload.flags && typeof payload.flags === 'object' ? payload.flags : {},
+        exp: Number(payload.exp),
+      }
+      : null
+  } catch {
+    return null
+  }
+}
+function buildFreeEntitlementSummary() { return { source: 'free', tier: 'free', capabilities: [], flags: DEFAULT_FLAGS, reason: 'Free plan active', storageLimitBytes: 0, seatLimit: null } }
+function buildDefaultEntitlementSummary() { const parsed = parseEntitlementClaims(ENTITLEMENT_TOKEN); return parsed ? { source: 'server_default', tier: parsed.tier, capabilities: parsed.capabilities, flags: parsed.flags, reason: 'Server-issued entitlement token', storageLimitBytes: null, seatLimit: null } : buildFreeEntitlementSummary() }
+function buildSubscriptionEntitlementSummary(record) { return record && isSubscriptionEffective(record.status) ? { source: 'subscription', tier: record.tier, capabilities: PLAN_CAPABILITIES[record.tier] || [], flags: DEFAULT_FLAGS, reason: `${record.tier} subscription`, storageLimitBytes: typeof record.storageLimitBytes === 'number' ? record.storageLimitBytes : null, seatLimit: typeof record.seatLimit === 'number' ? record.seatLimit : null } : buildFreeEntitlementSummary() }
+function buildOverrideEntitlementSummary(record) { return { source: 'override', tier: isPlanTier(record?.tier) ? record.tier : 'free', capabilities: Array.isArray(record?.capabilities) ? record.capabilities.filter((value) => typeof value === 'string') : [], flags: DEFAULT_FLAGS, reason: typeof record?.note === 'string' && record.note.trim() ? record.note.trim() : `${isPlanTier(record?.tier) ? record.tier : 'free'} entitlement override`, storageLimitBytes: null, seatLimit: null } }
 
 async function verifyEntitlementAdminCapability(token) {
   const parts = String(token || '').trim().split('.')
@@ -195,11 +233,11 @@ function readJsonBody(req, maxBytes = MAX_REQUEST_BYTES) { return new Promise((r
 
 function readState() {
   try {
-    if (!fs.existsSync(DATA_FILE)) return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {}, entitlementOverrides: {} }
+    if (!fs.existsSync(DATA_FILE)) return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {}, entitlementOverrides: {}, subscriptionRecords: {} }
     const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
-    return { snapshotsByOwner: parsed?.snapshotsByOwner && typeof parsed.snapshotsByOwner === 'object' ? parsed.snapshotsByOwner : {}, snapshotsByOrg: parsed?.snapshotsByOrg && typeof parsed.snapshotsByOrg === 'object' ? parsed.snapshotsByOrg : {}, blobsByOrg: parsed?.blobsByOrg && typeof parsed.blobsByOrg === 'object' ? parsed.blobsByOrg : {}, orgs: parsed?.orgs && typeof parsed.orgs === 'object' ? parsed.orgs : {}, auditByOrg: parsed?.auditByOrg && typeof parsed.auditByOrg === 'object' ? parsed.auditByOrg : {}, idempotency: parsed?.idempotency && typeof parsed.idempotency === 'object' ? parsed.idempotency : {}, entitlementOverrides: parsed?.entitlementOverrides && typeof parsed.entitlementOverrides === 'object' ? parsed.entitlementOverrides : {} }
+    return { snapshotsByOwner: parsed?.snapshotsByOwner && typeof parsed.snapshotsByOwner === 'object' ? parsed.snapshotsByOwner : {}, snapshotsByOrg: parsed?.snapshotsByOrg && typeof parsed.snapshotsByOrg === 'object' ? parsed.snapshotsByOrg : {}, blobsByOrg: parsed?.blobsByOrg && typeof parsed.blobsByOrg === 'object' ? parsed.blobsByOrg : {}, orgs: parsed?.orgs && typeof parsed.orgs === 'object' ? parsed.orgs : {}, auditByOrg: parsed?.auditByOrg && typeof parsed.auditByOrg === 'object' ? parsed.auditByOrg : {}, idempotency: parsed?.idempotency && typeof parsed.idempotency === 'object' ? parsed.idempotency : {}, entitlementOverrides: parsed?.entitlementOverrides && typeof parsed.entitlementOverrides === 'object' ? parsed.entitlementOverrides : {}, subscriptionRecords: parsed?.subscriptionRecords && typeof parsed.subscriptionRecords === 'object' ? parsed.subscriptionRecords : {} }
   } catch {
-    return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {}, entitlementOverrides: {} }
+    return { snapshotsByOwner: {}, snapshotsByOrg: {}, blobsByOrg: {}, orgs: {}, auditByOrg: {}, idempotency: {}, entitlementOverrides: {}, subscriptionRecords: {} }
   }
 }
 
@@ -233,10 +271,12 @@ function ensureOrg(context) {
   return state.orgs[context.orgId].members[context.subject].role
 }
 
-function getEntitlementOverrideToken(context) {
+function getEntitlementOverride(context) {
   const candidates = [
+    { targetType: 'userId', targetValue: String(context.subject || '').split('|')[0] || '' },
     { targetType: 'subject', targetValue: context.subject || '' },
     { targetType: 'tokenIdentifier', targetValue: context.sessionId || '' },
+    { targetType: 'email', targetValue: context.email || '' },
   ]
   for (const candidate of candidates) {
     const targetType = normalizeTargetType(candidate.targetType)
@@ -245,8 +285,45 @@ function getEntitlementOverrideToken(context) {
     if (!targetValue) continue
     const key = entitlementOverrideKey(targetType, targetValue)
     const row = state.entitlementOverrides?.[key]
-    const token = typeof row?.token === 'string' ? row.token.trim() : ''
-    if (token) return { token, source: key }
+    if (!row) continue
+    return { row, source: key }
+  }
+  return null
+}
+
+function getSubscriptionRecord(scopeType, scopeId) {
+  const normalizedScopeId = normalizeScopeId(scopeType, scopeId)
+  if (!normalizedScopeId) return null
+  const row = state.subscriptionRecords?.[subscriptionRecordKey(scopeType, normalizedScopeId)] || null
+  if (!row || !isPlanTier(row.tier) || !isSubscriptionStatus(row.status) || !isBillingMode(row.billingMode)) return null
+  return {
+    id: String(row.id || subscriptionRecordKey(scopeType, normalizedScopeId)),
+    scopeType,
+    scopeId: normalizedScopeId,
+    tier: row.tier,
+    status: row.status,
+    billingMode: row.billingMode,
+    seatLimit: typeof row.seatLimit === 'number' ? row.seatLimit : null,
+    storageLimitBytes: typeof row.storageLimitBytes === 'number' ? row.storageLimitBytes : null,
+    renewalAt: typeof row.renewalAt === 'string' ? row.renewalAt : null,
+    endAt: typeof row.endAt === 'string' ? row.endAt : null,
+    note: typeof row.note === 'string' ? row.note : '',
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : nowIso(),
+    updatedBy: typeof row.updatedBy === 'string' ? row.updatedBy : 'system',
+  }
+}
+
+function resolveSubscriptionForContext(context) {
+  const candidates = [
+    { scopeType: 'user', scopeId: String(context.subject || '').split('|')[0] || '' },
+    { scopeType: 'user', scopeId: context.sessionId || '' },
+    { scopeType: 'user', scopeId: context.subject || '' },
+    { scopeType: 'org', scopeId: context.orgId || '' },
+  ]
+  for (const candidate of candidates) {
+    if (!candidate.scopeId) continue
+    const record = getSubscriptionRecord(candidate.scopeType, candidate.scopeId)
+    if (record && isSubscriptionEffective(record.status)) return record
   }
   return null
 }
@@ -260,8 +337,8 @@ async function resolveAdminContext(req, url) {
   const allowlisted = ADMIN_ALLOWLIST_SUBJECTS.has(context.subject)
     || ADMIN_ALLOWLIST_EMAILS.has(String(context.email || '').toLowerCase())
 
-  const overrideToken = getEntitlementOverrideToken(context)
-  const entitlementToken = (overrideToken?.token || ENTITLEMENT_TOKEN || '').trim()
+  const overrideToken = getEntitlementOverride(context)
+  const entitlementToken = (typeof overrideToken?.row?.token === 'string' ? overrideToken.row.token : ENTITLEMENT_TOKEN || '').trim()
   const capability = entitlementToken
     ? await verifyEntitlementAdminCapability(entitlementToken)
     : { ok: false, reason: 'No signed entitlement token available' }
@@ -275,10 +352,13 @@ async function resolveAdminContext(req, url) {
     role = 'owner'
   }
 
+  const orgAdminAllowed = Boolean(role && hasRole([role], 'admin'))
   const reasons = []
-  if (!allowlisted) reasons.push('Identity is not in admin allowlist')
-  if (!capability.ok) reasons.push(capability.reason)
-  if (!superAdmin && (!role || !hasRole([role], 'admin'))) reasons.push('Org role is not admin or owner')
+  if (!superAdmin && !orgAdminAllowed) {
+    reasons.push('Org role is not admin or owner')
+    if (!allowlisted) reasons.push('Identity is not in admin allowlist')
+    if (!capability.ok) reasons.push(capability.reason)
+  }
 
   return {
     status: 200,
@@ -294,7 +374,7 @@ async function resolveAdminContext(req, url) {
         allowlisted,
         capability: capability.ok,
         superAdmin,
-        allowed: reasons.length === 0,
+        allowed: superAdmin || orgAdminAllowed,
         reasons,
       },
     },
@@ -321,10 +401,25 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/v2/entitlements/me' && req.method === 'GET') {
       const c = resolveContext(req, url, ENTERPRISE_MODE)
       if (c?.error) { metrics.authFailuresTotal += 1; json(req, res, 401, { ok: false, token: null, reason: c.error, expiresAt: null, fetchedAt: nowIso() }); return }
-      const override = getEntitlementOverrideToken(c)
-      const token = (override?.token || ENTITLEMENT_TOKEN || '').trim()
+      const override = getEntitlementOverride(c)
+      if (typeof override?.row?.token === 'string' && override.row.token.trim()) {
+        json(req, res, 200, { ok: true, token: override.row.token.trim(), reason: `User override (${override.source})`, expiresAt: null, fetchedAt: nowIso() })
+        return
+      }
+      if (override?.row?.mode === 'derived') {
+        const effective = buildOverrideEntitlementSummary(override.row)
+        json(req, res, 200, { ok: true, token: null, reason: effective.reason, fetchedAt: nowIso(), derived: { source: effective.source, tier: effective.tier, capabilities: effective.capabilities, flags: effective.flags, expiresAt: null, subject: c.subject } })
+        return
+      }
+      const subscription = resolveSubscriptionForContext(c)
+      if (subscription) {
+        const effective = buildSubscriptionEntitlementSummary(subscription)
+        json(req, res, 200, { ok: true, token: null, reason: effective.reason, fetchedAt: nowIso(), derived: { source: effective.source, tier: effective.tier, capabilities: effective.capabilities, flags: effective.flags, expiresAt: subscription.endAt, subject: c.subject } })
+        return
+      }
+      const token = (ENTITLEMENT_TOKEN || '').trim()
       json(req, res, 200, token
-        ? { ok: true, token, reason: override ? `User override (${override.source})` : 'Server-issued entitlement token', expiresAt: null, fetchedAt: nowIso() }
+        ? { ok: true, token, reason: 'Server-issued entitlement token', expiresAt: null, fetchedAt: nowIso() }
         : { ok: false, token: null, reason: 'No signed entitlement token configured', expiresAt: null, fetchedAt: nowIso() })
       return
     }
@@ -385,7 +480,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/v2/admin/orgs' && req.method === 'POST') {
       const admin = await resolveAdminContext(req, url)
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
-      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
 
       const body = await readJsonBody(req)
       const name = typeof body.name === 'string' ? body.name.trim() : ''
@@ -432,7 +527,7 @@ const server = createServer(async (req, res) => {
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
       if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
       const orgId = decodeURIComponent(adminMembersV2[1])
-      if (orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const members = Object.entries(state.orgs?.[orgId]?.members || {})
         .map(([memberId, row]) => ({ memberId, role: normalizeRole(row?.role, 'viewer'), addedAt: row?.addedAt || nowIso() }))
         .sort((a, b) => (a.memberId > b.memberId ? 1 : -1))
@@ -445,7 +540,7 @@ const server = createServer(async (req, res) => {
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
       if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
       const orgId = decodeURIComponent(adminMembersV2[1])
-      if (orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const body = await readJsonBody(req)
       const memberId = typeof body.memberId === 'string' ? body.memberId.trim() : ''
       const memberRole = normalizeRole(body.role, 'viewer')
@@ -467,7 +562,7 @@ const server = createServer(async (req, res) => {
       if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
       const orgId = decodeURIComponent(adminDelMemberV2[1])
       const memberId = decodeURIComponent(adminDelMemberV2[2])
-      if (orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const existed = Boolean(state.orgs?.[orgId]?.members?.[memberId])
       if (existed) delete state.orgs[orgId].members[memberId]
       appendAudit(makeAudit(orgId, admin.context.subject, 'org.member.remove', memberId))
@@ -482,7 +577,7 @@ const server = createServer(async (req, res) => {
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
       if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
       const orgId = decodeURIComponent(adminAuditV2[1])
-      if (orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const limitRaw = Number(url.searchParams.get('limit') || 50)
       const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.round(limitRaw))) : 50
       const cursor = parseCursor(url.searchParams.get('cursor'))
@@ -499,10 +594,163 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    if (url.pathname === '/v2/admin/entitlements/overrides' && req.method === 'GET') {
+    const adminVaultsV2 = url.pathname.match(/^\/v2\/admin\/orgs\/([^/]+)\/vaults$/)
+    if (adminVaultsV2 && req.method === 'GET') {
       const admin = await resolveAdminContext(req, url)
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
       if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      const orgId = decodeURIComponent(adminVaultsV2[1])
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const snapshots = Object.values(state.snapshotsByOrg?.[orgId] || {}).sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))
+      const vaults = snapshots.map((row) => ({
+        vaultId: row.vaultId,
+        ownerId: row.updatedBy || null,
+        revision: Number(row.revision || 0),
+        updatedAt: row.updatedAt || nowIso(),
+        updatedBy: row.updatedBy || null,
+        blobCount: Object.keys(state.blobsByOrg?.[orgId]?.[row.vaultId] || {}).length,
+        storageBytes: computeOrgVaultBlobUsageBytes(orgId, row.vaultId),
+      }))
+      json(req, res, 200, { vaults })
+      return
+    }
+
+    const adminVaultV2 = url.pathname.match(/^\/v2\/admin\/orgs\/([^/]+)\/vaults\/([^/]+)$/)
+    if (adminVaultV2 && req.method === 'DELETE') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      const orgId = decodeURIComponent(adminVaultV2[1])
+      const vaultId = decodeURIComponent(adminVaultV2[2])
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const hadSnapshot = Boolean(state.snapshotsByOrg?.[orgId]?.[vaultId])
+      if (state.snapshotsByOrg?.[orgId]?.[vaultId]) delete state.snapshotsByOrg[orgId][vaultId]
+      const hadBlobs = Boolean(state.blobsByOrg?.[orgId]?.[vaultId])
+      if (state.blobsByOrg?.[orgId]?.[vaultId]) delete state.blobsByOrg[orgId][vaultId]
+      appendAudit(makeAudit(orgId, admin.context.subject, 'org.vault.delete', vaultId))
+      writeState(state)
+      json(req, res, 200, { ok: true, deleted: hadSnapshot || hadBlobs })
+      return
+    }
+
+    const adminUsageV2 = url.pathname.match(/^\/v2\/admin\/orgs\/([^/]+)\/usage$/)
+    if (adminUsageV2 && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      const orgId = decodeURIComponent(adminUsageV2[1])
+      if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const snapshots = Object.values(state.snapshotsByOrg?.[orgId] || {})
+      const storageBytes = Object.keys(state.blobsByOrg?.[orgId] || {}).reduce((total, vaultId) => total + computeOrgVaultBlobUsageBytes(orgId, vaultId), 0)
+      json(req, res, 200, {
+        orgId,
+        memberCount: Object.keys(state.orgs?.[orgId]?.members || {}).length,
+        vaultCount: snapshots.length,
+        storageBytes,
+        lastVaultActivityAt: snapshots.sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))[0]?.updatedAt || null,
+      })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/subscriptions' && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      const scopeType = url.searchParams.get('scopeType')
+      const scopeId = normalizeScopeId(scopeType, url.searchParams.get('scopeId') || '')
+      if ((scopeType !== 'org' && scopeType !== 'user') || !scopeId) { json(req, res, 400, { error: 'scopeType and scopeId are required' }); return }
+      if (!admin.context.permissions.superAdmin && (scopeType !== 'org' || scopeId !== admin.context.orgId)) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+      const subscription = getSubscriptionRecord(scopeType, scopeId)
+      const effective = subscription ? buildSubscriptionEntitlementSummary(subscription) : buildDefaultEntitlementSummary()
+      json(req, res, 200, { subscription, effective })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/subscriptions' && req.method === 'PUT') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      const body = await readJsonBody(req)
+      const scopeType = body.scopeType === 'org' || body.scopeType === 'user' ? body.scopeType : null
+      const scopeId = normalizeScopeId(scopeType, body.scopeId)
+      if (!scopeType || !scopeId || !isPlanTier(body.tier) || !isSubscriptionStatus(body.status) || !isBillingMode(body.billingMode)) { json(req, res, 400, { error: 'scopeType, scopeId, tier, status, and billingMode are required' }); return }
+      if (!admin.context.permissions.superAdmin) {
+        if (scopeType !== 'org' || scopeId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
+        if (body.tier === 'enterprise') { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'Enterprise plans are operator-managed' }); return }
+      }
+      const key = subscriptionRecordKey(scopeType, scopeId)
+      state.subscriptionRecords[key] = {
+        id: state.subscriptionRecords[key]?.id || `subscription_${crypto.randomUUID()}`,
+        scopeType,
+        scopeId,
+        tier: body.tier,
+        status: body.status,
+        billingMode: body.billingMode,
+        seatLimit: typeof body.seatLimit === 'number' ? Math.max(0, Math.round(body.seatLimit)) : null,
+        storageLimitBytes: typeof body.storageLimitBytes === 'number' ? Math.max(0, Math.round(body.storageLimitBytes)) : null,
+        renewalAt: typeof body.renewalAt === 'string' && body.renewalAt.trim() ? body.renewalAt : null,
+        endAt: typeof body.endAt === 'string' && body.endAt.trim() ? body.endAt : null,
+        note: typeof body.note === 'string' ? body.note.trim() : '',
+        updatedAt: nowIso(),
+        updatedBy: admin.context.subject,
+      }
+      writeState(state)
+      appendAudit(makeAudit(scopeType === 'org' ? scopeId : admin.context.orgId, admin.context.subject, 'subscription.upsert', `${scopeType}:${scopeId}`, { tier: body.tier, status: body.status, billingMode: body.billingMode }))
+      const subscription = getSubscriptionRecord(scopeType, scopeId)
+      const effective = subscription ? buildSubscriptionEntitlementSummary(subscription) : buildDefaultEntitlementSummary()
+      json(req, res, 200, { subscription, effective })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/overview' && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
+      const subscriptionsByTier = { free: 0, premium: 0, enterprise: 0 }
+      const subscriptionsByStatus = { active: 0, trialing: 0, canceled: 0, past_due: 0, paused: 0 }
+      for (const row of Object.values(state.subscriptionRecords || {})) {
+        if (isPlanTier(row?.tier)) subscriptionsByTier[row.tier] += 1
+        if (isSubscriptionStatus(row?.status)) subscriptionsByStatus[row.status] += 1
+      }
+      const totalVaults = Object.values(state.snapshotsByOrg || {}).reduce((total, rows) => total + Object.keys(rows || {}).length, 0)
+      const totalStorageBytes = Object.keys(state.blobsByOrg || {}).reduce((total, orgId) => total + Object.keys(state.blobsByOrg[orgId] || {}).reduce((inner, vaultId) => inner + computeOrgVaultBlobUsageBytes(orgId, vaultId), 0), 0)
+      json(req, res, 200, { totalOrgs: Object.keys(state.orgs || {}).length, totalMembers: Object.values(state.orgs || {}).reduce((total, org) => total + Object.keys(org?.members || {}).length, 0), totalVaults, totalStorageBytes, subscriptionsByTier, subscriptionsByStatus, provider: 'self_hosted' })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/customers/search' && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
+      const queryText = String(url.searchParams.get('q') || '').trim().toLowerCase()
+      if (!queryText) { json(req, res, 200, { results: [] }); return }
+      const results = Object.values(state.orgs || {})
+        .filter((org) => org?.id?.toLowerCase?.().includes(queryText) || org?.name?.toLowerCase?.().includes(queryText) || Object.keys(org?.members || {}).some((memberId) => memberId.toLowerCase().includes(queryText)))
+        .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')))
+        .map((org) => ({
+          orgId: org.id,
+          orgName: org.name || `Organization ${org.id}`,
+          memberCount: Object.keys(org?.members || {}).length,
+          matchedMembers: Object.keys(org?.members || {}).filter((memberId) => memberId.toLowerCase().includes(queryText)),
+          subscriptionTier: getSubscriptionRecord('org', org.id)?.tier || null,
+          lastActivityAt: Object.values(state.snapshotsByOrg?.[org.id] || {}).sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))[0]?.updatedAt || null,
+        }))
+      json(req, res, 200, { results })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/system' && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
+      json(req, res, 200, { provider: 'self_hosted', health: { ok: true, now: nowIso() }, readiness: { ok: true }, metrics: { sync_requests_total: metrics.requestsTotal, sync_auth_failures_total: metrics.authFailuresTotal, sync_push_conflicts_total: metrics.pushConflictsTotal, sync_sse_disconnects_total: metrics.sseDisconnectsTotal, sync_rate_limited_total: metrics.rateLimitedTotal } })
+      return
+    }
+
+    if (url.pathname === '/v2/admin/entitlements/overrides' && req.method === 'GET') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
       const limitRaw = Number(url.searchParams.get('limit') || 50)
       const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.round(limitRaw))) : 50
       const cursor = parseCursor(url.searchParams.get('cursor'))
@@ -515,22 +763,34 @@ const server = createServer(async (req, res) => {
         : rows
       const page = filtered.slice(0, limit)
       const next = filtered.length > limit ? filtered[limit - 1] : null
-      json(req, res, 200, { overrides: page, nextCursor: next ? encodeCursor(next.updatedAt, String(next.id)) : null })
+      json(req, res, 200, {
+        overrides: page.map((row) => ({
+          ...row,
+          mode: row.mode === 'derived' ? 'derived' : 'token',
+          tier: isPlanTier(row.tier) ? row.tier : null,
+          capabilities: Array.isArray(row.capabilities) ? row.capabilities.filter((value) => typeof value === 'string') : [],
+        })),
+        nextCursor: next ? encodeCursor(next.updatedAt, String(next.id)) : null,
+      })
       return
     }
 
     if (url.pathname === '/v2/admin/entitlements/overrides' && req.method === 'PUT') {
       const admin = await resolveAdminContext(req, url)
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
-      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
       const body = await readJsonBody(req)
       const targetType = normalizeTargetType(body.targetType)
       if (!targetType) { json(req, res, 400, { error: 'targetType is invalid' }); return }
       const targetValue = normalizeTargetValue(targetType, body.targetValue)
       const token = typeof body.token === 'string' ? body.token.trim() : ''
+      const tier = isPlanTier(body.tier) ? body.tier : 'free'
+      const capabilities = Array.isArray(body.capabilities) ? Array.from(new Set(body.capabilities.filter((value) => typeof value === 'string'))) : PLAN_CAPABILITIES[tier]
       const note = typeof body.note === 'string' ? body.note.trim() : ''
       if (!targetValue) { json(req, res, 400, { error: 'targetValue is required' }); return }
-      if (token.split('.').length !== 3) { json(req, res, 400, { error: 'token must be a signed JWT' }); return }
+      const mode = token ? 'token' : 'derived'
+      if (mode === 'token' && token.split('.').length !== 3) { json(req, res, 400, { error: 'token must be a signed JWT' }); return }
+      if (mode === 'derived' && capabilities.length === 0 && tier === 'free') { json(req, res, 400, { error: 'Select at least one capability or a non-free tier' }); return }
       const now = nowIso()
       const key = entitlementOverrideKey(targetType, targetValue)
       const existing = state.entitlementOverrides[key]
@@ -538,7 +798,9 @@ const server = createServer(async (req, res) => {
         id: existing?.id || `override_${crypto.randomUUID()}`,
         targetType,
         targetValue,
-        token,
+        mode,
+        ...(token ? { token } : {}),
+        ...(mode === 'derived' ? { tier, capabilities } : {}),
         note,
         updatedAt: now,
         updatedBy: admin.context.subject,
@@ -546,14 +808,14 @@ const server = createServer(async (req, res) => {
       state.entitlementOverrides[key] = row
       appendAudit(makeAudit(admin.context.orgId, admin.context.subject, 'entitlement.override.upsert', `${targetType}:${targetValue}`))
       writeState(state)
-      json(req, res, 200, { ok: true, override: { id: row.id, targetType, targetValue, note, updatedAt: now, updatedBy: admin.context.subject } })
+      json(req, res, 200, { ok: true, override: { id: row.id, targetType, targetValue, mode, tier: mode === 'derived' ? tier : null, capabilities: mode === 'derived' ? capabilities : [], note, updatedAt: now, updatedBy: admin.context.subject } })
       return
     }
 
     if (url.pathname === '/v2/admin/entitlements/overrides' && req.method === 'DELETE') {
       const admin = await resolveAdminContext(req, url)
       if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
-      if (!admin.context.permissions.allowed) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: admin.context.permissions.reasons[0] || 'forbidden' }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
       const body = await readJsonBody(req)
       const targetType = normalizeTargetType(body.targetType)
       if (!targetType) { json(req, res, 400, { error: 'targetType is invalid' }); return }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import logoSrc from '../../../assets/armadillo.webp'
+import { matchShortcut } from '../../../shared/utils/keybinds'
 
 const QUICK_ENTRY_TYPES = [
   { key: 'password', label: 'Password' },
@@ -15,11 +16,12 @@ const QUICK_ENTRY_TYPES = [
 
 export function Topbar() {
   const { effectivePlatform } = useVaultAppDerived()
-  const { syncState, syncMessage, authMessage, showSettings, workspaceSection } = useVaultAppState()
+  const { syncState, syncMessage, authMessage, showSettings, workspaceSection, vaultSettings } = useVaultAppState()
   const { createStorageItem, createEntry, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
   const [showEntryTypeMenu, setShowEntryTypeMenu] = useState(false)
   const quickCreateRef = useRef<HTMLDivElement | null>(null)
   const showRefreshButton = effectivePlatform === 'desktop' || effectivePlatform === 'web'
+  const showCreateButton = !showSettings && workspaceSection !== 'admin'
 
   useEffect(() => {
     if (!showEntryTypeMenu) return
@@ -41,7 +43,7 @@ export function Topbar() {
 
   useEffect(() => {
     function onLockShortcut(event: KeyboardEvent) {
-      if ((!event.ctrlKey && !event.metaKey) || event.key.toLowerCase() !== 'x') return
+      if (!matchShortcut(event, vaultSettings.keybinds?.lockVault ?? null)) return
       const target = event.target as HTMLElement | null
       const tag = target?.tagName?.toLowerCase()
       const isTypingTarget = Boolean(
@@ -56,7 +58,7 @@ export function Topbar() {
     }
     window.addEventListener('keydown', onLockShortcut)
     return () => window.removeEventListener('keydown', onLockShortcut)
-  }, [lockVault])
+  }, [lockVault, vaultSettings.keybinds])
 
   function handleQuickCreate(type: (typeof QUICK_ENTRY_TYPES)[number]['key']) {
     createEntry(type)
@@ -82,7 +84,7 @@ export function Topbar() {
             <RefreshCw size={16} strokeWidth={2.1} />
           </button>
         )}
-        {!showSettings && (
+        {showCreateButton && (
           workspaceSection === 'storage' ? (
             <button className="solid" onClick={createStorageItem}>
               <span className="topbar-new-btn-text">+ New Storage Item</span>

@@ -91,6 +91,10 @@ export function setConvexAuthToken(token: string | null) {
   authToken = token
 }
 
+export function getConvexAuthToken() {
+  return authToken
+}
+
 export function setConvexAuthContext(context: AuthContext | null) {
   authContext = context
 }

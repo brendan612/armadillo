@@ -16,6 +16,10 @@ export function setSyncAuthToken(token: string | null) {
   activeProvider.setAuthToken(token)
 }
 
+export function getSyncAuthToken() {
+  return activeProvider.getAuthToken?.() ?? null
+}
+
 export function setSyncAuthContext(context: AuthContext | null) {
   activeProvider.setAuthContext?.(context)
 }

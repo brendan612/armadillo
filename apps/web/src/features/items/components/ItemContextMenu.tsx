@@ -11,9 +11,10 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { formatShortcutLabel, matchShortcut } from '../../../shared/utils/keybinds'
 
 export function ItemContextMenu() {
-  const { itemContextMenu, items, syncProvider } = useVaultAppState()
+  const { itemContextMenu, items, syncProvider, vaultSettings } = useVaultAppState()
   const { hasCapability } = useVaultAppDerived()
   const {
     setSelectedId,
@@ -79,9 +80,7 @@ export function ItemContextMenu() {
   useEffect(() => {
     if (!itemContextMenu) return
     function onKeyDown(event: KeyboardEvent) {
-      if (!event.ctrlKey && !event.metaKey) return
-      const key = event.key.toLowerCase()
-      if (key === 'b') {
+      if (matchShortcut(event, vaultSettings.keybinds?.copyUsername ?? null)) {
         event.preventDefault()
         if (item?.username) {
           void copyToClipboard(item.username, 'Username copied', 'Copy failed')
@@ -89,7 +88,7 @@ export function ItemContextMenu() {
         setItemContextMenu(null)
         return
       }
-      if (key === 'c') {
+      if (matchShortcut(event, vaultSettings.keybinds?.copyPassword ?? null)) {
         event.preventDefault()
         if (item?.passwordMasked) {
           void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed', { clearAfterMs: 20_000 })
@@ -97,7 +96,7 @@ export function ItemContextMenu() {
         setItemContextMenu(null)
         return
       }
-      if (key === 'v') {
+      if (matchShortcut(event, vaultSettings.keybinds?.autofillItem ?? null)) {
         event.preventDefault()
         if (item) {
           void autofillItem(item)
@@ -107,7 +106,7 @@ export function ItemContextMenu() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [itemContextMenu, item, copyToClipboard, autofillItem, setItemContextMenu])
+  }, [itemContextMenu, item, copyToClipboard, autofillItem, setItemContextMenu, vaultSettings.keybinds])
 
   if (!itemContextMenu) return null
 
@@ -152,7 +151,7 @@ export function ItemContextMenu() {
       >
         <UserRound className="ctx-menu-icon" />
         <span className="ctx-menu-label">Copy Username</span>
-        <kbd className="ctx-menu-shortcut">Ctrl+B</kbd>
+        <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.copyUsername ?? null)}</kbd>
       </button>
 
       <button
@@ -164,7 +163,7 @@ export function ItemContextMenu() {
       >
         <KeyRound className="ctx-menu-icon" />
         <span className="ctx-menu-label">Copy Password</span>
-        <kbd className="ctx-menu-shortcut">Ctrl+C</kbd>
+        <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.copyPassword ?? null)}</kbd>
       </button>
 
       <button
@@ -176,7 +175,7 @@ export function ItemContextMenu() {
       >
         <ClipboardPaste className="ctx-menu-icon" />
         <span className="ctx-menu-label">Autofill</span>
-        <kbd className="ctx-menu-shortcut">Ctrl+V</kbd>
+        <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.autofillItem ?? null)}</kbd>
       </button>
 
       <button

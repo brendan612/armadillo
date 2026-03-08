@@ -4,14 +4,16 @@ import { getSafeRetentionDays } from '../../../shared/utils/trash'
 import AutofillBridge from '../../../plugins/autofillBridge'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 import { BUILT_IN_THEME_PRESETS, THEME_COLOR_TOKEN_KEYS, resolveThemeTokens } from '../../../shared/utils/theme'
-import type { ThemeEditableTokenKey, VaultThemeSettings } from '../../../types/vault'
+import { AI_EXCLUDED_FIELD_LABELS, AI_INCLUDED_FIELD_LABELS, defaultAiSettings } from '../../../shared/utils/copilot'
+import { KEYBIND_DEFINITIONS, defaultKeybindSettings, eventToShortcut, findKeybindConflicts, formatShortcutLabel, normalizeKeybindSettings } from '../../../shared/utils/keybinds'
+import type { ThemeEditableTokenKey, VaultKeybindAction, VaultKeybindSettings, VaultThemeSettings } from '../../../types/vault'
 import type { CapabilityKey, DevFlagOverride, PlanTier } from '../../../types/entitlements'
 import { ALL_CAPABILITIES, DEFAULT_ROLLOUT_FLAGS } from '../../../features/flags/registry'
 import { GoogleSignInButton } from '../../auth/components/GoogleSignInButton'
 import {
   Download, Upload, FolderTree as FolderTreeIcon, HardDrive, Trash2, Save, Clock, ArchiveRestore,
   Palette, User, LogOut, KeyRound, Package, RefreshCw, ExternalLink, Database, Cloud, CloudUpload,
-  ShieldAlert, ShieldCheck, Search, LifeBuoy, RotateCcw, ShieldOff, Smartphone, AlertTriangle, ServerCrash,
+  ShieldAlert, ShieldCheck, Search, LifeBuoy, RotateCcw, ShieldOff, Smartphone, AlertTriangle, ServerCrash, Keyboard,
 } from 'lucide-react'
 import armadilloLogo from '../../../assets/armadillo.webp'
 import googleLogo from '../../../assets/other providers/google.png'
@@ -212,6 +214,7 @@ export function SettingsPage() {
     setThemeMotionLevel,
     persistThemeSettings,
     persistPayload,
+    clearDismissedCopilotSuggestions,
     clearLocalVaultFile,
     clearCachedVaultSnapshot,
   } = useVaultAppActions()
@@ -229,6 +232,8 @@ export function SettingsPage() {
   const [devTier, setDevTier] = useState<PlanTier | ''>(devFlagOverrideState?.tier ?? '')
   const [devCapabilities, setDevCapabilities] = useState<Set<CapabilityKey>>(new Set(devFlagOverrideState?.capabilities ?? []))
   const [devFlags, setDevFlags] = useState<Record<string, boolean>>(() => ({ ...DEFAULT_ROLLOUT_FLAGS, ...(devFlagOverrideState?.flags ?? {}) }))
+  const [keybindDraft, setKeybindDraft] = useState<VaultKeybindSettings>(() => normalizeKeybindSettings(vaultSettings.keybinds))
+  const [capturingKeybind, setCapturingKeybind] = useState<VaultKeybindAction | null>(null)
 
   function closeSettingsView() {
     setShowThemeCustomizer(false)
@@ -268,6 +273,19 @@ export function SettingsPage() {
     applyDevFlagOverrides(Object.keys(override).length > 0 ? override : null)
   }, [applyDevFlagOverrides, devTier, devCapabilities, devFlags])
 
+  const updateAiSettings = useCallback((patch: Partial<ReturnType<typeof defaultAiSettings>>) => {
+    const nextSettings = {
+      ...vaultSettings,
+      ai: {
+        ...defaultAiSettings(),
+        ...vaultSettings.ai,
+        ...patch,
+      },
+    }
+    setVaultSettings(nextSettings)
+    void persistPayload({ settings: nextSettings })
+  }, [persistPayload, setVaultSettings, vaultSettings])
+
   const toggleDevCapability = useCallback((cap: CapabilityKey) => {
     setDevCapabilities((prev) => {
       const next = new Set(prev)
@@ -306,6 +324,11 @@ export function SettingsPage() {
     setDevCapabilities(new Set(devFlagOverrideState?.capabilities ?? []))
     setDevFlags({ ...DEFAULT_ROLLOUT_FLAGS, ...(devFlagOverrideState?.flags ?? {}) })
   }, [devFlagOverrideState])
+
+  useEffect(() => {
+    setKeybindDraft(normalizeKeybindSettings(vaultSettings.keybinds))
+    setCapturingKeybind(null)
+  }, [vaultSettings.keybinds])
 
   const closeSettingsRef = useRef(closeSettings)
   useEffect(() => {
@@ -449,6 +472,67 @@ export function SettingsPage() {
       setSwitchVaultPath(recentLocalVaultPaths[0].path)
     }
   }, [isVault, localVaultPath, recentLocalVaultPaths])
+
+  const savedKeybinds = useMemo(() => normalizeKeybindSettings(vaultSettings.keybinds), [vaultSettings.keybinds])
+  const keybindConflicts = useMemo(() => findKeybindConflicts(keybindDraft), [keybindDraft])
+  const keybindsDirty = KEYBIND_DEFINITIONS.some((definition) => {
+    const draftValue = keybindDraft[definition.id]
+    const savedValue = savedKeybinds[definition.id]
+    return JSON.stringify(draftValue) !== JSON.stringify(savedValue)
+  })
+  const keybindConflictLabels = useMemo(() => {
+    const labels = new Map<VaultKeybindAction, string>()
+    for (const definition of KEYBIND_DEFINITIONS) {
+      const duplicates = keybindConflicts.get(definition.id) ?? []
+      if (duplicates.length === 0) continue
+      const related = duplicates
+        .map((duplicateId) => KEYBIND_DEFINITIONS.find((entry) => entry.id === duplicateId)?.label ?? duplicateId)
+        .join(', ')
+      labels.set(definition.id, related)
+    }
+    return labels
+  }, [keybindConflicts])
+
+  const saveKeybinds = useCallback(async () => {
+    if (keybindConflicts.size > 0) return
+    const normalizedDraft = normalizeKeybindSettings(keybindDraft)
+    const nextSettings = {
+      ...vaultSettings,
+      keybinds: normalizedDraft,
+    }
+    setVaultSettings(nextSettings)
+    await persistPayload({ settings: nextSettings })
+  }, [keybindConflicts.size, keybindDraft, persistPayload, setVaultSettings, vaultSettings])
+
+  useEffect(() => {
+    if (!capturingKeybind) return
+    const actionId = capturingKeybind
+
+    function onKeyDown(event: KeyboardEvent) {
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        setCapturingKeybind(null)
+        return
+      }
+
+      if ((event.key === 'Backspace' || event.key === 'Delete') && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        setKeybindDraft((current) => ({ ...current, [actionId]: null }))
+        setCapturingKeybind(null)
+        return
+      }
+
+      const nextShortcut = eventToShortcut(event)
+      if (!nextShortcut) return
+
+      setKeybindDraft((current) => ({ ...current, [actionId]: nextShortcut }))
+      setCapturingKeybind(null)
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [capturingKeybind])
 
   if (!showSettings) return null
 
@@ -936,6 +1020,89 @@ export function SettingsPage() {
           <section className="settings-section" hidden={!isSecurity}>
             <div className="settings-feature-card">
               <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <Keyboard size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Keybinds</h3>
+                  <p className="muted">Edit the shortcuts currently used across the vault UI.</p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <p className="muted settings-keybind-caption">
+                  Press a shortcut button, then type the combo you want. Press Backspace/Delete to clear, or Escape to cancel capture.
+                </p>
+                <div className="settings-keybind-list">
+                  {KEYBIND_DEFINITIONS.map((definition) => {
+                    const shortcut = keybindDraft[definition.id]
+                    const conflictLabel = keybindConflictLabels.get(definition.id)
+                    const scopeLabel = definition.scope === 'global' ? 'Global' : 'Item menu'
+                    const isCapturing = capturingKeybind === definition.id
+                    return (
+                      <div key={definition.id} className={`settings-keybind-row${conflictLabel ? ' settings-keybind-row-conflict' : ''}`}>
+                        <div className="settings-keybind-copy">
+                          <div className="settings-keybind-headline">
+                            <strong>{definition.label}</strong>
+                            <span className="settings-inline-badge">{scopeLabel}</span>
+                          </div>
+                          <p>{definition.description}</p>
+                          {conflictLabel && (
+                            <p className="settings-keybind-conflict">
+                              Conflicts with {conflictLabel}.
+                            </p>
+                          )}
+                        </div>
+                        <div className="settings-keybind-actions">
+                          <kbd className="settings-keybind-display">{formatShortcutLabel(shortcut)}</kbd>
+                          <button
+                            className={`vault-action-btn ${isCapturing ? 'solid' : 'ghost'}`}
+                            onClick={() => setCapturingKeybind((current) => current === definition.id ? null : definition.id)}
+                          >
+                            <Keyboard size={15} />
+                            {isCapturing ? 'Listening...' : 'Change'}
+                          </button>
+                          <button
+                            className="vault-action-btn ghost"
+                            onClick={() => {
+                              setKeybindDraft((current) => ({ ...current, [definition.id]: null }))
+                              if (capturingKeybind === definition.id) setCapturingKeybind(null)
+                            }}
+                            disabled={!shortcut}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="vault-btn-row">
+                  <button
+                    className={`vault-action-btn ${keybindsDirty && keybindConflicts.size === 0 ? 'solid' : 'ghost'}`}
+                    onClick={() => void saveKeybinds()}
+                    disabled={!keybindsDirty || keybindConflicts.size > 0}
+                  >
+                    <Save size={15} />
+                    Save Keybinds
+                  </button>
+                  <button
+                    className="vault-action-btn ghost"
+                    onClick={() => {
+                      setKeybindDraft(defaultKeybindSettings())
+                      setCapturingKeybind(null)
+                    }}
+                  >
+                    <RotateCcw size={15} />
+                    Reset Defaults
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
                 <div className="settings-feature-icon tint-warn">
                   <ShieldAlert size={18} />
                 </div>
@@ -976,6 +1143,69 @@ export function SettingsPage() {
                     Last scan: {breachScanSummary.compromised} compromised, {breachScanSummary.unavailable} unavailable, {breachScanSummary.scanned} passwords ({formatDateTime(breachScanSummary.finishedAt)})
                   </p>
                 )}
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-safe">
+                  <ShieldCheck size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>AI Security Copilot</h3>
+                  <p className="muted">Local-only guidance layered on top of Armadillo risk signals.</p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <div className="settings-toggle-row">
+                  <span>Copilot Suggestions</span>
+                  <button
+                    className={vaultSettings.ai?.enabled !== false ? 'solid' : 'ghost'}
+                    onClick={() => updateAiSettings({ enabled: !(vaultSettings.ai?.enabled !== false) })}
+                  >
+                    {vaultSettings.ai?.enabled !== false ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <div className="settings-toggle-row">
+                  <span>Inference Mode</span>
+                  <strong className="settings-inline-badge">Local only</strong>
+                </div>
+                <div className="settings-toggle-row">
+                  <span>Allow Selected Note Analysis</span>
+                  <button
+                    className={vaultSettings.ai?.allowSelectedNoteAnalysis ? 'solid' : 'ghost'}
+                    onClick={() => updateAiSettings({ allowSelectedNoteAnalysis: !(vaultSettings.ai?.allowSelectedNoteAnalysis === true) })}
+                  >
+                    {vaultSettings.ai?.allowSelectedNoteAnalysis ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                  Note analysis is opt-in and only applies to explicitly selected content. Nothing is sent to a remote model in this version.
+                </p>
+                <div className="settings-ai-grid">
+                  <div className="settings-ai-list">
+                    <h4>Included by default</h4>
+                    <ul>
+                      {AI_INCLUDED_FIELD_LABELS.map((label) => (
+                        <li key={label}>{label}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="settings-ai-list">
+                    <h4>Always excluded by default</h4>
+                    <ul>
+                      {AI_EXCLUDED_FIELD_LABELS.map((label) => (
+                        <li key={label}>{label}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <button className="vault-action-btn ghost" onClick={clearDismissedCopilotSuggestions}>
+                  <RotateCcw size={15} />
+                  Reset Dismissed Copilot Actions
+                </button>
               </div>
             </div>
           </section>
