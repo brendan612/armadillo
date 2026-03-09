@@ -6,6 +6,7 @@ import type {
   VaultSuggestion,
   VaultSuggestionPriority,
 } from '../../types/copilot'
+import { isPasswordCredential } from './credentialKinds.ts'
 
 const STALE_ENTRY_DAYS = 180
 const EXPIRY_SUGGESTION_DAYS = 90
@@ -70,6 +71,7 @@ export function normalizeAiSettings(settings: VaultAiSettings | null | undefined
 function computePasswordReuseCounts(items: VaultItem[]) {
   const counts = new Map<string, number>()
   for (const item of items) {
+    if (!isPasswordCredential(item)) continue
     const password = item.passwordMasked ?? ''
     if (!password) continue
     counts.set(password, (counts.get(password) ?? 0) + 1)
@@ -278,8 +280,9 @@ export function buildCopilotModel({
   const cleanupIds: string[] = []
 
   for (const item of items) {
+    const passwordEligible = isPasswordCredential(item)
     const folderPath = item.folderId ? (folderPathById.get(item.folderId) ?? item.folder) : item.folder
-    const reuseCount = reuseCounts.get(item.passwordMasked ?? '') ?? 0
+    const reuseCount = passwordEligible ? (reuseCounts.get(item.passwordMasked ?? '') ?? 0) : 0
     const duplicateCandidateIds = duplicateMap.get(item.id) ?? []
     const staleCandidate = isStaleCandidate(item.updatedAt, nowMs)
     const aiInput = buildItemAiInputSnapshot(item, {
@@ -308,7 +311,7 @@ export function buildCopilotModel({
       : ''
     const itemSuggestions: VaultSuggestion[] = []
 
-    if (item.risk === 'exposed') {
+    if (passwordEligible && item.risk === 'exposed') {
       exposedIds.push(item.id)
       itemSuggestions.push({
         id: buildSuggestionId(item.id, 'rotate_password'),
@@ -321,7 +324,7 @@ export function buildCopilotModel({
         target: { scope: 'item', itemId: item.id },
         action: { type: 'open_item', itemId: item.id },
       })
-    } else if (reuseCount > 1 && item.passwordMasked) {
+    } else if (passwordEligible && reuseCount > 1 && item.passwordMasked) {
       reusedIds.push(item.id)
       itemSuggestions.push({
         id: buildSuggestionId(item.id, 'review_reused_password'),
@@ -345,7 +348,7 @@ export function buildCopilotModel({
         target: { scope: 'item', itemId: item.id },
         action: { type: 'open_item', itemId: item.id },
       })
-    } else if (item.risk === 'weak' && item.passwordMasked) {
+    } else if (passwordEligible && item.risk === 'weak' && item.passwordMasked) {
       weakIds.push(item.id)
       itemSuggestions.push({
         id: buildSuggestionId(item.id, 'review_weak_password'),
@@ -386,7 +389,7 @@ export function buildCopilotModel({
       })
     }
 
-    if (!item.passwordExpiryDate && item.passwordMasked && item.risk !== 'safe') {
+    if (passwordEligible && !item.passwordExpiryDate && item.passwordMasked && item.risk !== 'safe') {
       itemSuggestions.push({
         id: buildSuggestionId(item.id, 'set_expiry_date'),
         itemId: item.id,

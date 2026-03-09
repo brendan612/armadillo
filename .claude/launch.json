@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["../../node_modules/vite/bin/vite.js", "--host", "--port", "4000"],
+      "cwd": "apps/web",
+      "port": 4000,
+      "autoPort": false
+    }
+  ]
+}

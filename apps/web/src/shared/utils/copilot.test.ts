@@ -9,6 +9,7 @@ function buildItem(overrides: Partial<VaultItem> = {}): VaultItem {
   return {
     id: overrides.id ?? crypto.randomUUID(),
     title: overrides.title ?? 'New Credential',
+    credentialKind: overrides.credentialKind ?? 'password',
     username: overrides.username ?? '',
     passwordMasked: overrides.passwordMasked ?? '',
     urls: overrides.urls ?? [],
@@ -138,4 +139,48 @@ test('buildCopilotModel returns no suggestions when AI is disabled', () => {
   assert.equal(model.vaultSuggestions.length, 0)
   assert.equal(model.itemSuggestionsById.size, 0)
   assert.equal(model.aiInputsByItemId.size, 1)
+})
+
+test('buildCopilotModel ignores non-password credentials for password-specific suggestions', () => {
+  const items = [
+    buildItem({
+      id: 'pin-one',
+      credentialKind: 'pin',
+      title: 'Debit Card PIN',
+      passwordMasked: '1234',
+      risk: 'weak',
+    }),
+    buildItem({
+      id: 'secret-one',
+      credentialKind: 'secret',
+      title: 'API Secret',
+      passwordMasked: 'repeat-me',
+      risk: 'reused',
+    }),
+    buildItem({
+      id: 'password-one',
+      credentialKind: 'password',
+      title: 'GitHub',
+      passwordMasked: 'repeat-me',
+      risk: 'reused',
+    }),
+    buildItem({
+      id: 'password-two',
+      credentialKind: 'password',
+      title: 'GitLab',
+      passwordMasked: 'repeat-me',
+      risk: 'reused',
+    }),
+  ]
+
+  const model = buildCopilotModel({
+    items,
+    folders: [],
+    folderPathById: new Map(),
+    aiSettings: defaultAiSettings(),
+  })
+
+  assert.equal((model.itemSuggestionsById.get('pin-one') ?? []).some((suggestion) => suggestion.kind === 'review_weak_password'), false)
+  assert.equal((model.itemSuggestionsById.get('secret-one') ?? []).some((suggestion) => suggestion.kind === 'review_reused_password'), false)
+  assert.ok((model.itemSuggestionsById.get('password-one') ?? []).some((suggestion) => suggestion.kind === 'review_reused_password'))
 })

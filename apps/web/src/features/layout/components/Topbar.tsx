@@ -6,10 +6,12 @@ import { matchShortcut } from '../../../shared/utils/keybinds'
 
 const QUICK_ENTRY_TYPES = [
   { key: 'password', label: 'Password' },
+  { key: 'pin', label: 'PIN' },
+  { key: 'secret', label: 'Secret' },
+  { key: 'number', label: 'Secure Number' },
   { key: 'file', label: 'File' },
   { key: 'key', label: 'Key' },
   { key: 'token', label: 'Token' },
-  { key: 'secret', label: 'Secret' },
   { key: 'image', label: 'Image' },
   { key: 'note', label: 'Note' },
 ] as const
@@ -120,7 +122,7 @@ export function Topbar() {
             </div>
           )
         )}
-        <button className="icon-btn" onClick={lockVault} title="Lock vault">
+        <button className="icon-btn" onClick={() => lockVault()} title="Lock vault">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         </button>
         <button

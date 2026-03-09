@@ -5,6 +5,7 @@ import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from
 import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
 import { analyzePassword, buildPasswordStrengthContextFromItem } from '../../../shared/utils/passwordStrength'
 import { buildItemRiskNarrative } from '../../../shared/utils/copilot'
+import { getCredentialKindMeta, isPasswordCredential } from '../../../shared/utils/credentialKinds'
 import type { VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
@@ -27,6 +28,7 @@ function snapshotItemForDirtyCheck(item: VaultItem | null) {
   return {
     id: item.id,
     title: item.title,
+    credentialKind: item.credentialKind,
     username: item.username,
     passwordMasked: item.passwordMasked,
     urls: [...item.urls],
@@ -259,11 +261,12 @@ export function ItemDetailPane() {
       setBreachSaveMessageById((current) => ({ ...current, [draft.id]: '' }))
       setBreachSaveMutedById((current) => ({ ...current, [draft.id]: false }))
     }
-    if (draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0) {
+    const passwordEligible = draft ? isPasswordCredential(draft) : true
+    if (draft && passwordEligible && draft.passwordMasked.length > 0 && passwordConfirm.length === 0) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: 'Confirm password is required' }))
       return false
     }
-    if (passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
+    if (passwordEligible && passwordConfirm && draft && passwordConfirm !== draft.passwordMasked) {
       setSaveErrorById((current) => ({ ...current, [draft.id]: 'Passwords do not match' }))
       return false
     }
@@ -295,21 +298,23 @@ export function ItemDetailPane() {
   const saveError = draft ? (saveErrorById[draft.id] ?? '') : ''
   const breachSaveMessage = draft ? (breachSaveMessageById[draft.id] ?? '') : ''
   const breachSaveMuted = draft ? (breachSaveMutedById[draft.id] ?? false) : false
-  const passwordConfirmMissing = Boolean(draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0)
-  const passwordMismatch = passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked
-  const expiryStatus = draft ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
+  const credentialMeta = getCredentialKindMeta(draft?.credentialKind)
+  const passwordEligible = draft ? isPasswordCredential(draft) : true
+  const passwordConfirmMissing = Boolean(passwordEligible && draft && draft.passwordMasked.length > 0 && passwordConfirm.length === 0)
+  const passwordMismatch = Boolean(passwordEligible && passwordConfirm.length > 0 && draft && passwordConfirm !== draft.passwordMasked)
+  const expiryStatus = draft && passwordEligible ? getPasswordExpiryStatus(draft.passwordExpiryDate, { expiringWithinDays: 7 }) : 'none'
   const passwordInputId = draft ? `item-password-${draft.id}` : 'item-password'
   const passwordStrengthContext = useMemo(() => (
-    draft ? buildPasswordStrengthContextFromItem(draft) : {}
-  ), [draft])
+    draft && passwordEligible ? buildPasswordStrengthContextFromItem(draft) : {}
+  ), [draft, passwordEligible])
   const debouncedPassword = useDebouncedValue(draft?.passwordMasked ?? '', 150)
   const passwordStrength = useMemo(() => (
-    analyzePassword(debouncedPassword, passwordStrengthContext)
-  ), [debouncedPassword, passwordStrengthContext])
+    passwordEligible ? analyzePassword(debouncedPassword, passwordStrengthContext) : analyzePassword('', {})
+  ), [debouncedPassword, passwordEligible, passwordStrengthContext])
   const reusedPasswordItems = useMemo(() => {
-    if (!draft?.passwordMasked) return []
-    return items.filter((item) => item.id !== draft.id && item.passwordMasked === draft.passwordMasked)
-  }, [draft, items])
+    if (!draft?.passwordMasked || !passwordEligible) return []
+    return items.filter((item) => item.id !== draft.id && isPasswordCredential(item) && item.passwordMasked === draft.passwordMasked)
+  }, [draft, items, passwordEligible])
   const hasReusedPassword = reusedPasswordItems.length > 0
   const debouncedGeneratorPreview = useDebouncedValue(genPreview, 150)
   const generatorStrength = useMemo(() => (
@@ -404,6 +409,20 @@ export function ItemDetailPane() {
   function applyUsernameSuggestion(value: string) {
     setDraftField('username', value)
     setShowUsernameSuggestions(false)
+  }
+
+  function updateCredentialKind(nextKind: VaultItem['credentialKind']) {
+    if (!draft) return
+    setDraftField('credentialKind', nextKind)
+    if (nextKind !== 'password') {
+      setShowGenerator(false)
+      setShowGenEditor(false)
+      setShowPresetSave(false)
+      setShowEntropyInfo(false)
+      setDraftField('passwordExpiryDate', null)
+      setPasswordConfirmById((current) => ({ ...current, [draft.id]: draft.passwordMasked }))
+      setSaveErrorById((current) => ({ ...current, [draft.id]: '' }))
+    }
   }
 
   function applyCopilotTags(tags: string[]) {
@@ -522,12 +541,25 @@ export function ItemDetailPane() {
             Title
             <input value={draft.title} onChange={(event) => setDraftField('title', event.target.value)} />
           </label>
+          <label>
+            Type
+            <select value={draft.credentialKind} onChange={(event) => updateCredentialKind(event.target.value as VaultItem['credentialKind'])}>
+              <option value="password">Password</option>
+              <option value="pin">PIN</option>
+              <option value="secret">Secret</option>
+              <option value="number">Secure Number</option>
+            </select>
+            <span className="muted" style={{ display: 'block', marginTop: 6 }}>
+              Passwords keep breach, reuse, expiry, and autofill checks. Other types stay secure without password-specific rules.
+            </span>
+          </label>
           <div className="detail-field">
-            <label htmlFor={`item-username-${draft.id}`}>Username</label>
+            <label htmlFor={`item-username-${draft.id}`}>{credentialMeta.usernameLabel}</label>
             <div className="username-suggest-container">
               <input
                 id={`item-username-${draft.id}`}
                 value={draft.username}
+                placeholder={credentialMeta.usernamePlaceholder}
                 onFocus={() => setShowUsernameSuggestions(true)}
                 onBlur={() => setShowUsernameSuggestions(false)}
                 onChange={(event) => setDraftField('username', event.target.value)}
@@ -564,7 +596,7 @@ export function ItemDetailPane() {
 
           {/* Password + Generator */}
           <div className="detail-field">
-            <label htmlFor={passwordInputId}>Password</label>
+            <label htmlFor={passwordInputId}>{credentialMeta.valueLabel}</label>
             <div className="inline-field">
               <input
                 id={passwordInputId}
@@ -583,15 +615,16 @@ export function ItemDetailPane() {
                 <button
                   className="inline-icon-btn"
                   type="button"
-                  title={showPassword ? 'Hide password' : 'Reveal password'}
+                  title={showPassword ? `Hide ${credentialMeta.valueLabel.toLowerCase()}` : `Reveal ${credentialMeta.valueLabel.toLowerCase()}`}
                   onClick={() => setShowPassword((current) => !current)}
                 >
                   {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
                 </button>
-                <button className="inline-icon-btn" type="button" title="Copy password" onClick={() => void copyPassword()}>
+                <button className="inline-icon-btn" type="button" title={credentialMeta.copyLabel} onClick={() => void copyPassword()}>
                   <Copy size={15} strokeWidth={2} />
                 </button>
-                <div className="gen-popover-anchor" ref={genPopoverRef}>
+                {passwordEligible && (
+                  <div className="gen-popover-anchor" ref={genPopoverRef}>
                   <button
                     ref={genTriggerRef}
                     className="inline-icon-btn"
@@ -893,14 +926,16 @@ export function ItemDetailPane() {
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
+                        )}
+                      </div>
                     )
                 )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
-            <div className="password-strength-meter" aria-live="polite">
+            {passwordEligible && (
+              <div className="password-strength-meter" aria-live="polite">
               <div className="password-strength-label-row">
                 <span>Password strength</span>
                 <div className="password-strength-meta">
@@ -945,7 +980,8 @@ export function ItemDetailPane() {
                   Password already used in {reusedPasswordItems.length} other {reusedPasswordItems.length === 1 ? 'item' : 'items'}.
                 </p>
               )}
-            </div>
+              </div>
+            )}
             {vaultSettings.ai?.enabled !== false && (
               <div className="copilot-panel">
                 <div className="copilot-panel-head">
@@ -999,7 +1035,8 @@ export function ItemDetailPane() {
           </div>
 
           {/* Password Confirm */}
-          <div className={`password-confirm-row ${passwordMismatch ? 'password-mismatch' : ''}`}>
+          {passwordEligible && (
+            <div className={`password-confirm-row ${passwordMismatch ? 'password-mismatch' : ''}`}>
             <label>
               Confirm Password
               <input
@@ -1016,7 +1053,8 @@ export function ItemDetailPane() {
             </label>
             {passwordConfirmMissing && <span className="password-mismatch-msg">Confirm password is required</span>}
             {passwordMismatch && <span className="password-mismatch-msg">Passwords do not match</span>}
-          </div>
+            </div>
+          )}
 
           <label>
             URLs (one per line)
@@ -1049,27 +1087,29 @@ export function ItemDetailPane() {
                 ))}
               </datalist>
             </label>
-            <label>
-              Password Expiry Date
-              <div className="expiry-field">
-                <input
-                  type="date"
-                  value={draft.passwordExpiryDate ?? ''}
-                  onChange={(e) => setDraftField('passwordExpiryDate', e.target.value || null)}
-                />
-                {draft.passwordExpiryDate && (
-                  <button
-                    className="expiry-clear-btn"
-                    title="Clear expiry date"
-                    onClick={() => setDraftField('passwordExpiryDate', null)}
-                  >
-                    <X size={14} />
-                  </button>
-                )}
-                {expiryStatus === 'expired' && <span className="expiry-badge expired">Expired</span>}
-                {expiryStatus === 'expiring' && <span className="expiry-badge expiring-soon">Expiring Soon</span>}
-              </div>
-            </label>
+            {passwordEligible && (
+              <label>
+                Password Expiry Date
+                <div className="expiry-field">
+                  <input
+                    type="date"
+                    value={draft.passwordExpiryDate ?? ''}
+                    onChange={(e) => setDraftField('passwordExpiryDate', e.target.value || null)}
+                  />
+                  {draft.passwordExpiryDate && (
+                    <button
+                      className="expiry-clear-btn"
+                      title="Clear expiry date"
+                      onClick={() => setDraftField('passwordExpiryDate', null)}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                  {expiryStatus === 'expired' && <span className="expiry-badge expired">Expired</span>}
+                  {expiryStatus === 'expiring' && <span className="expiry-badge expiring-soon">Expiring Soon</span>}
+                </div>
+              </label>
+            )}
           </div>
           <label>
             Tags (comma separated)

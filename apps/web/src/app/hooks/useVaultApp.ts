@@ -26,10 +26,16 @@ import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
 import {
   biometricEnrollmentExists,
+  clearQuickUnlockEnrollment,
   enrollQuickUnlock,
   getQuickUnlockCapabilities,
   unlockWithQuickUnlock,
 } from '../../lib/biometric'
+import {
+  DEFAULT_CREDENTIAL_KIND,
+  getCredentialKindMeta,
+  isPasswordCredential,
+} from '../../shared/utils/credentialKinds'
 import { getAutoPlatform, isNativeAndroid } from '../../shared/utils/platform'
 import { parseGooglePasswordCsv } from '../../shared/utils/googlePasswordCsv'
 import { parseLastPassCsv } from '../../shared/utils/lastPassCsv'
@@ -67,13 +73,17 @@ import { checkPasswordCompromised, scanPasswords, type BreachCheckStatus } from 
 import { LocalNotifications } from '@capacitor/local-notifications'
 import AutofillBridge, { type CapturedCredentialDTO } from '../../plugins/autofillBridge'
 import {
-  clearCachedVaultSnapshot,
+  clearAllRecentLocalVaultPaths as clearStoredRecentLocalVaultPaths,
+  clearCachedVaultSnapshot as clearStoredCachedVaultSnapshot,
   clearLocalVaultFile,
   createVaultFile,
+  defaultClipboardSettings,
+  getDevicePrivacySettings,
   getActiveLocalVaultPath,
   getCachedVaultExpiresAt,
   getCachedVaultStatus,
   getCloudCacheTtlHours,
+  normalizeClipboardSettings,
   getLocalVaultPath,
   getVaultStorageMode,
   listRecentLocalVaultPaths,
@@ -89,9 +99,11 @@ import {
   saveCachedVaultSnapshot,
   saveLocalVaultFile,
   setCloudCacheTtlHours as setStoredCloudCacheTtlHours,
+  setDevicePrivacySettings as setStoredDevicePrivacySettings,
   setLocalVaultPath as setStoredLocalVaultPath,
   setVaultStorageMode as setStoredVaultStorageMode,
   serializeVaultFile,
+  type DevicePrivacySettings,
   type LocalVaultPathStatus,
   type RecentLocalVaultEntry,
   unlockVaultFile,
@@ -142,6 +154,7 @@ import type {
   SecurityQuestion,
   ThemeEditableTokenKey,
   ThemeMotionLevel,
+  VaultCredentialKind,
   VaultFolder,
   VaultItem,
   VaultPayload,
@@ -172,7 +185,7 @@ type WorkspaceSection = 'passwords' | 'storage' | 'admin'
 type ItemContextMenuState = { itemId: string; x: number; y: number } | null
 type StorageContextMenuState = { itemId: string; x: number; y: number } | null
 type FolderContextMenuState = { folderId: string; x: number; y: number } | null
-type QuickCreateEntryType = 'password' | 'file' | 'key' | 'token' | 'secret' | 'image' | 'note'
+type QuickCreateEntryType = VaultCredentialKind | 'file' | 'key' | 'token' | 'image' | 'note'
 type FolderInlineEditorState =
   | { mode: 'create'; parentId: string | null; value: string }
   | { mode: 'rename'; folderId: string; parentId: string | null; value: string }
@@ -292,10 +305,16 @@ function isCopilotStaleItem(item: Pick<VaultItem, 'updatedAt'>) {
 
 /* shell sections moved inline into sidebar nav */
 
-function buildEmptyItem(folderName = '', folderId: string | null = null): VaultItem {
+function buildEmptyItem(
+  folderName = '',
+  folderId: string | null = null,
+  kind: VaultCredentialKind = DEFAULT_CREDENTIAL_KIND,
+): VaultItem {
+  const kindMeta = getCredentialKindMeta(kind)
   return {
     id: crypto.randomUUID(),
-    title: 'New Credential',
+    title: kindMeta.defaultTitle,
+    credentialKind: kind,
     username: '',
     passwordMasked: '',
     urls: [],
@@ -642,6 +661,7 @@ function computeExpiryAlerts(items: VaultItem[]): ExpiryAlert[] {
   const now = new Date()
   const alerts: ExpiryAlert[] = []
   for (const item of items) {
+    if (!isPasswordCredential(item)) continue
     const status = getPasswordExpiryStatus(item.passwordExpiryDate, { now, expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS })
     if (status === 'expired') {
       alerts.push({ itemId: item.id, title: item.title, status: 'expired' })
@@ -689,8 +709,10 @@ function buildNamedVaultPath(basePath: string, vaultName: string) {
 }
 
 function itemMatchesQuery(item: VaultItem, queryLower: string) {
+  const kindMeta = getCredentialKindMeta(item.credentialKind)
   return (
     item.title.toLowerCase().includes(queryLower) ||
+    kindMeta.label.toLowerCase().includes(queryLower) ||
     item.username.toLowerCase().includes(queryLower) ||
     item.urls.some((url) => url.toLowerCase().includes(queryLower)) ||
     item.folder.toLowerCase().includes(queryLower) ||
@@ -805,6 +827,11 @@ function normalizeBreachCheckSettings(settings: VaultSettings['breachCheck']) {
   }
 }
 
+function passwordClipboardClearMs(settings: VaultSettings) {
+  const seconds = normalizeClipboardSettings(settings.clipboard).passwordClearSeconds
+  return seconds > 0 ? seconds * 1000 : 0
+}
+
 function normalizeAutoFolderMappings(mappings: VaultSettings['autoFolderCustomMappings']) {
   if (!Array.isArray(mappings)) return []
   const rows: Exclude<VaultSettings['autoFolderCustomMappings'], undefined> = []
@@ -836,6 +863,7 @@ function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
     autoFolderExcludedItemIds: uniqueNonEmptyStrings(settings.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: uniqueNonEmptyStrings(settings.autoFolderLockedFolderPaths).map((path) => normalizeAutoFolderPath(path)).filter(Boolean),
     autoFolderCustomMappings: normalizeAutoFolderMappings(settings.autoFolderCustomMappings),
+    clipboard: normalizeClipboardSettings(settings.clipboard),
     theme: normalizedTheme,
     ai: normalizeAiSettings(settings.ai),
     breachCheck: normalizeBreachCheckSettings(settings.breachCheck),
@@ -843,10 +871,11 @@ function normalizeAutoFolderSettings(settings: VaultSettings): VaultSettings {
 }
 
 function hasUnlockableVault(mode: VaultStorageMode) {
+  const cacheAvailable = !getDevicePrivacySettings().disableCloudCache && Boolean(loadCachedVaultSnapshot())
   if (mode === 'cloud_only') {
-    return Boolean(loadCachedVaultSnapshot())
+    return cacheAvailable
   }
-  return Boolean(getActiveLocalVaultPath() || loadLocalVaultFile() || loadCachedVaultSnapshot())
+  return Boolean(getActiveLocalVaultPath() || loadLocalVaultFile() || cacheAvailable)
 }
 
 function useSafeConvexAuth() {
@@ -913,6 +942,7 @@ export function useVaultApp() {
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
+    clipboard: defaultClipboardSettings(),
     theme: defaultThemeSettings(),
     ai: defaultAiSettings(),
     breachCheck: defaultBreachCheckSettings(),
@@ -935,8 +965,9 @@ export function useVaultApp() {
   const [selectedNode, setSelectedNode] = useState<SidebarNode>('home')
   const [folderFilterMode, setFolderFilterMode] = useState<FolderFilterMode>('direct')
   const [storageMode, setStorageMode] = useState<VaultStorageMode>(initialStorageMode)
+  const [devicePrivacySettings, setDevicePrivacySettingsState] = useState<DevicePrivacySettings>(() => getDevicePrivacySettings())
   const [cloudCacheTtlHours, setCloudCacheTtlHours] = useState(() => getCloudCacheTtlHours())
-  const [cloudCacheExpiresAt, setCloudCacheExpiresAt] = useState(() => getCachedVaultExpiresAt())
+  const [cloudCacheExpiresAt, setCloudCacheExpiresAt] = useState(() => getDevicePrivacySettings().disableCloudCache ? '' : getCachedVaultExpiresAt())
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState(localStorage.getItem(CLOUD_SYNC_PREF_KEY) === 'true')
   const [entitlementState, setEntitlementState] = useState<EntitlementState>(() => defaultEntitlementState())
   const [devFlagOverrideState, setDevFlagOverrideState] = useState<DevFlagOverride | null>(() => getDevFlagOverride())
@@ -987,6 +1018,10 @@ export function useVaultApp() {
   const [storageDraft, setStorageDraft] = useState<VaultStorageItem | null>(null)
   const [storageFileBusy, setStorageFileBusy] = useState(false)
   const clipboardClearTimerRef = useRef<number | null>(null)
+  const copiedSecretValueRef = useRef<string | null>(null)
+  const autoLockIntervalRef = useRef<number | null>(null)
+  const lastInteractionAtRef = useRef(Date.now())
+  const lockVaultRef = useRef<(message?: string) => void>(() => {})
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const backupImportInputRef = useRef<HTMLInputElement | null>(null)
   const googlePasswordImportInputRef = useRef<HTMLInputElement | null>(null)
@@ -1001,6 +1036,74 @@ export function useVaultApp() {
   const appliedThemeOverrideKeysRef = useRef<string[]>([])
   const riskBackfillRunIdRef = useRef(0)
   const deferredSessionWorkRunIdRef = useRef(0)
+
+  const updateDevicePrivacySettings = useCallback((
+    value: Partial<DevicePrivacySettings> | ((current: DevicePrivacySettings) => DevicePrivacySettings),
+  ) => {
+    setDevicePrivacySettingsState((current) => {
+      const nextRaw = typeof value === 'function' ? value(current) : { ...current, ...value }
+      const next: DevicePrivacySettings = {
+        autoLockMinutes: Number.isFinite(nextRaw.autoLockMinutes)
+          ? Math.min(240, Math.max(0, Math.round(nextRaw.autoLockMinutes)))
+          : current.autoLockMinutes,
+        lockOnBackground: typeof nextRaw.lockOnBackground === 'boolean'
+          ? nextRaw.lockOnBackground
+          : current.lockOnBackground,
+        disableCloudCache: typeof nextRaw.disableCloudCache === 'boolean'
+          ? nextRaw.disableCloudCache
+          : current.disableCloudCache,
+      }
+      setStoredDevicePrivacySettings(next)
+      return next
+    })
+  }, [])
+
+  const clearTrackedClipboardValue = useCallback(async () => {
+    if (clipboardClearTimerRef.current !== null) {
+      window.clearTimeout(clipboardClearTimerRef.current)
+      clipboardClearTimerRef.current = null
+    }
+    const copiedValue = copiedSecretValueRef.current
+    copiedSecretValueRef.current = null
+    if (!copiedValue) return
+    try {
+      const current = await navigator.clipboard.readText()
+      if (current !== copiedValue) return
+      await navigator.clipboard.writeText('')
+    } catch {
+      // Best effort clipboard expiration only.
+    }
+  }, [])
+
+  const persistCloudCacheSnapshot = useCallback((file: ArmadilloVaultFile) => {
+    if (devicePrivacySettings.disableCloudCache) {
+      clearStoredCachedVaultSnapshot()
+      setCloudCacheExpiresAt('')
+      return
+    }
+    saveCachedVaultSnapshot(file, cloudCacheTtlHours)
+    setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+  }, [cloudCacheTtlHours, devicePrivacySettings.disableCloudCache])
+
+  const clearCachedVaultSnapshot = useCallback((message?: string) => {
+    clearStoredCachedVaultSnapshot()
+    setCloudCacheExpiresAt('')
+    if (message) {
+      setSyncMessage(message)
+    }
+  }, [])
+
+  const clearRecentLocalVaultPaths = useCallback(() => {
+    clearStoredRecentLocalVaultPaths()
+    setRecentLocalVaultPaths([])
+    setRecentLocalVaultPathStatuses({})
+    setSelectedLocalVaultStatus('unknown')
+    setSelectedLocalVaultFile(null)
+    setLocalVaultPath('')
+    setVaultError('')
+    setSyncMessage('Cleared recent local vault paths on this device')
+  }, [])
+
   const { isAuthenticated } = useSafeConvexAuth()
   const { signIn, signOut } = useSafeAuthActions()
   const authToken = useSafeAuthToken()
@@ -1248,7 +1351,7 @@ export function useVaultApp() {
       window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
       nativeAutofillSyncRetryTimerRef.current = null
     }
-    const credentials = vaultItems.map((item) => ({
+    const credentials = vaultItems.filter(isPasswordCredential).map((item) => ({
       id: item.id,
       title: item.title,
       username: item.username || '',
@@ -1323,6 +1426,7 @@ export function useVaultApp() {
         if (webDomainHost) captureHosts.add(webDomainHost)
 
         const matchedIndex = nextItems.findIndex((item) => {
+          if (!isPasswordCredential(item)) return false
           const itemUsername = (item.username || '').trim().toLowerCase()
           if (itemUsername !== username.toLowerCase()) return false
 
@@ -1367,6 +1471,7 @@ export function useVaultApp() {
         const created: VaultItem = {
           id: crypto.randomUUID(),
           title: fallbackTitle,
+          credentialKind: 'password',
           username,
           passwordMasked: password,
           urls: Array.from(new Set([
@@ -1410,8 +1515,7 @@ export function useVaultApp() {
   consumeCapturedAutofillCredentialsRef.current = consumeCapturedAutofillCredentials
 
   const persistVaultSnapshot = useCallback((file: ArmadilloVaultFile) => {
-    saveCachedVaultSnapshot(file, cloudCacheTtlHours)
-    setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+    persistCloudCacheSnapshot(file)
 
     if (storageMode === 'cloud_only') {
       clearLocalVaultFile()
@@ -1422,21 +1526,22 @@ export function useVaultApp() {
     saveLocalVaultFile(file)
     setLocalVaultPath(getLocalVaultPath())
     setRecentLocalVaultPaths(listRecentLocalVaultPaths())
-  }, [cloudCacheTtlHours, storageMode])
+  }, [persistCloudCacheSnapshot, storageMode])
 
   const getUnlockSourceFile = useCallback(async () => {
+    const cachedSnapshot = devicePrivacySettings.disableCloudCache ? null : loadCachedVaultSnapshot()
     if (storageMode === 'cloud_only') {
-      return cloudVaultSnapshot || loadCachedVaultSnapshot()
+      return cloudVaultSnapshot || cachedSnapshot
     }
     if (cloudVaultSnapshot) return cloudVaultSnapshot
     if (selectedLocalVaultFile) return selectedLocalVaultFile
     const fromSelectedPath = localVaultPath.trim() ? await loadLocalVaultFileAtPath(localVaultPath) : null
     if (fromSelectedPath) return fromSelectedPath
     if (window.armadilloShell?.isElectron) {
-      return loadCachedVaultSnapshot()
+      return cachedSnapshot
     }
-    return loadLocalVaultFile() || loadCachedVaultSnapshot()
-  }, [cloudVaultSnapshot, localVaultPath, selectedLocalVaultFile, storageMode])
+    return loadLocalVaultFile() || cachedSnapshot
+  }, [cloudVaultSnapshot, devicePrivacySettings.disableCloudCache, localVaultPath, selectedLocalVaultFile, storageMode])
 
   const buildEntitlementStateFromToken = useCallback(async (
     token: string,
@@ -1631,11 +1736,12 @@ export function useVaultApp() {
       }
       const activeFile = vaultSession?.file || loadLocalVaultFile() || loadCachedVaultSnapshot(true)
       if (activeFile) {
-        saveCachedVaultSnapshot(activeFile, cloudCacheTtlHours)
-        setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+        persistCloudCacheSnapshot(activeFile)
       }
       const confirmed = window.confirm(
-        'Switch to Cloud-Only mode and remove the local encrypted vault file from this device?\n\nYour cloud copy and encrypted cache remain available.',
+        `Switch to Cloud-Only mode and remove the local encrypted vault file from this device?\n\n${devicePrivacySettings.disableCloudCache
+          ? 'Your cloud copy remains available, but encrypted cache is disabled on this device.'
+          : 'Your cloud copy and encrypted cache remain available.'}`,
       )
       if (!confirmed) {
         setSyncMessage('Cloud-only mode change canceled')
@@ -1719,6 +1825,9 @@ export function useVaultApp() {
       if (nativeAutofillSyncRetryTimerRef.current !== null) {
         window.clearTimeout(nativeAutofillSyncRetryTimerRef.current)
       }
+      if (autoLockIntervalRef.current !== null) {
+        window.clearInterval(autoLockIntervalRef.current)
+      }
       if (clipboardClearTimerRef.current !== null) {
         window.clearTimeout(clipboardClearTimerRef.current)
       }
@@ -1734,11 +1843,25 @@ export function useVaultApp() {
 
   useEffect(() => {
     setStoredCloudCacheTtlHours(cloudCacheTtlHours)
+    if (devicePrivacySettings.disableCloudCache) {
+      clearStoredCachedVaultSnapshot()
+      setCloudCacheExpiresAt('')
+      return
+    }
     const cached = loadCachedVaultSnapshot(true)
     if (!cached) return
     saveCachedVaultSnapshot(cached, cloudCacheTtlHours)
     setCloudCacheExpiresAt(getCachedVaultExpiresAt())
-  }, [cloudCacheTtlHours])
+  }, [cloudCacheTtlHours, devicePrivacySettings.disableCloudCache])
+
+  useEffect(() => {
+    if (devicePrivacySettings.disableCloudCache) {
+      clearStoredCachedVaultSnapshot()
+      setCloudCacheExpiresAt('')
+      return
+    }
+    setCloudCacheExpiresAt(getCachedVaultExpiresAt())
+  }, [devicePrivacySettings.disableCloudCache])
 
   useEffect(() => {
     if (storageMode === 'cloud_only' && !cloudSyncEnabled) {
@@ -2003,7 +2126,15 @@ export function useVaultApp() {
 
     let ignore = false
     const listener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-      if (ignore || !isActive) return
+      if (ignore) return
+      if (!isActive) {
+        if (devicePrivacySettings.lockOnBackground && phase === 'ready' && vaultSession) {
+          lockVaultRef.current('Vault locked after app moved to background')
+        }
+        return
+      }
+      lastInteractionAtRef.current = Date.now()
+      if (phase !== 'ready' || !vaultSession) return
       void consumeCapturedAutofillCredentialsRef.current()
     })
 
@@ -2011,7 +2142,7 @@ export function useVaultApp() {
       ignore = true
       void listener.then((handle) => handle.remove())
     }
-  }, [])
+  }, [devicePrivacySettings.lockOnBackground, phase, vaultSession])
 
   useEffect(() => {
     function handlePointerDown() {
@@ -2022,6 +2153,67 @@ export function useVaultApp() {
     window.addEventListener('pointerdown', handlePointerDown)
     return () => window.removeEventListener('pointerdown', handlePointerDown)
   }, [])
+
+  useEffect(() => {
+    if (phase !== 'ready' || !vaultSession) {
+      if (autoLockIntervalRef.current !== null) {
+        window.clearInterval(autoLockIntervalRef.current)
+        autoLockIntervalRef.current = null
+      }
+      return
+    }
+
+    function markInteraction() {
+      lastInteractionAtRef.current = Date.now()
+    }
+
+    markInteraction()
+    window.addEventListener('pointerdown', markInteraction, true)
+    window.addEventListener('keydown', markInteraction, true)
+    window.addEventListener('touchstart', markInteraction, true)
+    window.addEventListener('focus', markInteraction)
+
+    if (autoLockIntervalRef.current !== null) {
+      window.clearInterval(autoLockIntervalRef.current)
+      autoLockIntervalRef.current = null
+    }
+
+    if (devicePrivacySettings.autoLockMinutes > 0) {
+      const thresholdMs = devicePrivacySettings.autoLockMinutes * 60 * 1000
+      autoLockIntervalRef.current = window.setInterval(() => {
+        if (Date.now() - lastInteractionAtRef.current < thresholdMs) return
+        lockVaultRef.current(`Vault locked after ${devicePrivacySettings.autoLockMinutes} minute${devicePrivacySettings.autoLockMinutes === 1 ? '' : 's'} of inactivity`)
+      }, 1000)
+    }
+
+    return () => {
+      window.removeEventListener('pointerdown', markInteraction, true)
+      window.removeEventListener('keydown', markInteraction, true)
+      window.removeEventListener('touchstart', markInteraction, true)
+      window.removeEventListener('focus', markInteraction)
+      if (autoLockIntervalRef.current !== null) {
+        window.clearInterval(autoLockIntervalRef.current)
+        autoLockIntervalRef.current = null
+      }
+    }
+  }, [devicePrivacySettings.autoLockMinutes, phase, vaultSession])
+
+  useEffect(() => {
+    if (!devicePrivacySettings.lockOnBackground || phase !== 'ready' || !vaultSession) {
+      return
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        lockVaultRef.current('Vault locked after app moved to background')
+      } else if (document.visibilityState === 'visible') {
+        lastInteractionAtRef.current = Date.now()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [devicePrivacySettings.lockOnBackground, phase, vaultSession])
 
   useEffect(() => {
     const shell = window.armadilloShell
@@ -2069,7 +2261,7 @@ export function useVaultApp() {
     text: string,
     successMessage: string,
     failureMessage: string,
-    options?: { clearAfterMs?: number },
+    options?: { clearAfterMs?: number; sensitive?: boolean },
   ) {
     try {
       await navigator.clipboard.writeText(text)
@@ -2077,6 +2269,7 @@ export function useVaultApp() {
         window.clearTimeout(clipboardClearTimerRef.current)
         clipboardClearTimerRef.current = null
       }
+      copiedSecretValueRef.current = options?.sensitive ? text : null
       if (options?.clearAfterMs && options.clearAfterMs > 0) {
         const copiedValue = text
         clipboardClearTimerRef.current = window.setTimeout(() => {
@@ -2085,6 +2278,9 @@ export function useVaultApp() {
               const current = await navigator.clipboard.readText()
               if (current !== copiedValue) return
               await navigator.clipboard.writeText('')
+              if (copiedSecretValueRef.current === copiedValue) {
+                copiedSecretValueRef.current = null
+              }
             } catch {
               // Best effort clipboard expiration only.
             }
@@ -2329,28 +2525,36 @@ export function useVaultApp() {
   }, [folders, folderMap])
   const expiredItems = useMemo(() => {
     if (workspaceSection !== 'passwords') return []
-    return deferredItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired')
+    return deferredItems.filter((item) => (
+      isPasswordCredential(item)
+      && getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired'
+    ))
   }, [deferredItems, workspaceSection])
   const expiringSoonItems = useMemo(() => {
     if (workspaceSection !== 'passwords') return []
-    return deferredItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring')
+    return deferredItems.filter((item) => (
+      isPasswordCredential(item)
+      && getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring'
+    ))
   }, [deferredItems, workspaceSection])
   const reusedItems = useMemo(() => {
     if (workspaceSection !== 'passwords') return []
     const passwordCount = new Map<string, number>()
     for (const item of deferredItems) {
+      if (!isPasswordCredential(item)) continue
       const pw = item.passwordMasked?.trim()
       if (!pw) continue
       passwordCount.set(pw, (passwordCount.get(pw) ?? 0) + 1)
     }
     return deferredItems.filter((item) => {
+      if (!isPasswordCredential(item)) return false
       const pw = item.passwordMasked?.trim()
       return !!pw && (passwordCount.get(pw) ?? 0) > 1
     })
   }, [deferredItems, workspaceSection])
   const weakItems = useMemo(() => {
     if (workspaceSection !== 'passwords') return []
-    return deferredItems.filter((item) => item.risk === 'weak')
+    return deferredItems.filter((item) => isPasswordCredential(item) && item.risk === 'weak')
   }, [deferredItems, workspaceSection])
   const staleItems = useMemo(() => {
     if (workspaceSection !== 'passwords') return []
@@ -2553,7 +2757,15 @@ export function useVaultApp() {
         for (; cursor < end; cursor += 1) {
           const index = queue[cursor]
           const item = working[index]
-          if (!item || item.risk === 'exposed' || item.risk === 'stale') continue
+          if (!item) continue
+          if (!isPasswordCredential(item)) {
+            if (item.risk !== 'safe' || item.passwordExpiryDate) {
+              working[index] = { ...item, risk: 'safe' as const, passwordExpiryDate: null }
+              changed = true
+            }
+            continue
+          }
+          if (item.risk === 'exposed' || item.risk === 'stale') continue
           const analysis = analyzePassword(item.passwordMasked ?? '', buildPasswordStrengthContextFromItem(item))
           const nextRisk = mapAnalysisToRisk(analysis, (reuseCounts.get(item.passwordMasked || '') ?? 0) > 1)
           if (nextRisk !== item.risk) {
@@ -2908,8 +3120,24 @@ export function useVaultApp() {
 
 
 
-  function lockVault() {
+  function lockVault(message = 'Vault locked') {
     deferredSessionWorkRunIdRef.current += 1
+    lastInteractionAtRef.current = Date.now()
+    if (autoLockIntervalRef.current !== null) {
+      window.clearInterval(autoLockIntervalRef.current)
+      autoLockIntervalRef.current = null
+    }
+    void (async () => {
+      if (normalizeClipboardSettings(vaultSettings.clipboard).clearOnLock) {
+        await clearTrackedClipboardValue()
+        return
+      }
+      if (clipboardClearTimerRef.current !== null) {
+        window.clearTimeout(clipboardClearTimerRef.current)
+        clipboardClearTimerRef.current = null
+      }
+      copiedSecretValueRef.current = null
+    })()
     setVaultSession(null)
     setItems([])
     setStorageItems([])
@@ -2923,9 +3151,10 @@ export function useVaultApp() {
     setUnlockRecoveryKey('')
     setRecoveryKeyDisplay('')
     setPhase('unlock')
-    setSyncMessage('Vault locked')
+    setSyncMessage(message)
     clearNativeCredentials()
   }
+  lockVaultRef.current = lockVault
 
   function closeOpenItem() {
     if (workspaceSection === 'storage') {
@@ -3341,7 +3570,10 @@ export function useVaultApp() {
     }
     if (breachScanRunning) return
 
-    const passwords = items.map((item) => item.passwordMasked ?? '').filter(Boolean)
+    const passwords = items
+      .filter(isPasswordCredential)
+      .map((item) => item.passwordMasked ?? '')
+      .filter(Boolean)
     if (passwords.length === 0) {
       setBreachScanProgress({ done: 0, total: 0 })
       setBreachScanSummary({
@@ -3350,7 +3582,7 @@ export function useVaultApp() {
         unavailable: 0,
         finishedAt: new Date().toISOString(),
       })
-      setSyncMessage('No entry passwords found to scan')
+      setSyncMessage('No password credentials found to scan')
       return
     }
 
@@ -3367,6 +3599,7 @@ export function useVaultApp() {
       let unavailable = 0
       let changed = false
       const nextItems = items.map((item) => {
+        if (!isPasswordCredential(item)) return item
         const password = item.passwordMasked ?? ''
         if (!password) return item
         const result = scanResults.get(password)
@@ -3406,6 +3639,10 @@ export function useVaultApp() {
     }
     const item = items.find((entry) => entry.id === itemId)
     if (!item) return
+    if (!isPasswordCredential(item)) {
+      setSyncMessage('Breach scan only applies to password credentials')
+      return
+    }
     const password = item.passwordMasked ?? ''
     if (!password) {
       setSyncMessage('No password set for this entry')
@@ -3538,14 +3775,14 @@ export function useVaultApp() {
     return { folder: latest, nextFolders: localFolders }
   }
 
-  function createItem() {
+  function createItem(kind: VaultCredentialKind = DEFAULT_CREDENTIAL_KIND) {
     setWorkspaceSection('passwords')
     if (selectedNode === 'home') {
       setSelectedNode('all')
     }
     const selectedFolderId = selectedNode.startsWith('folder:') ? selectedNode.slice('folder:'.length) : null
     const selectedFolderPath = selectedFolderId ? (folderPathById.get(selectedFolderId) ?? '') : ''
-    const item = buildEmptyItem(selectedFolderPath, selectedFolderId)
+    const item = buildEmptyItem(selectedFolderPath, selectedFolderId, kind)
     const next = applyComputedItemRisks([item, ...items])
     setSelectedId(item.id)
     setDraft(next.find((entry) => entry.id === item.id) ?? item)
@@ -3614,8 +3851,8 @@ export function useVaultApp() {
   }
 
   function createEntry(type: QuickCreateEntryType) {
-    if (type === 'password') {
-      createItem()
+    if (type === 'password' || type === 'pin' || type === 'secret' || type === 'number') {
+      createItem(type)
       return
     }
     if (type === 'file') {
@@ -3628,10 +3865,6 @@ export function useVaultApp() {
     }
     if (type === 'token') {
       createStorageItemOfKind('token', 'New Token')
-      return
-    }
-    if (type === 'secret') {
-      createStorageItemOfKind('secret', 'New Secret')
       return
     }
     if (type === 'image') {
@@ -3986,9 +4219,17 @@ export function useVaultApp() {
       folderId: ensuredFolder.folder?.id ?? null,
       updatedAt: new Date().toLocaleString(),
     }
+    const passwordEligible = isPasswordCredential(nextItem)
+    if (!passwordEligible) {
+      nextItem = {
+        ...nextItem,
+        risk: 'safe' as const,
+        passwordExpiryDate: null,
+      }
+    }
     const breachCapabilityEnabled = hasCapability('security.breach_scan')
     const breachCheckEnabled = breachCapabilityEnabled && vaultSettings.breachCheck?.enabled === true
-    const passwordForCheck = nextItem.passwordMasked ?? ''
+    const passwordForCheck = passwordEligible ? (nextItem.passwordMasked ?? '') : ''
 
     if (passwordForCheck && breachCheckEnabled) {
       const breachResult = await checkPasswordCompromised(passwordForCheck, { timeoutMs: vaultSettings.breachCheck?.timeoutMs })
@@ -3997,7 +4238,7 @@ export function useVaultApp() {
       if (breachResult.status === 'compromised') {
         nextItem = { ...nextItem, risk: 'exposed' }
       } else if (breachResult.status === 'clear' && nextItem.risk === 'exposed') {
-        nextItem = { ...nextItem, risk: 'safe' }
+        nextItem = { ...nextItem, risk: 'safe' as const }
       }
     }
 
@@ -4023,20 +4264,27 @@ export function useVaultApp() {
     if (node === 'all') return sourceItems
     if (node === 'home' || node === 'trash') return []
     if (node === 'expiring') {
-      return sourceItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring')
+      return sourceItems.filter((item) => (
+        isPasswordCredential(item)
+        && getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expiring'
+      ))
     }
     if (node === 'expired') {
-      return sourceItems.filter((item) => getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired')
+      return sourceItems.filter((item) => (
+        isPasswordCredential(item)
+        && getPasswordExpiryStatus(item.passwordExpiryDate, { expiringWithinDays: PASSWORD_EXPIRING_SOON_DAYS }) === 'expired'
+      ))
     }
     if (node === 'unfiled') {
       return sourceItems.filter((item) => !item.folderId)
     }
     if (node === 'weak') {
-      return sourceItems.filter((item) => item.risk === 'weak')
+      return sourceItems.filter((item) => isPasswordCredential(item) && item.risk === 'weak')
     }
     if (node === 'reused') {
       const passwordCount = computePasswordReuseCounts(sourceItems)
       return sourceItems.filter((item) => {
+        if (!isPasswordCredential(item)) return false
         const password = item.passwordMasked?.trim()
         return !!password && (passwordCount.get(password) ?? 0) > 1
       })
@@ -4157,6 +4405,29 @@ export function useVaultApp() {
     setSyncMessage(excluded ? 'Credential marked local-only (excluded from cloud sync)' : 'Credential included in cloud sync')
   }
 
+  async function changeItemCredentialKind(itemId: string, nextKind: VaultCredentialKind) {
+    const target = items.find((item) => item.id === itemId)
+    if (!target || target.credentialKind === nextKind) return
+    const nextItems = applyComputedItemRisks(items.map((item) => {
+      if (item.id !== itemId) return item
+      return {
+        ...item,
+        credentialKind: nextKind,
+        risk: nextKind === 'password' ? item.risk : 'safe' as const,
+        passwordExpiryDate: nextKind === 'password' ? item.passwordExpiryDate ?? null : null,
+        updatedAt: new Date().toLocaleString(),
+      }
+    }))
+    const nextSelected = nextItems.find((item) => item.id === itemId) ?? null
+    setDraft((current) => {
+      if (current?.id !== itemId || !nextSelected) return current
+      return nextSelected
+    })
+    await persistPayload({ items: nextItems })
+    setItemContextMenu(null)
+    setSyncMessage(`Converted "${target.title || 'Untitled'}" to ${getCredentialKindMeta(nextKind).label}`)
+  }
+
   async function setStorageItemCloudSyncExcluded(itemId: string, excluded: boolean) {
     const canManageCloudSyncExclusions = hasCapability('cloud.sync')
       && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
@@ -4203,10 +4474,18 @@ export function useVaultApp() {
 
   async function copyPassword() {
     if (!draft?.passwordMasked) return
-    await copyToClipboard(draft.passwordMasked, 'Password copied to clipboard', 'Clipboard copy failed', { clearAfterMs: 20_000 })
+    const kindMeta = getCredentialKindMeta(draft.credentialKind)
+    await copyToClipboard(draft.passwordMasked, kindMeta.copySuccessMessage, 'Clipboard copy failed', {
+      clearAfterMs: passwordClipboardClearMs(vaultSettings),
+      sensitive: true,
+    })
   }
 
   async function autofillItem(item: VaultItem) {
+    if (!isPasswordCredential(item)) {
+      setSyncMessage('Autofill only applies to password credentials')
+      return
+    }
     if (!window.armadilloShell?.isElectron || !window.armadilloShell.autofillCredentials) {
       setSyncMessage('Autofill is available in the desktop app')
       return
@@ -4461,6 +4740,7 @@ export function useVaultApp() {
         return {
           id: crypto.randomUUID(),
           title: inferImportedItemTitle({ title: entry.name, url: entry.url, username: entry.username }, index + 1),
+          credentialKind: 'password',
           username,
           passwordMasked: password,
           urls: url ? [url] : [],
@@ -4551,6 +4831,7 @@ export function useVaultApp() {
         return {
           id: crypto.randomUUID(),
           title: inferImportedItemTitle({ title: entry.title, url: entry.url, username: entry.username }, index + 1),
+          credentialKind: 'password',
           username,
           passwordMasked: password,
           urls: url ? [url] : [],
@@ -4646,6 +4927,7 @@ export function useVaultApp() {
         return {
           id: crypto.randomUUID(),
           title: inferImportedItemTitle({ title: entry.title, url: entry.url, username: entry.username }, index + 1),
+          credentialKind: 'password',
           username,
           passwordMasked: password,
           urls: url ? [url] : [],
@@ -4985,6 +5267,21 @@ export function useVaultApp() {
     }
   }
 
+  async function disableQuickUnlock() {
+    if (!quickUnlockEnabled) {
+      setSyncMessage('Quick unlock is already disabled on this device')
+      return
+    }
+    try {
+      await clearQuickUnlockEnrollment()
+      setQuickUnlockEnabled(false)
+      setSyncMessage('Quick unlock removed from this device')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : ''
+      setSyncMessage(detail ? `Failed to remove quick unlock: ${detail}` : 'Failed to remove quick unlock')
+    }
+  }
+
   async function unlockVaultQuickUnlock() {
     if (isUnlocking) return
     if (!quickUnlockCapabilities.supported) {
@@ -5176,10 +5473,19 @@ export function useVaultApp() {
     removeStoredRecentLocalVaultPath(path)
     const remaining = listRecentLocalVaultPaths()
     setRecentLocalVaultPaths(remaining)
+    setRecentLocalVaultPathStatuses((current) => {
+      const next = { ...current }
+      delete next[path]
+      return next
+    })
     if (removingActive) {
       const nextPath = remaining[0]?.path ?? ''
       setStoredLocalVaultPath(nextPath)
       setLocalVaultPath(nextPath)
+      setSelectedLocalVaultStatus(nextPath ? (recentLocalVaultPathStatuses[nextPath] ?? 'unknown') : 'unknown')
+      if (!nextPath) {
+        setSelectedLocalVaultFile(null)
+      }
     }
   }
 
@@ -5254,7 +5560,6 @@ export function useVaultApp() {
       setOrgRoles([])
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
-        setCloudCacheExpiresAt('')
       }
       setAuthMessage('Self-hosted token cleared for this session')
       setCloudAuthState('disconnected')
@@ -5267,7 +5572,6 @@ export function useVaultApp() {
       await signOut()
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
-        setCloudCacheExpiresAt('')
       }
       setAuthMessage('Signed out')
       setCloudAuthState('disconnected')
@@ -5364,6 +5668,7 @@ export function useVaultApp() {
       selectedNode,
       folderFilterMode,
       storageMode,
+      devicePrivacySettings,
       cloudCacheTtlHours,
       cloudCacheExpiresAt,
       syncProvider,
@@ -5467,6 +5772,7 @@ export function useVaultApp() {
       setFolderFilterMode,
       setCloudSyncEnabled: updateCloudSyncEnabled,
       setStorageMode: updateStorageMode,
+      setDevicePrivacySettings: updateDevicePrivacySettings,
       setCloudCacheTtlHours,
       setVaultSettings,
       setBreachCheckEnabled,
@@ -5523,6 +5829,7 @@ export function useVaultApp() {
       prepareNamedLocalVault,
       selectRecentLocalVaultPath,
       removeRecentLocalVaultPath,
+      clearRecentLocalVaultPaths,
       signInWithGoogle,
       signOutCloud,
       createItem,
@@ -5545,6 +5852,7 @@ export function useVaultApp() {
       saveCurrentItem,
       saveCurrentStorageItem,
       setItemCloudSyncExcluded,
+      changeItemCredentialKind,
       setStorageItemCloudSyncExcluded,
       removeCurrentItem,
       removeItemById,
@@ -5583,6 +5891,7 @@ export function useVaultApp() {
       createPasskeyIdentity,
       enableQuickUnlock,
       enableBiometricUnlock,
+      disableQuickUnlock,
       enableRecoveryKit,
       rotateRecoveryKit,
       disableRecoveryKit,

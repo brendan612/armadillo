@@ -14,6 +14,8 @@ import {
   type RecoveryKdfConfig,
   type VaultRecoveryConfig,
   type AutoFolderCustomMapping,
+  type VaultCredentialKind,
+  type VaultClipboardSettings,
   type VaultFolder,
   type VaultPayload,
   type VaultSettings,
@@ -25,6 +27,7 @@ import {
 import { defaultThemeSettings, normalizeThemeSettings } from '../shared/utils/theme'
 import { defaultAiSettings, normalizeAiSettings } from '../shared/utils/copilot'
 import { defaultKeybindSettings, normalizeKeybindSettings } from '../shared/utils/keybinds'
+import { normalizeCredentialKind, isPasswordCredentialKind } from '../shared/utils/credentialKinds'
 
 const LOCAL_VAULT_FILE_KEY = 'armadillo.local.vault.file'
 const LOCAL_VAULT_PATH_KEY = 'armadillo.local.vault.path'
@@ -33,8 +36,17 @@ const VAULT_STORAGE_MODE_KEY = 'armadillo.vault.storage_mode'
 const CLOUD_CACHE_FILE_KEY = 'armadillo.cloud.cache.file'
 const CLOUD_CACHE_EXPIRES_AT_KEY = 'armadillo.cloud.cache.expires_at'
 const CLOUD_CACHE_TTL_HOURS_KEY = 'armadillo.cloud.cache.ttl_hours'
+const DEVICE_PRIVACY_SETTINGS_KEY = 'armadillo.device.privacy'
 const DEFAULT_CLOUD_CACHE_TTL_HOURS = 72
 const MAX_RECENT_LOCAL_VAULT_PATHS = 10
+const DEFAULT_PASSWORD_CLIPBOARD_CLEAR_SECONDS = 20
+const DEFAULT_AUTO_LOCK_MINUTES = 5
+
+export type DevicePrivacySettings = {
+  autoLockMinutes: number
+  lockOnBackground: boolean
+  disableCloudCache: boolean
+}
 
 export type RecentLocalVaultEntry = {
   path: string
@@ -67,9 +79,79 @@ export function defaultVaultSettings(): VaultSettings {
     autoFolderExcludedItemIds: [],
     autoFolderLockedFolderPaths: [],
     autoFolderCustomMappings: [],
+    clipboard: defaultClipboardSettings(),
     theme: defaultThemeSettings(),
     ai: defaultAiSettings(),
   }
+}
+
+export function defaultClipboardSettings(): VaultClipboardSettings {
+  return {
+    passwordClearSeconds: DEFAULT_PASSWORD_CLIPBOARD_CLEAR_SECONDS,
+    clearOnLock: true,
+  }
+}
+
+export function normalizeClipboardSettings(input: unknown): VaultClipboardSettings {
+  const defaults = defaultClipboardSettings()
+  if (!input || typeof input !== 'object') {
+    return defaults
+  }
+  const source = input as Partial<VaultClipboardSettings>
+  const passwordClearSeconds = Number.isFinite(source.passwordClearSeconds)
+    ? Math.min(300, Math.max(0, Math.round(source.passwordClearSeconds as number)))
+    : defaults.passwordClearSeconds
+  return {
+    passwordClearSeconds,
+    clearOnLock: source.clearOnLock !== false,
+  }
+}
+
+function defaultDevicePrivacySettings(): DevicePrivacySettings {
+  return {
+    autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
+    lockOnBackground: true,
+    disableCloudCache: false,
+  }
+}
+
+export function getDevicePrivacySettings(): DevicePrivacySettings {
+  const defaults = defaultDevicePrivacySettings()
+  const raw = localStorage.getItem(DEVICE_PRIVACY_SETTINGS_KEY)
+  if (!raw) return defaults
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') {
+      return defaults
+    }
+    const source = parsed as Partial<DevicePrivacySettings>
+    const autoLockMinutes = Number.isFinite(source.autoLockMinutes)
+      ? Math.min(240, Math.max(0, Math.round(source.autoLockMinutes as number)))
+      : defaults.autoLockMinutes
+    return {
+      autoLockMinutes,
+      lockOnBackground: source.lockOnBackground !== false,
+      disableCloudCache: source.disableCloudCache === true,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+export function setDevicePrivacySettings(settings: Partial<DevicePrivacySettings>) {
+  const current = getDevicePrivacySettings()
+  const merged: DevicePrivacySettings = {
+    autoLockMinutes: Number.isFinite(settings.autoLockMinutes)
+      ? Math.min(240, Math.max(0, Math.round(settings.autoLockMinutes as number)))
+      : current.autoLockMinutes,
+    lockOnBackground: typeof settings.lockOnBackground === 'boolean'
+      ? settings.lockOnBackground
+      : current.lockOnBackground,
+    disableCloudCache: typeof settings.disableCloudCache === 'boolean'
+      ? settings.disableCloudCache
+      : current.disableCloudCache,
+  }
+  localStorage.setItem(DEVICE_PRIVACY_SETTINGS_KEY, JSON.stringify(merged))
 }
 
 function toIso(value: unknown, fallback: string) {
@@ -179,6 +261,13 @@ function normalizeStorageKind(input: unknown): VaultStorageItem['kind'] {
   return 'other'
 }
 
+function normalizeItemRisk(kind: VaultCredentialKind, input: unknown): VaultPayload['items'][number]['risk'] {
+  if (!isPasswordCredentialKind(kind)) {
+    return 'safe'
+  }
+  return input === 'weak' || input === 'reused' || input === 'exposed' || input === 'stale' ? input : 'safe'
+}
+
 function ensureTrashRetention(payload: VaultPayload) {
   const now = Date.now()
   payload.trash = payload.trash.filter((entry) => {
@@ -198,9 +287,11 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
 
   const migratedItems = rawItems.map((item): VaultPayload['items'][number] => {
     const source = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
+    const credentialKind = normalizeCredentialKind(source.credentialKind)
     return {
       id: typeof source.id === 'string' && source.id ? source.id : crypto.randomUUID(),
       title: typeof source.title === 'string' ? source.title : 'Untitled',
+      credentialKind,
       username: typeof source.username === 'string' ? source.username : '',
       passwordMasked: typeof source.passwordMasked === 'string' ? source.passwordMasked : '',
       urls: Array.isArray(source.urls) ? source.urls.filter((v): v is string => typeof v === 'string') : [],
@@ -208,7 +299,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
       folder: typeof source.folder === 'string' ? source.folder : '',
       folderId: typeof source.folderId === 'string' ? source.folderId : null,
       tags: normalizeTagValues(source.tags, source.category),
-      risk: source.risk === 'weak' || source.risk === 'reused' || source.risk === 'exposed' || source.risk === 'stale' ? source.risk : 'safe',
+      risk: normalizeItemRisk(credentialKind, source.risk),
       updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : new Date().toLocaleString(),
       note: typeof source.note === 'string' ? source.note : '',
       securityQuestions: Array.isArray(source.securityQuestions)
@@ -222,6 +313,9 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
             })
             .filter((entry) => entry.question || entry.answer)
         : [],
+      passwordExpiryDate: isPasswordCredentialKind(credentialKind)
+        ? (typeof source.passwordExpiryDate === 'string' && source.passwordExpiryDate ? source.passwordExpiryDate : null)
+        : null,
       excludeFromCloudSync: source.excludeFromCloudSync === true,
     }
   })
@@ -336,6 +430,7 @@ export function normalizeVaultPayload(raw: unknown): VaultPayload {
     autoFolderExcludedItemIds: normalizeStringArray(settingsSource.autoFolderExcludedItemIds),
     autoFolderLockedFolderPaths: normalizeStringArray(settingsSource.autoFolderLockedFolderPaths),
     autoFolderCustomMappings: normalizeAutoFolderCustomMappings(settingsSource.autoFolderCustomMappings),
+    clipboard: normalizeClipboardSettings(settingsSource.clipboard),
     theme: normalizeThemeSettings(settingsSource.theme),
     ai: normalizeAiSettings(settingsSource.ai as VaultSettings['ai']),
   }
@@ -697,6 +792,11 @@ export async function readLocalVaultFileMeta(path: string): Promise<LocalVaultFi
     revision: meta.revision,
     updatedAt: meta.updatedAt,
   }
+}
+
+export function clearAllRecentLocalVaultPaths() {
+  writeRecentLocalVaultEntriesToStorage([])
+  localStorage.removeItem(LOCAL_VAULT_PATH_KEY)
 }
 
 export function loadLocalVaultFile(): ArmadilloVaultFile | null {

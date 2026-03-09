@@ -8,9 +8,12 @@ export type SecurityQuestion = {
   answer: string
 }
 
+export type VaultCredentialKind = 'password' | 'pin' | 'secret' | 'number'
+
 export type VaultItem = {
   id: string
   title: string
+  credentialKind: VaultCredentialKind
   username: string
   passwordMasked: string
   urls: string[]
@@ -143,6 +146,11 @@ export type AutoFolderCustomMapping = {
   targetPath: string
 }
 
+export type VaultClipboardSettings = {
+  passwordClearSeconds: number
+  clearOnLock: boolean
+}
+
 export type VaultSettings = {
   trashRetentionDays: number
   generatorPresets: GeneratorPreset[]
@@ -150,6 +158,7 @@ export type VaultSettings = {
   autoFolderExcludedItemIds?: string[]
   autoFolderLockedFolderPaths?: string[]
   autoFolderCustomMappings?: AutoFolderCustomMapping[]
+  clipboard?: VaultClipboardSettings
   theme?: VaultThemeSettings
   ai?: VaultAiSettings
   breachCheck?: {

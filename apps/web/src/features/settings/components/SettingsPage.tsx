@@ -3,6 +3,7 @@ import { isNativeAndroid } from '../../../shared/utils/platform'
 import { getSafeRetentionDays } from '../../../shared/utils/trash'
 import AutofillBridge from '../../../plugins/autofillBridge'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { defaultClipboardSettings } from '../../../lib/vaultFile'
 import { BUILT_IN_THEME_PRESETS, THEME_COLOR_TOKEN_KEYS, resolveThemeTokens } from '../../../shared/utils/theme'
 import { AI_EXCLUDED_FIELD_LABELS, AI_INCLUDED_FIELD_LABELS, defaultAiSettings } from '../../../shared/utils/copilot'
 import { KEYBIND_DEFINITIONS, defaultKeybindSettings, eventToShortcut, findKeybindConflicts, formatShortcutLabel, normalizeKeybindSettings } from '../../../shared/utils/keybinds'
@@ -14,6 +15,7 @@ import {
   Download, Upload, FolderTree as FolderTreeIcon, HardDrive, Trash2, Save, Clock, ArchiveRestore,
   Palette, User, LogOut, KeyRound, Package, RefreshCw, ExternalLink, Database, Cloud, CloudUpload,
   ShieldAlert, ShieldCheck, Search, LifeBuoy, RotateCcw, ShieldOff, Smartphone, AlertTriangle, ServerCrash, Keyboard,
+  LockKeyhole, Clipboard,
 } from 'lucide-react'
 import armadilloLogo from '../../../assets/armadillo.webp'
 import googleLogo from '../../../assets/other providers/google.png'
@@ -124,6 +126,7 @@ export function SettingsPage() {
     cloudAuthState,
     cloudSyncEnabled,
     storageMode,
+    devicePrivacySettings,
     cloudCacheTtlHours,
     cloudCacheExpiresAt,
     syncProvider,
@@ -172,6 +175,7 @@ export function SettingsPage() {
     createPasskeyIdentity,
     setCloudSyncEnabled,
     setStorageMode,
+    setDevicePrivacySettings,
     setCloudCacheTtlHours,
     pushVaultToCloudNow,
     setBreachCheckEnabled,
@@ -183,6 +187,7 @@ export function SettingsPage() {
     applyDevFlagOverrides,
     clearDevFlagOverrides,
     enableQuickUnlock,
+    disableQuickUnlock,
     enableRecoveryKit,
     rotateRecoveryKit,
     disableRecoveryKit,
@@ -204,6 +209,8 @@ export function SettingsPage() {
     saveAutoFolderPreferences,
     chooseLocalVaultLocation,
     selectRecentLocalVaultPath,
+    removeRecentLocalVaultPath,
+    clearRecentLocalVaultPaths,
     lockVault,
     setVaultSettings,
     selectThemePreset,
@@ -279,6 +286,19 @@ export function SettingsPage() {
       ai: {
         ...defaultAiSettings(),
         ...vaultSettings.ai,
+        ...patch,
+      },
+    }
+    setVaultSettings(nextSettings)
+    void persistPayload({ settings: nextSettings })
+  }, [persistPayload, setVaultSettings, vaultSettings])
+
+  const updateClipboardSettings = useCallback((patch: Partial<ReturnType<typeof defaultClipboardSettings>>) => {
+    const nextSettings = {
+      ...vaultSettings,
+      clipboard: {
+        ...defaultClipboardSettings(),
+        ...vaultSettings.clipboard,
         ...patch,
       },
     }
@@ -413,6 +433,8 @@ export function SettingsPage() {
   const resolvedSwitchVaultPath = switchVaultPath.trim() || localVaultPath || recentLocalVaultPaths[0]?.path || ''
   const isSwitchTargetActive = resolvedSwitchVaultPath.trim() === localVaultPath.trim()
   const switchTargetStatus = recentLocalVaultPathStatuses[resolvedSwitchVaultPath] ?? 'unknown'
+  const passwordClipboardSeconds = vaultSettings.clipboard?.passwordClearSeconds ?? defaultClipboardSettings().passwordClearSeconds
+  const quickUnlockMethodLabel = quickUnlockCapabilities.method === 'android-native' ? 'Biometric' : 'Passkey / Windows Hello'
   const importProviderOptions = [
     {
       id: 'armadillo',
@@ -925,6 +947,7 @@ export function SettingsPage() {
                     type="number"
                     min={1}
                     max={720}
+                    disabled={devicePrivacySettings.disableCloudCache}
                     inputMode="numeric"
                     value={cloudCacheTtlHours}
                     onChange={(event) => setCloudCacheTtlHours(Math.max(1, Math.min(720, Math.round(Number(event.target.value) || 72))))}
@@ -932,10 +955,36 @@ export function SettingsPage() {
                   <span className="trash-retention-unit">hours</span>
                 </label>
                 <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
-                  {cloudCacheExpiresAt
+                  {devicePrivacySettings.disableCloudCache
+                    ? 'Encrypted cache is disabled on this device'
+                    : cloudCacheExpiresAt
                     ? `Cache expires ${new Date(cloudCacheExpiresAt).toLocaleString()}`
                     : 'No encrypted cache currently stored'}
                 </p>
+                <div className="settings-toggle-row">
+                  <span>Disable Encrypted Cache</span>
+                  <button
+                    className={devicePrivacySettings.disableCloudCache ? 'solid' : 'ghost'}
+                    onClick={() => setDevicePrivacySettings((current) => ({
+                      ...current,
+                      disableCloudCache: !current.disableCloudCache,
+                    }))}
+                  >
+                    {devicePrivacySettings.disableCloudCache ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                  This device only. Turning this on clears the encrypted cache and skips future cached snapshots.
+                </p>
+                <div className="vault-btn-row">
+                  <button
+                    className="vault-action-btn ghost"
+                    onClick={() => clearCachedVaultSnapshot('Encrypted cache cleared from this device')}
+                  >
+                    <Trash2 size={15} />
+                    Clear Encrypted Cache Now
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -1000,20 +1049,137 @@ export function SettingsPage() {
               </div>
               {quickUnlockCapabilities.supported && (
                 <div className="settings-feature-body">
-                  <button
-                    className={`vault-action-btn ${quickUnlockEnabled ? 'solid' : 'ghost'}`}
-                    onClick={() => void enableQuickUnlock()}
-                  >
-                    <KeyRound size={15} />
-                    {quickUnlockCapabilities.method === 'android-native'
-                      ? (quickUnlockEnabled ? 'Biometric Enabled' : 'Enable Biometric')
-                      : (quickUnlockEnabled ? 'Passkey Enabled' : quickUnlockCapabilities.enrollmentLabel)}
-                  </button>
+                  <div className="settings-toggle-row">
+                    <span>Method</span>
+                    <strong className="settings-inline-badge">{quickUnlockMethodLabel}</strong>
+                  </div>
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                    This device only.
+                  </p>
+                  <div className="vault-btn-row">
+                    <button
+                      className={`vault-action-btn ${quickUnlockEnabled ? 'solid' : 'ghost'}`}
+                      onClick={() => void enableQuickUnlock()}
+                    >
+                      <KeyRound size={15} />
+                      {quickUnlockEnabled ? `Re-enroll ${quickUnlockMethodLabel}` : quickUnlockCapabilities.enrollmentLabel}
+                    </button>
+                    {quickUnlockEnabled && (
+                      <button className="vault-action-btn ghost" onClick={() => void disableQuickUnlock()}>
+                        <ShieldOff size={15} />
+                        Disable on This Device
+                      </button>
+                    )}
+                  </div>
                   {(syncMessage.toLowerCase().includes('biometric') || syncMessage.toLowerCase().includes('passkey') || syncMessage.toLowerCase().includes('quick unlock')) && (
                     <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>{syncMessage}</p>
                   )}
                 </div>
               )}
+            </div>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-accent">
+                  <LockKeyhole size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Auto-Lock</h3>
+                  <p className="muted">
+                    {devicePrivacySettings.autoLockMinutes > 0
+                      ? `Locks after ${devicePrivacySettings.autoLockMinutes} minute${devicePrivacySettings.autoLockMinutes === 1 ? '' : 's'} idle`
+                      : 'Idle auto-lock disabled'}
+                  </p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <label className="settings-inline-label">
+                  <Clock size={14} />
+                  <span>Idle Lock</span>
+                  <input
+                    className="trash-retention-input"
+                    type="number"
+                    min={0}
+                    max={240}
+                    inputMode="numeric"
+                    value={devicePrivacySettings.autoLockMinutes}
+                    onChange={(event) => setDevicePrivacySettings((current) => ({
+                      ...current,
+                      autoLockMinutes: Math.max(0, Math.min(240, Math.round(Number(event.target.value) || 0))),
+                    }))}
+                    onWheel={(event) => event.currentTarget.blur()}
+                  />
+                  <span className="trash-retention-unit">minutes</span>
+                </label>
+                <div className="settings-toggle-row">
+                  <span>Lock on Background</span>
+                  <button
+                    className={devicePrivacySettings.lockOnBackground ? 'solid' : 'ghost'}
+                    onClick={() => setDevicePrivacySettings((current) => ({
+                      ...current,
+                      lockOnBackground: !current.lockOnBackground,
+                    }))}
+                  >
+                    {devicePrivacySettings.lockOnBackground ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                  This device only. Background locking applies when the app is hidden or sent to the background.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" hidden={!isSecurity}>
+            <div className="settings-feature-card">
+              <div className="settings-feature-head">
+                <div className="settings-feature-icon tint-safe">
+                  <Clipboard size={18} />
+                </div>
+                <div className="settings-feature-title">
+                  <h3>Clipboard Hygiene</h3>
+                  <p className="muted">
+                    {passwordClipboardSeconds > 0
+                      ? `Copied passwords clear after ${passwordClipboardSeconds} second${passwordClipboardSeconds === 1 ? '' : 's'}`
+                      : 'Copied passwords stay until you replace them'}
+                  </p>
+                </div>
+              </div>
+              <div className="settings-feature-body">
+                <label className="settings-inline-label">
+                  <Clock size={14} />
+                  <span>Password Clear</span>
+                  <input
+                    className="trash-retention-input"
+                    type="number"
+                    min={0}
+                    max={300}
+                    inputMode="numeric"
+                    value={passwordClipboardSeconds}
+                    onChange={(event) => updateClipboardSettings({
+                      passwordClearSeconds: Math.max(0, Math.min(300, Math.round(Number(event.target.value) || 0))),
+                    })}
+                    onWheel={(event) => event.currentTarget.blur()}
+                  />
+                  <span className="trash-retention-unit">seconds</span>
+                </label>
+                <div className="settings-toggle-row">
+                  <span>Clear Tracked Secret on Lock</span>
+                  <button
+                    className={vaultSettings.clipboard?.clearOnLock !== false ? 'solid' : 'ghost'}
+                    onClick={() => updateClipboardSettings({
+                      clearOnLock: !(vaultSettings.clipboard?.clearOnLock !== false),
+                    })}
+                  >
+                    {vaultSettings.clipboard?.clearOnLock !== false ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                  Syncs with this vault. This pass only applies cleanup to copied passwords and similar password-field secrets.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -1365,10 +1531,10 @@ export function SettingsPage() {
                     </button>
                   )}
                 </div>
-                {canSwitchLocalVault && (
+                {recentLocalVaultPaths.length > 0 && (
                   <div className="vault-picker-recent">
                     <p className="muted settings-io-note" style={{ marginTop: 0 }}>
-                      Switch Local Vault
+                      Recent Local Vaults
                     </p>
                     <div className="vault-picker-recent-row">
                       <select
@@ -1387,9 +1553,9 @@ export function SettingsPage() {
                       </select>
                       <button
                         className="vault-action-btn ghost vault-picker-remove"
-                        disabled={!resolvedSwitchVaultPath || isSwitchTargetActive}
+                        disabled={!canSwitchLocalVault || !resolvedSwitchVaultPath || isSwitchTargetActive}
                         onClick={() => {
-                          if (!resolvedSwitchVaultPath || isSwitchTargetActive) return
+                          if (!canSwitchLocalVault || !resolvedSwitchVaultPath || isSwitchTargetActive) return
                           lockVault()
                           selectRecentLocalVaultPath(resolvedSwitchVaultPath)
                         }}
@@ -1401,6 +1567,29 @@ export function SettingsPage() {
                       Selected: {vaultFileLabel(resolvedSwitchVaultPath || 'No vault selected')} ({switchTargetStatus}){localVaultPath ? ` · Active: ${vaultFileLabel(localVaultPath)}` : ''}
                     </p>
                   </div>
+                )}
+                {recentLocalVaultPaths.length > 0 && (
+                  <>
+                    <div className="settings-action-list">
+                      <button
+                        className="ghost"
+                        disabled={!resolvedSwitchVaultPath}
+                        onClick={() => removeRecentLocalVaultPath(resolvedSwitchVaultPath)}
+                      >
+                        Forget Selected Path
+                      </button>
+                      <button
+                        className="ghost"
+                        disabled={recentLocalVaultPaths.length === 0}
+                        onClick={() => clearRecentLocalVaultPaths()}
+                      >
+                        Clear All Recent Paths
+                      </button>
+                    </div>
+                    <p className="muted settings-io-note" style={{ marginTop: 0 }}>
+                      This device only. Clearing path history does not delete any vault files.
+                    </p>
+                  </>
                 )}
               </div>
             </div>

@@ -1,3 +1,4 @@
+import { FolderPlus } from 'lucide-react'
 import { FolderTree } from './FolderTree'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
@@ -20,9 +21,8 @@ export function SidebarPane() {
   const activeItems = isStorage ? storageItems : items
 
   function handleTreeContextMenu(event: React.MouseEvent) {
-    // Only show tree context menu when clicking empty area (not on a folder node)
     const target = event.target as HTMLElement
-    if (target.closest('.folder-tree-node')) return
+    if (target.closest('.ftree-node')) return
     event.preventDefault()
     setTreeContextMenu({ x: event.clientX, y: event.clientY })
   }
@@ -117,16 +117,27 @@ export function SidebarPane() {
             <span className="sidebar-badge">{trash.length}</span>
           </button>
         )}
-        {!isAdmin && (
-          <button className="sidebar-nav-item" onClick={isStorage ? createStorageItem : () => createSubfolder(null)}>
-            <span>{isStorage ? '+ New Storage Item' : '+ New Folder'}</span>
+        {isStorage && (
+          <button className="sidebar-nav-item" onClick={createStorageItem}>
+            <span>+ New Storage Item</span>
           </button>
         )}
       </nav>
 
       {!isAdmin && (
         <div className="sidebar-section">
-          <h3>Folders</h3>
+          <div className="sidebar-section-head">
+            <h3>Folders</h3>
+            {!isStorage && (
+              <button
+                className="sidebar-section-action"
+                title="New folder"
+                onClick={() => createSubfolder(null)}
+              >
+                <FolderPlus size={13} strokeWidth={1.8} />
+              </button>
+            )}
+          </div>
           <div className="folder-tree" onContextMenu={handleTreeContextMenu}>
             <FolderTree parentId={null} />
           </div>
