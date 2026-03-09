@@ -36,7 +36,6 @@ export function FolderContextMenu() {
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
 
-  // Viewport-clamp the menu position after mount
   useEffect(() => {
     if (!contextMenu || !menuRef.current) return
     const el = menuRef.current
@@ -56,7 +55,6 @@ export function FolderContextMenu() {
         x = viewportWidth - menuWidth - pad
       }
       if (y + menuHeight > viewportHeight - pad) {
-        // Prefer opening upward when near the viewport bottom.
         y = contextMenu.y - menuHeight
       }
       if (x < pad) x = pad
@@ -90,119 +88,121 @@ export function FolderContextMenu() {
   }
 
   return createPortal(
-    <div
-      ref={menuRef}
-      className="ctx-menu"
-      style={{ left: contextMenu.x, top: contextMenu.y, opacity: 0 }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {/* --- Navigation --- */}
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          setSelectedNode(`folder:${contextMenu.folderId}`)
-          setMobileStep('list')
-          dismiss()
-        }}
+    <>
+      <div className="ctx-backdrop" onClick={dismiss} />
+      <div
+        ref={menuRef}
+        className="ctx-menu"
+        style={{ left: contextMenu.x, top: contextMenu.y, opacity: 0 }}
+        onPointerDown={(e) => e.stopPropagation()}
       >
-        <FolderOpen className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Open</span>
-      </button>
-
-      <div className="ctx-menu-divider" />
-
-      {/* --- Edit --- */}
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          createSubfolder(contextMenu.folderId)
-          dismiss()
-        }}
-      >
-        <FolderPlus className="ctx-menu-icon" />
-        <span className="ctx-menu-label">New Subfolder</span>
-      </button>
-
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          startFolderInlineRename(contextMenu.folderId)
-        }}
-      >
-        <Pencil className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Rename</span>
-        <kbd className="ctx-menu-shortcut">F2</kbd>
-      </button>
-
-      <div className="ctx-menu-divider" />
-
-      {/* --- Organise --- */}
-      {isNested && (
+        {/* Navigate */}
         <button
           className="ctx-menu-item"
           onClick={() => {
-            void moveFolder(contextMenu.folderId, null)
+            setSelectedNode(`folder:${contextMenu.folderId}`)
+            setMobileStep('list')
             dismiss()
           }}
         >
-          <ArrowUpToLine className="ctx-menu-icon" />
-          <span className="ctx-menu-label">Move to Root</span>
+          <FolderOpen className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Open</span>
         </button>
-      )}
 
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          if (folder) {
-            openFolderEditor(folder)
-          }
-        }}
-      >
-        <SlidersHorizontal className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Properties</span>
-      </button>
+        <div className="ctx-menu-divider" />
 
-      {canManageCloudSyncExclusions && (
+        {/* Create & Edit */}
         <button
           className="ctx-menu-item"
           onClick={() => {
-            void setFolderCloudSyncExcluded(contextMenu.folderId, !isLocalOnly)
+            createSubfolder(contextMenu.folderId)
             dismiss()
           }}
         >
-          {isLocalOnly ? <Cloud className="ctx-menu-icon" /> : <CloudOff className="ctx-menu-icon" />}
-          <span className="ctx-menu-label">{isLocalOnly ? 'Include in Cloud Sync' : 'Exclude from Cloud Sync'}</span>
+          <FolderPlus className="ctx-menu-icon" />
+          <span className="ctx-menu-label">New Subfolder</span>
         </button>
-      )}
 
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          if (folder) {
-            void copyToClipboard(folder.name, 'Folder name copied', 'Copy failed')
-          }
-          dismiss()
-        }}
-      >
-        <Copy className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Copy Name</span>
-      </button>
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            startFolderInlineRename(contextMenu.folderId)
+          }}
+        >
+          <Pencil className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Rename</span>
+          <kbd className="ctx-menu-shortcut">F2</kbd>
+        </button>
 
-      <div className="ctx-menu-divider" />
+        <div className="ctx-menu-divider" />
 
-      {/* --- Danger --- */}
-      <button
-        className="ctx-menu-item danger"
-        onClick={() => {
-          void deleteFolderCascade(contextMenu.folderId)
-          dismiss()
-        }}
-      >
-        <Trash2 className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Delete Folder</span>
-      </button>
-    </div>
-    ,
+        {/* Organise */}
+        {isNested && (
+          <button
+            className="ctx-menu-item"
+            onClick={() => {
+              void moveFolder(contextMenu.folderId, null)
+              dismiss()
+            }}
+          >
+            <ArrowUpToLine className="ctx-menu-icon" />
+            <span className="ctx-menu-label">Move to Root</span>
+          </button>
+        )}
+
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            if (folder) {
+              openFolderEditor(folder)
+            }
+          }}
+        >
+          <SlidersHorizontal className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Properties</span>
+        </button>
+
+        {canManageCloudSyncExclusions && (
+          <button
+            className="ctx-menu-item"
+            onClick={() => {
+              void setFolderCloudSyncExcluded(contextMenu.folderId, !isLocalOnly)
+              dismiss()
+            }}
+          >
+            {isLocalOnly ? <Cloud className="ctx-menu-icon" /> : <CloudOff className="ctx-menu-icon" />}
+            <span className="ctx-menu-label">{isLocalOnly ? 'Include in Cloud Sync' : 'Exclude from Cloud Sync'}</span>
+          </button>
+        )}
+
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            if (folder) {
+              void copyToClipboard(folder.name, 'Folder name copied', 'Copy failed')
+            }
+            dismiss()
+          }}
+        >
+          <Copy className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Copy Name</span>
+        </button>
+
+        <div className="ctx-menu-divider" />
+
+        {/* Danger */}
+        <button
+          className="ctx-menu-item danger"
+          onClick={() => {
+            void deleteFolderCascade(contextMenu.folderId)
+            dismiss()
+          }}
+        >
+          <Trash2 className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Delete Folder</span>
+        </button>
+      </div>
+    </>,
     document.body,
   )
 }

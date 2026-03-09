@@ -11,7 +11,9 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { getCredentialKindMeta, isPasswordCredential } from '../../../shared/utils/credentialKinds'
 import { formatShortcutLabel, matchShortcut } from '../../../shared/utils/keybinds'
+import type { VaultCredentialKind, VaultItem } from '../../../types/vault'
 
 export function ItemContextMenu() {
   const { itemContextMenu, items, syncProvider, vaultSettings } = useVaultAppState()
@@ -21,6 +23,7 @@ export function ItemContextMenu() {
     setMobileStep,
     setItemContextMenu,
     duplicateItem,
+    changeItemCredentialKind,
     copyToClipboard,
     autofillItem,
     scanItemForBreach,
@@ -54,6 +57,12 @@ export function ItemContextMenu() {
 
   const itemId = itemContextMenu?.itemId ?? ''
   const item = items.find((row) => row.id === itemId)
+  const kindMeta = item ? getCredentialKindMeta(item.credentialKind) : null
+  const passwordEligible = item ? isPasswordCredential(item) : false
+  const credentialKinds: VaultCredentialKind[] = ['password', 'pin', 'secret', 'number']
+  const recategorizeOptions: VaultItem['credentialKind'][] = item
+    ? credentialKinds.filter((kind) => kind !== item.credentialKind)
+    : []
   const isLocalOnly = item?.excludeFromCloudSync === true
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
@@ -69,7 +78,10 @@ export function ItemContextMenu() {
 
   function copyPasswordFromMenu() {
     if (!item?.passwordMasked) return
-    void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed', { clearAfterMs: 20_000 })
+    void copyToClipboard(item.passwordMasked, kindMeta?.copySuccessMessage || 'Secret copied', 'Copy failed', {
+      clearAfterMs: (vaultSettings.clipboard?.passwordClearSeconds ?? 20) * 1000,
+      sensitive: true,
+    })
   }
 
   function autofillFromMenu() {
@@ -91,14 +103,17 @@ export function ItemContextMenu() {
       if (matchShortcut(event, vaultSettings.keybinds?.copyPassword ?? null)) {
         event.preventDefault()
         if (item?.passwordMasked) {
-          void copyToClipboard(item.passwordMasked, 'Password copied', 'Copy failed', { clearAfterMs: 20_000 })
+          void copyToClipboard(item.passwordMasked, kindMeta?.copySuccessMessage || 'Secret copied', 'Copy failed', {
+            clearAfterMs: (vaultSettings.clipboard?.passwordClearSeconds ?? 20) * 1000,
+            sensitive: true,
+          })
         }
         setItemContextMenu(null)
         return
       }
       if (matchShortcut(event, vaultSettings.keybinds?.autofillItem ?? null)) {
         event.preventDefault()
-        if (item) {
+        if (item && passwordEligible) {
           void autofillItem(item)
         }
         setItemContextMenu(null)
@@ -106,7 +121,7 @@ export function ItemContextMenu() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [itemContextMenu, item, copyToClipboard, autofillItem, setItemContextMenu, vaultSettings.keybinds])
+  }, [itemContextMenu, item, kindMeta?.copySuccessMessage, passwordEligible, copyToClipboard, autofillItem, setItemContextMenu, vaultSettings.clipboard?.passwordClearSeconds, vaultSettings.keybinds])
 
   if (!itemContextMenu) return null
 
@@ -162,32 +177,55 @@ export function ItemContextMenu() {
         }}
       >
         <KeyRound className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Copy Password</span>
+        <span className="ctx-menu-label">{kindMeta?.copyLabel || 'Copy Secret'}</span>
         <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.copyPassword ?? null)}</kbd>
       </button>
 
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          autofillFromMenu()
-          dismiss()
-        }}
-      >
-        <ClipboardPaste className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Autofill</span>
-        <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.autofillItem ?? null)}</kbd>
-      </button>
+      {passwordEligible && (
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            autofillFromMenu()
+            dismiss()
+          }}
+        >
+          <ClipboardPaste className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Autofill</span>
+          <kbd className="ctx-menu-shortcut">{formatShortcutLabel(vaultSettings.keybinds?.autofillItem ?? null)}</kbd>
+        </button>
+      )}
 
-      <button
-        className="ctx-menu-item"
-        onClick={() => {
-          void scanItemForBreach(itemId)
-          dismiss()
-        }}
-      >
-        <ShieldCheck className="ctx-menu-icon" />
-        <span className="ctx-menu-label">Scan for Breach</span>
-      </button>
+      {passwordEligible && (
+        <button
+          className="ctx-menu-item"
+          onClick={() => {
+            void scanItemForBreach(itemId)
+            dismiss()
+          }}
+        >
+          <ShieldCheck className="ctx-menu-icon" />
+          <span className="ctx-menu-label">Scan for Breach</span>
+        </button>
+      )}
+
+      {recategorizeOptions.length > 0 && (
+        <>
+          <div className="ctx-menu-divider" />
+          {recategorizeOptions.map((kind) => (
+            <button
+              key={kind}
+              className="ctx-menu-item"
+              onClick={() => {
+                void changeItemCredentialKind(itemId, kind)
+                dismiss()
+              }}
+            >
+              <KeyRound className="ctx-menu-icon" />
+              <span className="ctx-menu-label">{`Convert to ${getCredentialKindMeta(kind).label}`}</span>
+            </button>
+          ))}
+        </>
+      )}
 
       {canManageCloudSyncExclusions && (
         <button

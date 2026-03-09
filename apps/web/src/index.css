@@ -758,14 +758,44 @@ kbd {
   min-height: 0;
 }
 
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.1rem;
+  margin-bottom: 0.3rem;
+}
+
 .sidebar-section h3 {
-  margin: 0 0 0.3rem 0.1rem;
+  margin: 0;
   font-family: 'Bricolage Grotesque', sans-serif;
   font-size: 0.66rem;
   font-weight: 700;
   color: var(--ink-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
+}
+
+.sidebar-section-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.sidebar-section-action:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  transform: none;
 }
 
 .sidebar-tags {
@@ -775,206 +805,363 @@ kbd {
 }
 
 .folder-tree {
-  margin-top: 1rem;
+  margin-top: 0.35rem;
   flex: 1;
   min-height: 0;
   max-height: none;
   overflow-y: auto;
-  padding-right: 0.15rem;
+  padding-right: 0.1rem;
 }
 
-.folder-tree-root {
-  border-radius: 10px;
+/* ---- Folder Tree (ftree) ---- */
+
+.ftree-root {
+  border-radius: 8px;
 }
 
-.folder-tree-root-drop-lane {
+.ftree-root-drop {
   display: none;
   height: 2px;
-  margin: 0 0.4rem 0.3rem;
+  margin: 0 0.4rem 0.25rem;
   border-radius: 1px;
   background: var(--line-strong);
 }
 
-.folder-tree-root-drop-lane.visible {
+.ftree-root-drop--visible {
   display: block;
 }
 
-.folder-tree-root-drop-lane.drop-target {
+.ftree-root-drop--active {
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
 }
 
-.folder-tree-list {
+/* Empty state */
+.ftree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2rem 0.5rem;
+}
+
+.ftree-empty-text {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  opacity: 0.7;
+}
+
+/* List */
+.ftree-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 0.12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
-.folder-tree-list li {
-  padding: 1px;
-}
-
-.folder-tree-node-wrap {
+.ftree-item {
   position: relative;
-  border-radius: 8px;
 }
 
-.folder-tree-node-wrap.drop-target {
+/* Children wrapper - indent guide */
+.ftree-children {
+  position: relative;
+}
+
+.ftree-children::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  left: calc(0.35rem + 0.51rem);
+  width: 1px;
+  background: var(--line);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Nested lists within children */
+.ftree-children .ftree-children::before {
+  left: calc(0.35rem + 1.05rem + 0.51rem);
+}
+
+.ftree-children .ftree-children .ftree-children::before {
+  left: calc(0.35rem + 2.1rem + 0.51rem);
+}
+
+.ftree-children .ftree-children .ftree-children .ftree-children::before {
+  left: calc(0.35rem + 3.15rem + 0.51rem);
+}
+
+/* Node wrap */
+.ftree-node-wrap {
+  position: relative;
+  border-radius: 7px;
+}
+
+.ftree-node-wrap--drop-inside {
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
 }
 
-.folder-tree-node-wrap.drop-target-inside {
-  outline: none;
-  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
+.ftree-node-wrap--dragging {
+  opacity: 0.45;
 }
 
-.folder-tree-node-wrap.dragging {
-  opacity: 0.6;
+.ftree-node-wrap--draft {
+  animation: ftree-draft-in 0.15s ease-out;
 }
 
-.folder-tree-node {
+/* Node row */
+.ftree-node {
   width: 100%;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.45rem;
-  padding: 0.32rem 0.45rem;
-  font-size: 0.75rem;
+  gap: 0.3rem;
+  padding: 0.28rem 0.4rem;
+  font-size: 0.76rem;
   color: var(--ink-secondary);
   cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.08s ease;
 }
 
-.folder-tree-node:hover {
+.ftree-node:hover {
   background: var(--bg-3);
   color: var(--ink);
 }
 
-.folder-tree-node.active {
+.ftree-node--active {
   background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--ink);
 }
 
-.folder-tree-label {
-  display: inline-flex;
+.ftree-node--active:hover {
+  background: color-mix(in srgb, var(--accent-soft) 85%, var(--bg-3));
+}
+
+/* Left section: chevron + icon + name */
+.ftree-left {
+  display: flex;
   align-items: center;
-  gap: 0.2rem;
-  text-align: left;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Chevron toggle */
+.ftree-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color 0.1s ease;
+}
+
+.ftree-chevron svg {
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ftree-chevron--open svg {
+  transform: rotate(90deg);
+}
+
+.ftree-chevron:hover {
+  color: var(--ink);
+  background: var(--bg-2);
+}
+
+.ftree-chevron--leaf {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Folder icon */
+.ftree-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.ftree-icon svg {
+  color: var(--ink-muted);
+}
+
+.ftree-emoji {
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+/* Folder name */
+.ftree-name {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  padding-left: 0.15rem;
 }
 
-.folder-local-badge {
-  margin-left: 0.2rem;
-  padding: 0.02rem 0.34rem;
+.ftree-local-badge {
+  padding: 0.02rem 0.3rem;
   border-radius: 999px;
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   flex-shrink: 0;
 }
 
-.folder-tree-icon {
-  color: var(--ink-muted);
+/* Right section: hover actions + count */
+.ftree-right {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
   flex-shrink: 0;
 }
 
-.folder-tree-collapse-btn {
-  width: 1rem;
+/* Hover-reveal actions (desktop only) */
+.ftree-hover-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.ftree-node:hover .ftree-hover-actions {
+  opacity: 1;
+}
+
+.ftree-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
   color: var(--ink-muted);
-  font-size: 0.62rem;
-  line-height: 1;
-  padding: 0.12rem 0.1rem;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.1s ease;
 }
 
-.folder-tree-collapse-btn:hover {
-  border-color: var(--line);
-  color: var(--ink);
-  background: var(--bg-1);
+.ftree-action-btn:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  transform: none;
 }
 
-.folder-tree-collapse-btn.no-children {
-  opacity: 0.35;
-  cursor: default;
+/* When hover actions visible, hide count */
+.ftree-node:hover .ftree-count {
+  display: none;
 }
 
-.folder-tree-inline-input {
+/* Item count */
+.ftree-count {
+  font-size: 0.64rem;
+  font-weight: 500;
+  color: var(--ink-muted);
+  min-width: 1rem;
+  text-align: right;
+}
+
+/* Inline editor */
+.ftree-inline-input {
   width: 100%;
-  min-width: 120px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  min-width: 80px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 5px;
   background: var(--bg-0);
   color: var(--ink);
-  font-size: 0.75rem;
-  padding: 0.2rem 0.35rem;
+  font-size: 0.76rem;
+  padding: 0.15rem 0.3rem;
+  margin-left: 0.15rem;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.folder-tree-inline-input:focus {
-  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.folder-tree-count {
-  font-size: 0.66rem;
+.ftree-inline-input::placeholder {
   color: var(--ink-muted);
+  opacity: 0.6;
 }
 
-.folder-tree-menu-btn {
+/* Touch menu button */
+.ftree-touch-menu {
   position: absolute;
   top: 50%;
-  right: 0.2rem;
+  right: 0.25rem;
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--ink-muted);
-  font-size: 0.7rem;
-  line-height: 1;
-  padding: 0.15rem 0.3rem;
+  cursor: pointer;
+  padding: 0;
 }
 
-.folder-tree-menu-btn:hover {
+.ftree-touch-menu:hover {
   color: var(--ink);
   border-color: var(--line);
   background: var(--bg-1);
 }
 
-.folder-tree-touch-preview {
+/* Drag preview */
+.ftree-drag-preview {
   position: fixed;
   z-index: 1450;
   pointer-events: none;
   display: inline-flex;
   align-items: center;
-  gap: 0.28rem;
-  padding: 0.26rem 0.48rem;
-  border-radius: 8px;
-  border: 1px solid var(--line);
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
   background: var(--surface-solid);
-  color: var(--ink-secondary);
-  font-size: 0.72rem;
-  box-shadow: var(--shadow-md);
+  color: var(--ink);
+  font-size: 0.73rem;
+  font-weight: 500;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.15),
+    0 8px 24px rgba(0, 0, 0, 0.12);
 }
 
-.folder-tree-root.drop-target {
-  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
-  outline: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+.ftree-drag-preview svg {
+  color: var(--ink-muted);
+  flex-shrink: 0;
 }
 
-.folder-drop-placeholder {
+/* Drop indicators */
+.ftree-drop-placeholder {
   height: 2px;
   margin: 1px 0.4rem;
   border-radius: 1px;
@@ -982,21 +1169,21 @@ kbd {
   box-shadow: 0 0 6px var(--accent-glow);
 }
 
-.folder-drop-inside-ring {
+.ftree-drop-ring {
   position: absolute;
   inset: 2px;
-  border: 1px dashed color-mix(in srgb, var(--accent) 65%, transparent);
-  border-radius: 8px;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 7px;
   pointer-events: none;
 }
 
-.folder-drop-insert-lane {
+.ftree-drop-lane {
   height: 6px;
   margin: 0 0.4rem;
   border-radius: 1px;
 }
 
-.folder-drop-insert-lane.drop-target {
+.ftree-drop-lane--active {
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent-glow);
   height: 2px;
@@ -1004,6 +1191,7 @@ kbd {
   margin-bottom: 2px;
 }
 
+/* Drag state on body */
 body.folder-dragging {
   user-select: none;
 }
@@ -1011,6 +1199,18 @@ body.folder-dragging {
 body.folder-dragging,
 body.folder-dragging * {
   cursor: grabbing !important;
+}
+
+/* Draft animation */
+@keyframes ftree-draft-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .sidebar-tag {
@@ -1262,69 +1462,91 @@ body.folder-dragging * {
   margin: 0;
 }
 
-.home-copilot-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
+/* ---- Copilot compact grid ---- */
+.home-copilot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.5rem;
   padding: 0.55rem;
 }
 
-.home-copilot-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.45rem;
-  align-items: stretch;
-}
-
-.home-copilot-main {
+.home-copilot-card-item {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.65rem;
-  width: 100%;
-  padding: 0.7rem 0.8rem;
-  border-radius: 10px;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
   border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-muted);
   background: color-mix(in srgb, var(--bg-1) 84%, var(--bg-2));
   color: var(--ink);
   text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.home-copilot-main:hover {
+.home-copilot-card-item:hover {
   border-color: var(--line-strong);
-  background: color-mix(in srgb, var(--bg-1) 72%, var(--bg-3));
+  background: color-mix(in srgb, var(--bg-1) 68%, var(--bg-3));
 }
 
-.home-copilot-copy {
-  min-width: 0;
-}
+.home-copilot-card-item--critical { border-left-color: var(--exposed); }
+.home-copilot-card-item--high     { border-left-color: var(--weak); }
+.home-copilot-card-item--medium   { border-left-color: var(--accent); }
+.home-copilot-card-item--low      { border-left-color: var(--ink-muted); }
 
-.home-copilot-row {
+.home-copilot-card-top {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   flex-wrap: wrap;
+  padding-right: 1.2rem;
 }
 
-.home-copilot-copy strong {
-  font-size: 0.82rem;
+.home-copilot-card-top strong {
+  font-size: 0.8rem;
+  line-height: 1.3;
 }
 
-.home-copilot-copy p {
-  margin: 0.24rem 0 0;
-  font-size: 0.74rem;
+.home-copilot-card-detail {
+  margin: 0;
+  font-size: 0.72rem;
   color: var(--ink-muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.home-copilot-card-action {
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  margin-top: auto;
+}
+
+.home-copilot-card-action svg {
+  opacity: 0.6;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.home-copilot-card-item:hover .home-copilot-card-action svg {
+  opacity: 1;
+  transform: translateX(2px);
 }
 
 .home-copilot-priority {
   display: inline-flex;
   align-items: center;
-  padding: 0.12rem 0.42rem;
+  padding: 0.1rem 0.38rem;
   border-radius: 999px;
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .home-copilot-priority--critical {
@@ -1347,26 +1569,32 @@ body.folder-dragging * {
   color: var(--ink-muted);
 }
 
-.home-copilot-item--critical .home-copilot-main {
-  border-color: color-mix(in srgb, var(--exposed) 30%, var(--line));
-}
-
-.home-copilot-item--high .home-copilot-main {
-  border-color: color-mix(in srgb, var(--weak) 30%, var(--line));
-}
-
 .home-copilot-dismiss {
-  width: 32px;
-  min-width: 32px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-2);
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
   color: var(--ink-muted);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.12s;
+  padding: 0;
+}
+
+.home-copilot-card-item:hover .home-copilot-dismiss {
+  opacity: 1;
 }
 
 .home-copilot-dismiss:hover {
   color: var(--ink);
-  border-color: var(--line-strong);
+  background: var(--bg-3);
 }
 
 /* ---- Item lists — reuse .item-list styles, override only layout diffs ---- */
@@ -2653,6 +2881,12 @@ body.folder-dragging * {
     opacity: 1;
     transform: scale(1) translateY(0);
   }
+}
+
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1399;
 }
 
 .ctx-menu {
@@ -4606,13 +4840,12 @@ body.folder-dragging * {
 }
 
 @media (max-width: 980px) {
-  .home-copilot-item,
-  .copilot-suggestion {
+  .home-copilot-grid {
     grid-template-columns: 1fr;
   }
 
-  .home-copilot-dismiss {
-    width: 100%;
+  .copilot-suggestion {
+    grid-template-columns: 1fr;
   }
 
   .settings-ai-grid {
@@ -5630,6 +5863,30 @@ body.folder-dragging * {
   /* ---- Folder tree ---- */
   .folder-tree {
     max-height: none;
+  }
+
+  .ftree-hover-actions {
+    display: none;
+  }
+
+  .ftree-node:hover .ftree-count {
+    display: block;
+  }
+
+  .ftree-chevron {
+    width: 24px;
+    height: 24px;
+  }
+
+  .ftree-action-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .sidebar-section-action {
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
   }
 
   /* ---- Item list — touch targets ---- */

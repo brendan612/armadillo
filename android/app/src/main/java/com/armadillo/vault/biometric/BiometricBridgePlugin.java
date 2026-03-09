@@ -131,6 +131,23 @@ public class BiometricBridgePlugin extends Plugin {
         }
     }
 
+    @PluginMethod
+    public void clearVaultKey(PluginCall call) {
+        String keyAlias = call.getString("keyAlias", "armadillo_biometric_vault_key");
+        try {
+            KeyStore keyStore = KeyStore.getInstance(ANDROID_KEYSTORE);
+            keyStore.load(null);
+            if (keyStore.containsAlias(keyAlias)) {
+                keyStore.deleteEntry(keyAlias);
+            }
+            JSObject response = new JSObject();
+            response.put("success", true);
+            call.resolve(response);
+        } catch (Exception e) {
+            call.reject("Failed to clear biometric key: " + e.getMessage());
+        }
+    }
+
     private void authenticateWithCipher(
         PluginCall call,
         BiometricPrompt.PromptInfo promptInfo,

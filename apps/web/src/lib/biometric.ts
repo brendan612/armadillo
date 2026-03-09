@@ -260,6 +260,18 @@ async function getDeviceKey(id: string): Promise<CryptoKey | null> {
   return value?.key ?? null
 }
 
+async function deleteDeviceKey(id: string) {
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    store.delete(id)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+  db.close()
+}
+
 async function wrapRawVaultKeyWithDeviceKey(deviceKey: CryptoKey, rawVaultKey: Uint8Array): Promise<WrappedKey> {
   const nonce = randomBytes(12)
   const encrypted = await crypto.subtle.encrypt(
@@ -442,4 +454,24 @@ export async function enrollQuickUnlock(session: VaultSession) {
 
 export async function unlockWithQuickUnlock(file: ArmadilloVaultFile): Promise<VaultSession> {
   return unlockWithBiometric(file)
+}
+
+export async function clearQuickUnlockEnrollment(): Promise<void> {
+  const meta = loadMeta()
+  if (!meta) {
+    return
+  }
+
+  if (isNativeMeta(meta)) {
+    const result = await BiometricBridge.clearVaultKey({ keyAlias: meta.keyAlias }).catch((error) => {
+      throw error instanceof Error ? error : new Error('Failed to clear biometric key')
+    })
+    if (!result?.success) {
+      throw new Error('Failed to clear biometric key')
+    }
+  } else {
+    await deleteDeviceKey(meta.keyId)
+  }
+
+  localStorage.removeItem(META_KEY)
 }

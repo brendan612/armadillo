@@ -49,10 +49,12 @@ export function HomePane() {
             {showEntryTypePicker && (
               <div className="home-entry-type-grid">
                 <button className="ghost" onClick={() => createEntry('password')}>Password</button>
+                <button className="ghost" onClick={() => createEntry('pin')}>PIN</button>
+                <button className="ghost" onClick={() => createEntry('secret')}>Secret</button>
+                <button className="ghost" onClick={() => createEntry('number')}>Secure Number</button>
                 <button className="ghost" onClick={() => createEntry('file')}>File</button>
                 <button className="ghost" onClick={() => createEntry('key')}>Key</button>
                 <button className="ghost" onClick={() => createEntry('token')}>Token</button>
-                <button className="ghost" onClick={() => createEntry('secret')}>Secret</button>
                 <button className="ghost" onClick={() => createEntry('image')}>Image</button>
                 <button className="ghost" onClick={() => createEntry('note')}>Note</button>
               </div>
@@ -127,30 +129,32 @@ export function HomePane() {
                     <p>No urgent fixes right now. Copilot will surface the next high-value cleanup pass here.</p>
                   </div>
                 ) : (
-                  <div className="home-copilot-list">
+                  <div className="home-copilot-grid">
                     {vaultSuggestions.slice(0, 5).map((suggestion) => (
-                      <div key={suggestion.id} className={`home-copilot-item home-copilot-item--${suggestion.priority}`}>
-                        <button className="home-copilot-main" onClick={() => openCopilotSuggestion(suggestion)}>
-                          <div className="home-copilot-copy">
-                            <div className="home-copilot-row">
-                              <strong>{suggestion.title}</strong>
-                              <span className={`home-copilot-priority home-copilot-priority--${suggestion.priority}`}>
-                                {formatPriority(suggestion.priority)}
-                              </span>
-                            </div>
-                            <p>{suggestion.detail}</p>
-                          </div>
-                          <ArrowRight size={14} aria-hidden="true" />
-                        </button>
+                      <button
+                        key={suggestion.id}
+                        className={`home-copilot-card-item home-copilot-card-item--${suggestion.priority}`}
+                        onClick={() => openCopilotSuggestion(suggestion)}
+                      >
                         <button
                           className="home-copilot-dismiss"
                           title="Dismiss suggestion"
                           aria-label={`Dismiss ${suggestion.title}`}
-                          onClick={() => dismissCopilotSuggestion(suggestion.id)}
+                          onClick={(e) => { e.stopPropagation(); dismissCopilotSuggestion(suggestion.id) }}
                         >
-                          <X size={12} aria-hidden="true" />
+                          <X size={10} aria-hidden="true" />
                         </button>
-                      </div>
+                        <div className="home-copilot-card-top">
+                          <strong>{suggestion.title}</strong>
+                          <span className={`home-copilot-priority home-copilot-priority--${suggestion.priority}`}>
+                            {formatPriority(suggestion.priority)}
+                          </span>
+                        </div>
+                        <p className="home-copilot-card-detail">{suggestion.detail}</p>
+                        <span className="home-copilot-card-action">
+                          <ArrowRight size={13} aria-hidden="true" />
+                        </span>
+                      </button>
                     ))}
                   </div>
                 )}

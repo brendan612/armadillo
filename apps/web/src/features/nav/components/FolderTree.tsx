@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Folder } from 'lucide-react'
+import { ChevronRight, Folder, MoreHorizontal, FolderPlus } from 'lucide-react'
 import type { VaultFolder } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppRefs, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
@@ -33,6 +33,7 @@ export function FolderTree({ parentId }: FolderTreeProps) {
     updateFolderInlineEditorValue,
     cancelFolderInlineEditor,
     commitFolderInlineEditor,
+    createSubfolder,
     moveFolder,
   } = useVaultAppActions()
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -267,8 +268,8 @@ export function FolderTree({ parentId }: FolderTreeProps) {
     if (rows.length === 0 && !showingInlineCreate) return null
 
     return (
-      <ul className="folder-tree-list">
-        {rows.map((folder: VaultFolder) => {
+      <ul className={`ftree-list ${depth > 0 ? 'ftree-list--nested' : ''}`}>
+        {rows.map((folder: VaultFolder, index: number) => {
           const nodeKey = `folder:${folder.id}` as const
           const childCount = getChildrenFolders(folder.id).length
           const isCollapsed = collapsedIds.has(folder.id)
@@ -279,22 +280,28 @@ export function FolderTree({ parentId }: FolderTreeProps) {
           const isDragOverAfter = dragOverTarget === `after:${folder.id}`
           const isDragging = dragSourceId === folder.id
           const showTouchMenu = touching && !activeDrag
+          const isActive = selectedNode === nodeKey
+          const isLast = index === rows.length - 1
 
           return (
-            <li key={folder.id}>
+            <li key={folder.id} className={`ftree-item ${isLast ? 'ftree-item--last' : ''}`}>
               {dragSourceId && dragSourceId !== folder.id && (
                 <div
-                  className={`folder-drop-insert-lane ${dragOverTarget === `before:${folder.id}` ? 'drop-target' : ''}`}
+                  className={`ftree-drop-lane ${dragOverTarget === `before:${folder.id}` ? 'ftree-drop-lane--active' : ''}`}
                   data-folder-drop-before-id={folder.id}
                 />
               )}
               <div
-                className={`folder-tree-node-wrap ${isDragOverInside ? 'drop-target drop-target-inside' : ''} ${isDragging ? 'dragging' : ''}`}
+                className={[
+                  'ftree-node-wrap',
+                  isDragOverInside ? 'ftree-node-wrap--drop-inside' : '',
+                  isDragging ? 'ftree-node-wrap--dragging' : '',
+                ].filter(Boolean).join(' ')}
                 data-folder-drop-id={folder.id}
               >
                 <div
-                  className={`folder-tree-node ${selectedNode === nodeKey ? 'active' : ''}`}
-                  style={{ paddingLeft: `${0.55 + depth * 0.7}rem`, paddingRight: showTouchMenu ? '2rem' : undefined }}
+                  className={`ftree-node ${isActive ? 'ftree-node--active' : ''}`}
+                  style={{ paddingLeft: `${0.35 + depth * 1.05}rem` }}
                   role="button"
                   tabIndex={0}
                   onClick={(event) => {
@@ -362,25 +369,30 @@ export function FolderTree({ parentId }: FolderTreeProps) {
                     suppressClickRef.current = false
                   }}
                 >
-                  <span className="folder-tree-label">
+                  <span className="ftree-left">
                     <button
-                      className={`folder-tree-collapse-btn ${childCount === 0 ? 'no-children' : ''}`}
+                      className={`ftree-chevron ${childCount === 0 ? 'ftree-chevron--leaf' : ''} ${!isCollapsed && childCount > 0 ? 'ftree-chevron--open' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation()
                         if (childCount > 0) {
                           toggleCollapsed(folder.id)
                         }
                       }}
-                      title={childCount > 0 ? (isCollapsed ? 'Expand folder' : 'Collapse folder') : 'No subfolders'}
+                      tabIndex={-1}
+                      title={childCount > 0 ? (isCollapsed ? 'Expand' : 'Collapse') : undefined}
                     >
-                      {childCount > 0 ? (isCollapsed ? '>' : 'v') : ' '}
+                      <ChevronRight size={12} strokeWidth={2} />
                     </button>
-                    {folder.icon === 'folder' ? <Folder size={13} strokeWidth={1.9} className="folder-tree-icon" style={{ color: folder.color }} /> : folder.icon}
-                    {' '}
+                    <span className="ftree-icon">
+                      {folder.icon === 'folder'
+                        ? <Folder size={14} strokeWidth={1.8} style={{ color: folder.color }} />
+                        : <span className="ftree-emoji">{folder.icon}</span>
+                      }
+                    </span>
                     {isEditing ? (
                       <input
                         ref={inputRef}
-                        className="folder-tree-inline-input"
+                        className="ftree-inline-input"
                         value={folderInlineEditor.value}
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => updateFolderInlineEditorValue(event.target.value)}
@@ -398,48 +410,85 @@ export function FolderTree({ parentId }: FolderTreeProps) {
                         }}
                       />
                     ) : (
-                      <>
+                      <span className="ftree-name">
                         {folder.name}
-                        {canManageCloudSyncExclusions && folder.excludeFromCloudSync && <span className="folder-local-badge">Local</span>}
-                      </>
+                        {canManageCloudSyncExclusions && folder.excludeFromCloudSync && (
+                          <span className="ftree-local-badge">Local</span>
+                        )}
+                      </span>
                     )}
                   </span>
-                  <span className="folder-tree-count">{directCount}</span>
+                  <span className="ftree-right">
+                    {!touching && !activeDrag && (
+                      <span className="ftree-hover-actions">
+                        <button
+                          className="ftree-action-btn"
+                          title="New subfolder"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            createSubfolder(folder.id)
+                          }}
+                        >
+                          <FolderPlus size={13} strokeWidth={1.8} />
+                        </button>
+                        <button
+                          className="ftree-action-btn"
+                          title="More actions"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            openMenuAtElement(folder.id, event.currentTarget)
+                          }}
+                        >
+                          <MoreHorizontal size={13} strokeWidth={2} />
+                        </button>
+                      </span>
+                    )}
+                    <span className="ftree-count">{directCount}</span>
+                  </span>
                 </div>
                 {showTouchMenu && (
                   <button
-                    className="folder-tree-menu-btn"
+                    className="ftree-touch-menu"
                     onClick={(event) => {
                       event.stopPropagation()
                       openMenuAtElement(folder.id, event.currentTarget)
                     }}
                   >
-                    ...
+                    <MoreHorizontal size={14} strokeWidth={2} />
                   </button>
                 )}
                 {isDragOverAfter && !isDragging && (
-                  <div className="folder-drop-placeholder" />
+                  <div className="ftree-drop-placeholder" />
                 )}
-                {isDragOverInside && !isDragging && <div className="folder-drop-inside-ring" />}
+                {isDragOverInside && !isDragging && <div className="ftree-drop-ring" />}
               </div>
-              {!isCollapsed && renderNodes(folder.id, depth + 1)}
+              {!isCollapsed && childCount > 0 && (
+                <div className="ftree-children">
+                  {renderNodes(folder.id, depth + 1)}
+                </div>
+              )}
+              {!isCollapsed && showingInlineCreate && folderInlineEditor.parentId === folder.id && null}
             </li>
           )
         })}
         {showingInlineCreate && (
-          <li key={`create:${nextParentId ?? 'root'}`}>
-            <div className="folder-tree-node-wrap draft-node">
+          <li key={`create:${nextParentId ?? 'root'}`} className="ftree-item">
+            <div className="ftree-node-wrap ftree-node-wrap--draft">
               <div
-                className="folder-tree-node"
-                style={{ paddingLeft: `${0.55 + depth * 0.7}rem` }}
+                className="ftree-node"
+                style={{ paddingLeft: `${0.35 + depth * 1.05}rem` }}
               >
-                <span className="folder-tree-label">
-                  <span className="folder-tree-collapse-btn no-children" aria-hidden="true"> </span>
-                  <Folder size={13} strokeWidth={1.9} className="folder-tree-icon" />
-                  {' '}
+                <span className="ftree-left">
+                  <span className="ftree-chevron ftree-chevron--leaf">
+                    <ChevronRight size={12} strokeWidth={2} />
+                  </span>
+                  <span className="ftree-icon">
+                    <Folder size={14} strokeWidth={1.8} />
+                  </span>
                   <input
                     ref={inputRef}
-                    className="folder-tree-inline-input"
+                    className="ftree-inline-input"
+                    placeholder="Folder name..."
                     value={folderInlineEditor.value}
                     onChange={(event) => updateFolderInlineEditorValue(event.target.value)}
                     onBlur={() => void handleInlineEditorSubmit()}
@@ -468,18 +517,24 @@ export function FolderTree({ parentId }: FolderTreeProps) {
   const rootDropActive = dragOverTarget === 'root'
   const dragPreview = activeDrag
   const dragPreviewFolder = dragPreview ? folders.find((folder) => folder.id === dragPreview.folderId) : null
+  const rootFolders = getChildrenFolders(parentId)
+  const hasNoFolders = rootFolders.length === 0 && !folderInlineEditor
 
   return (
-    <div className="folder-tree-root">
+    <div className="ftree-root">
       <div
-        className={`folder-tree-root-drop-lane ${draggingActive ? 'visible' : ''} ${rootDropActive ? 'drop-target' : ''}`}
+        className={`ftree-root-drop ${draggingActive ? 'ftree-root-drop--visible' : ''} ${rootDropActive ? 'ftree-root-drop--active' : ''}`}
         data-folder-drop-root="true"
-      >
-      </div>
+      />
+      {hasNoFolders && (
+        <div className="ftree-empty">
+          <span className="ftree-empty-text">No folders yet</span>
+        </div>
+      )}
       {renderNodes(parentId, 0)}
       {dragPreview && createPortal(
-        <div className="folder-tree-touch-preview" style={{ left: dragPreview.x + 2, top: dragPreview.y + 2 }}>
-          <Folder size={13} strokeWidth={1.9} className="folder-tree-icon" />
+        <div className="ftree-drag-preview" style={{ left: dragPreview.x + 2, top: dragPreview.y + 2 }}>
+          <Folder size={13} strokeWidth={1.9} />
           <span>{dragPreviewFolder?.name ?? 'Moving folder'}</span>
         </div>,
         document.body,

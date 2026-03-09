@@ -8,6 +8,7 @@ import {
   translations,
 } from '@zxcvbn-ts/language-en'
 import type { RiskState, VaultItem } from '../../types/vault'
+import { isPasswordCredential } from './credentialKinds.ts'
 
 export type PasswordStrengthScore = 0 | 1 | 2 | 3 | 4
 export type PasswordStrengthLevel = 'very-weak' | 'weak' | 'fair' | 'good' | 'strong'
@@ -189,6 +190,7 @@ export function buildPasswordStrengthContextFromItem(item: Pick<VaultItem, 'titl
 export function computePasswordReuseCounts(items: VaultItem[]) {
   const counts = new Map<string, number>()
   for (const item of items) {
+    if (!isPasswordCredential(item)) continue
     const pwd = item.passwordMasked || ''
     if (!pwd) continue
     counts.set(pwd, (counts.get(pwd) ?? 0) + 1)
@@ -200,6 +202,17 @@ export function recomputeItemRisks(items: VaultItem[]) {
   const reuseCounts = computePasswordReuseCounts(items)
   let changed = false
   const nextItems = items.map((item) => {
+    if (!isPasswordCredential(item)) {
+      if (item.risk !== 'safe' || item.passwordExpiryDate) {
+        changed = true
+        return {
+          ...item,
+          risk: 'safe' as const,
+          passwordExpiryDate: null,
+        }
+      }
+      return item
+    }
     if (item.risk === 'exposed' || item.risk === 'stale') {
       return item
     }

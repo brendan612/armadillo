@@ -2,6 +2,7 @@ import { memo, useCallback, useMemo, useRef, useState, type MutableRefObject } f
 import { ChevronLeft, Copy, Keyboard, NotebookPen, UserRound } from 'lucide-react'
 import type { RiskState, VaultItem } from '../../../types/vault'
 import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { getCredentialKindMeta, isPasswordCredential } from '../../../shared/utils/credentialKinds'
 
 const ITEM_CONTEXT_LONG_PRESS_MS = 520
 const riskLabelByState: Record<VaultItem['risk'], string> = {
@@ -37,7 +38,7 @@ type ItemListRowProps = {
   onTouchEndItem: () => void
   onOpenNotes: (itemId: string) => void
   onCopyUsername: (username: string) => void
-  onCopyPassword: (password: string) => void
+  onCopyPassword: (item: VaultItem) => void
   onAutofillItem: (item: VaultItem) => void
   onSelectRiskFilter: (item: VaultItem) => void
 }
@@ -57,7 +58,11 @@ const ItemListRow = memo(function ItemListRow({
   onAutofillItem,
   onSelectRiskFilter,
 }: ItemListRowProps) {
-  const maskedPassword = item.passwordMasked ? '*'.repeat(Math.min(24, Math.max(8, item.passwordMasked.length))) : 'No password'
+  const kindMeta = getCredentialKindMeta(item.credentialKind)
+  const passwordEligible = isPasswordCredential(item)
+  const maskedPassword = item.passwordMasked
+    ? '*'.repeat(Math.min(24, Math.max(8, item.passwordMasked.length)))
+    : kindMeta.emptyValueLabel
 
   return (
     <li
@@ -87,6 +92,7 @@ const ItemListRow = memo(function ItemListRow({
       <div className="item-info">
         <div className="item-inline-top">
           <strong className="item-title">{item.title || 'Untitled'}</strong>
+          {!passwordEligible && <span className="folder-tag">{kindMeta.shortLabel}</span>}
           {isLocalOnly && <span className="item-local-badge">Local only</span>}
         </div>
         {item.urls[0] && <p className="item-url">{item.urls[0]}</p>}
@@ -98,17 +104,21 @@ const ItemListRow = memo(function ItemListRow({
       </div>
       <div className="row-meta">
         <div className="item-inline-meta item-inline-meta-row">
-          <button
-            type="button"
-            className={`risk risk-${item.risk} risk-filter-pill item-inline-risk`}
-            onClick={(event) => {
-              event.stopPropagation()
-              onSelectRiskFilter(item)
-            }}
-            title={`Filter by ${riskLabelByState[item.risk]} risk`}
-          >
-            {riskLabelByState[item.risk]}
-          </button>
+          {passwordEligible ? (
+            <button
+              type="button"
+              className={`risk risk-${item.risk} risk-filter-pill item-inline-risk`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelectRiskFilter(item)
+              }}
+              title={`Filter by ${riskLabelByState[item.risk]} risk`}
+            >
+              {riskLabelByState[item.risk]}
+            </button>
+          ) : (
+            <span className="folder-tag item-inline-risk">{kindMeta.shortLabel}</span>
+          )}
           <span className="folder-tag item-inline-folder">{folderLabel}</span>
         </div>
         <div className="item-inline-actions">
@@ -136,24 +146,26 @@ const ItemListRow = memo(function ItemListRow({
           </button>
           <button
             className="item-action-btn"
-            title="Copy password"
+            title={kindMeta.copyLabel}
             onClick={(event) => {
               event.stopPropagation()
-              onCopyPassword(item.passwordMasked || '')
+              onCopyPassword(item)
             }}
           >
             <Copy size={14} aria-hidden="true" />
           </button>
-          <button
-            className="item-action-btn"
-            title="Autofill in previous app"
-            onClick={(event) => {
-              event.stopPropagation()
-              onAutofillItem(item)
-            }}
-          >
-            <Keyboard size={14} aria-hidden="true" />
-          </button>
+          {passwordEligible && (
+            <button
+              className="item-action-btn"
+              title="Autofill in previous app"
+              onClick={(event) => {
+                event.stopPropagation()
+                onAutofillItem(item)
+              }}
+            >
+              <Keyboard size={14} aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
     </li>
@@ -166,7 +178,7 @@ const ItemListRow = memo(function ItemListRow({
 )
 
 export function ItemListPane() {
-  const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items, syncProvider } = useVaultAppState()
+  const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items, syncProvider, vaultSettings } = useVaultAppState()
   const { filtered, folderPathById, effectivePlatform, hasCapability } = useVaultAppDerived()
   const [riskFilter, setRiskFilter] = useState<RiskState | 'all'>('all')
   const [reusedPasswordFilter, setReusedPasswordFilter] = useState<string | null>(null)
@@ -220,14 +232,19 @@ export function ItemListPane() {
     void copyToClipboard(username, 'Username copied to clipboard', 'Clipboard copy failed')
   }, [copyToClipboard])
 
-  const handleCopyPassword = useCallback((password: string) => {
-    void copyToClipboard(password, 'Password copied to clipboard', 'Clipboard copy failed', { clearAfterMs: 20_000 })
-  }, [copyToClipboard])
+  const handleCopyPassword = useCallback((item: VaultItem) => {
+    const kindMeta = getCredentialKindMeta(item.credentialKind)
+    void copyToClipboard(item.passwordMasked || '', kindMeta.copySuccessMessage, 'Clipboard copy failed', {
+      clearAfterMs: (vaultSettings.clipboard?.passwordClearSeconds ?? 20) * 1000,
+      sensitive: true,
+    })
+  }, [copyToClipboard, vaultSettings.clipboard?.passwordClearSeconds])
 
   const handleAutofillItem = useCallback((item: VaultItem) => {
     void autofillItem(item)
   }, [autofillItem])
   const handleSelectRiskFilterFromItem = useCallback((item: VaultItem) => {
+    if (!isPasswordCredential(item)) return
     setSelectedNode('all')
     setQuery('')
     if (item.risk === 'reused' && item.passwordMasked) {
@@ -244,11 +261,12 @@ export function ItemListPane() {
 
   const effectiveRiskFilter: RiskState | 'all' = selectedNode === 'all' ? riskFilter : 'all'
   const effectiveReusedPasswordFilter = selectedNode === 'all' ? reusedPasswordFilter : null
+  const passwordEligibleItems = useMemo(() => filtered.filter(isPasswordCredential), [filtered])
 
   const filteredByRisk = useMemo(() => {
     const byRisk = effectiveRiskFilter === 'all'
       ? filtered
-      : filtered.filter((item) => item.risk === effectiveRiskFilter)
+      : filtered.filter((item) => isPasswordCredential(item) && item.risk === effectiveRiskFilter)
     if (!effectiveReusedPasswordFilter) return byRisk
     return byRisk.filter((item) => item.passwordMasked === effectiveReusedPasswordFilter)
   }, [filtered, effectiveRiskFilter, effectiveReusedPasswordFilter])
@@ -368,7 +386,7 @@ export function ItemListPane() {
                   setRiskFilter(option.key)
                 }}
               >
-                {option.label} ({items.filter((item) => item.risk === option.key).length})
+                {option.label} ({passwordEligibleItems.filter((item) => item.risk === option.key).length})
               </button>
             ))}
           </div>
@@ -410,7 +428,7 @@ export function ItemListPane() {
               : (riskFilter === 'all' ? emptyState.message : `No credentials match the ${riskLabelByState[riskFilter]} filter in this view.`)}
           </p>
           {noCredentialsInVault && (
-            <button className="solid" style={{ alignSelf: 'start' }} onClick={createItem}>+ Create First Credential</button>
+            <button className="solid" style={{ alignSelf: 'start' }} onClick={() => createItem()}>+ Create First Credential</button>
           )}
         </div>
       ) : (
