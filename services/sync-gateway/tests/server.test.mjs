@@ -348,15 +348,26 @@ test('v2 admin endpoints enforce allowlist+capability and support overrides', as
   }).then((res) => res.json())
   assert.equal(createdOrg.org?.id, 'org_test_admin')
 
+  const renamedOrg = await fetch(`${server.baseUrl}/v2/admin/orgs/org_test_admin`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ name: 'Renamed Test Admin Org' }),
+  }).then((res) => res.json())
+  assert.equal(renamedOrg.org?.name, 'Renamed Test Admin Org')
+
   const upsertMember = await fetch(`${server.baseUrl}/v2/admin/orgs/${encodeURIComponent(orgId)}/members`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${bearer}`,
     },
-    body: JSON.stringify({ memberId: 'member-1', role: 'viewer' }),
+    body: JSON.stringify({ memberId: 'member-1', email: 'member-1@example.com', role: 'viewer' }),
   }).then((res) => res.json())
   assert.equal(upsertMember.member?.memberId, 'member-1')
+  assert.equal(upsertMember.member?.email, 'member-1@example.com')
 
   const members = await fetch(`${server.baseUrl}/v2/admin/orgs/${encodeURIComponent(orgId)}/members`, {
     headers: {
@@ -365,6 +376,7 @@ test('v2 admin endpoints enforce allowlist+capability and support overrides', as
   }).then((res) => res.json())
   assert.equal(Array.isArray(members.members), true)
   assert.equal(members.members.some((row) => row.memberId === 'member-1'), true)
+  assert.equal(members.members.some((row) => row.email === 'member-1@example.com'), true)
 
   const upsertOverride = await fetch(`${server.baseUrl}/v2/admin/entitlements/overrides`, {
     method: 'PUT',
@@ -423,7 +435,7 @@ test('v2 operator endpoints expose vaults, usage, overview, and customer search'
       'Content-Type': 'application/json',
       Authorization: `Bearer ${bearer}`,
     },
-    body: JSON.stringify({ memberId: `user:${orgMemberToken}`, role: 'owner' }),
+    body: JSON.stringify({ memberId: `user:${orgMemberToken}`, email: 'member-1@example.com', role: 'owner' }),
   })
   assert.equal(memberUpsert.status, 200)
 
@@ -516,7 +528,7 @@ test('v2 operator endpoints expose vaults, usage, overview, and customer search'
   assert.equal(overview.body.totalVaults >= 1, true)
   assert.equal(overview.body.totalOrgs >= 1, true)
 
-  const search = await fetchJson(`${server.baseUrl}/v2/admin/customers/search?q=member-1`, {
+  const search = await fetchJson(`${server.baseUrl}/v2/admin/customers/search?q=member-1@example.com`, {
     headers: {
       Authorization: `Bearer ${bearer}`,
     },

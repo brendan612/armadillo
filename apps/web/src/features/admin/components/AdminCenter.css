@@ -239,6 +239,46 @@
   color: var(--ink-secondary);
 }
 
+/* ---- Invite form row ---- */
+.admin-center-invite-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.8rem;
+  max-width: 480px;
+}
+
+.admin-center-invite-row input[type="email"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.admin-center-invite-row select {
+  flex: 0 0 auto;
+  width: 90px;
+}
+
+.admin-center-invite-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* ---- Invite badge ---- */
+.admin-center-invite-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 4px;
+  background: var(--weak-soft);
+  color: var(--weak);
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 980px) {
   .admin-center-pane {

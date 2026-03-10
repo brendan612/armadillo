@@ -29,6 +29,7 @@ export default defineSchema({
   orgMembers: defineTable({
     orgId: v.string(),
     memberId: v.string(),
+    email: v.optional(v.string()),
     role: v.union(
       v.literal('owner'),
       v.literal('admin'),

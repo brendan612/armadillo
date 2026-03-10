@@ -3451,10 +3451,65 @@ body.folder-dragging * {
   gap: 0.3rem;
 }
 
+.copilot-panel-slot {
+  display: grid;
+  justify-items: end;
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+}
+
+.copilot-launcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  background:
+    radial-gradient(circle at 30% 25%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 58%),
+    color-mix(in srgb, var(--bg-1) 88%, var(--accent) 4%);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, var(--accent) 78%, white 22%);
+}
+
+.copilot-launcher:hover {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background:
+    radial-gradient(circle at 30% 25%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 58%),
+    color-mix(in srgb, var(--bg-1) 82%, var(--accent) 7%);
+  box-shadow: 0 16px 34px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.copilot-launcher.is-open {
+  color: var(--accent);
+}
+
+.copilot-launcher-count {
+  position: absolute;
+  top: -0.18rem;
+  right: -0.14rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.18rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  background: color-mix(in srgb, var(--bg-1) 88%, var(--accent) 12%);
+  color: var(--accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .copilot-panel {
   display: grid;
   gap: 0.75rem;
-  margin-top: 0.8rem;
+  width: 100%;
   padding: 0.9rem;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
   border-radius: 14px;
@@ -3470,10 +3525,32 @@ body.folder-dragging * {
   gap: 0.75rem;
 }
 
+.copilot-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .copilot-panel-head h3 {
   margin: 0.08rem 0 0;
   font-family: 'Bricolage Grotesque', sans-serif;
   font-size: 0.96rem;
+}
+
+.copilot-panel-collapse {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
+  background: color-mix(in srgb, var(--bg-1) 86%, var(--accent) 5%);
+  color: var(--ink-muted);
+}
+
+.copilot-panel-collapse:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: color-mix(in srgb, var(--bg-1) 78%, var(--accent) 10%);
+  color: var(--ink);
 }
 
 .copilot-mode-badge {

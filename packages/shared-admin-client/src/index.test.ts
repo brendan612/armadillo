@@ -128,3 +128,85 @@ test('client normalizes derived entitlement overrides', async (t) => {
   assert.equal(response.override?.tier, 'premium')
   assert.deepEqual(response.override?.capabilities, ['cloud.sync', 'vault.storage'])
 })
+
+test('client sends org update and member email payloads', async (t) => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), init })
+    return new Response(JSON.stringify({ ok: true, org: { id: 'org_alpha', name: 'Alpha', createdAt: '2026-03-06T00:00:00.000Z' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  const client = createAdminClient({
+    provider: 'self_hosted',
+    baseUrl: 'http://localhost:8787',
+    getAuthToken: () => 'operator-token',
+  })
+
+  await client.updateOrg('org_alpha', { name: 'Alpha' })
+  await client.upsertMember('org_alpha', { memberId: 'user:alpha', email: 'alpha@example.com', role: 'admin' })
+
+  assert.equal(calls[0]?.url, 'http://localhost:8787/v2/admin/orgs/org_alpha')
+  assert.equal(calls[0]?.init?.method, 'PUT')
+  assert.equal(calls[0]?.init?.body, JSON.stringify({ name: 'Alpha' }))
+  assert.equal(calls[1]?.url, 'http://localhost:8787/v2/admin/orgs/org_alpha/members')
+  assert.equal(calls[1]?.init?.method, 'POST')
+  assert.equal(calls[1]?.init?.body, JSON.stringify({ memberId: 'user:alpha', email: 'alpha@example.com', role: 'admin' }))
+})
+
+test('convex client sends invites to the dedicated invites endpoint', async (t) => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), init })
+    return new Response(JSON.stringify({
+      member: {
+        memberId: 'invite:member@example.com',
+        email: 'member@example.com',
+        role: 'viewer',
+        addedAt: '2026-03-10T00:00:00.000Z',
+      },
+      emailSent: true,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  const client = createAdminClient({
+    provider: 'convex',
+    baseUrl: 'https://example.convex.site',
+    getAuthToken: () => 'token-123',
+    getOrgId: () => 'org_alpha',
+  })
+
+  const response = await client.inviteMember('org_alpha', { email: 'member@example.com', role: 'viewer' })
+  assert.equal(response.emailSent, true)
+  assert.equal(calls[0]?.url, 'https://example.convex.site/api/v2/admin/invites')
+  assert.equal(calls[0]?.init?.method, 'POST')
+  assert.equal(calls[0]?.init?.body, JSON.stringify({ orgId: 'org_alpha', email: 'member@example.com', role: 'viewer' }))
+})
+
+test('self-hosted client rejects invite email delivery', async () => {
+  const client = createAdminClient({
+    provider: 'self_hosted',
+    baseUrl: 'http://localhost:8787',
+    getAuthToken: () => 'operator-token',
+  })
+
+  await assert.rejects(
+    () => client.inviteMember('org_alpha', { email: 'member@example.com', role: 'viewer' }),
+    /not supported on the self-hosted provider/i,
+  )
+})

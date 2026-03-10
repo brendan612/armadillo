@@ -2,6 +2,12 @@ import { httpRouter } from 'convex/server'
 import { api } from './_generated/api'
 import { httpAction } from './_generated/server'
 import { auth } from './auth'
+import {
+  buildInviteEmailContent,
+  buildPendingInviteMemberId,
+  isValidInviteEmail,
+  normalizeInviteEmail,
+} from './invites'
 
 type OwnerSource = 'auth' | 'anonymous'
 
@@ -17,6 +23,9 @@ const MAX_BLOB_FILE_BYTES = Number(process.env.SYNC_MAX_BLOB_FILE_BYTES || 20 * 
 const MAX_BLOB_TOTAL_BYTES = Number(process.env.SYNC_MAX_BLOB_TOTAL_BYTES || 2 * 1024 * 1024 * 1024)
 const SYNC_ENTITLEMENT_TOKEN = (process.env.SYNC_ENTITLEMENT_TOKEN || '').trim()
 const ENTITLEMENT_VERIFY_JWKS = (process.env.ENTITLEMENT_VERIFY_JWKS || '').trim()
+const SITE_URL = (process.env.SITE_URL || '').trim().replace(/\/$/, '')
+const RESEND_API_KEY = (process.env.RESEND_API_KEY || '').trim()
+const INVITE_FROM_EMAIL = (process.env.INVITE_FROM_EMAIL || '').trim()
 const ADMIN_ALLOWLIST_EMAILS = new Set(
   (process.env.ADMIN_ALLOWLIST_EMAILS || '')
     .split(',')
@@ -96,6 +105,11 @@ type EntitlementOverrideRecord = {
   note: string
   updatedAt: string
   updatedBy: string
+}
+type InviteDeliveryResult = {
+  emailSent: boolean
+  deliveryError: string | null
+  providerMessageId: string | null
 }
 
 const ROLE_RANK: Record<Role, number> = {
@@ -422,6 +436,90 @@ function normalizeOrgId(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
 }
 
+function parseResendError(payload: unknown) {
+  if (!payload || typeof payload !== 'object') return ''
+  const row = payload as Record<string, unknown>
+  if (typeof row.message === 'string' && row.message.trim()) return row.message.trim()
+  const errorRow = row.error
+  if (errorRow && typeof errorRow === 'object' && typeof (errorRow as Record<string, unknown>).message === 'string') {
+    return ((errorRow as Record<string, unknown>).message as string).trim()
+  }
+  return ''
+}
+
+async function sendInviteEmail(input: {
+  orgName: string
+  inviteeEmail: string
+  inviterLabel: string
+  role: Role
+}): Promise<InviteDeliveryResult> {
+  if (!SITE_URL) {
+    return {
+      emailSent: false,
+      deliveryError: 'Invite email delivery is not configured: SITE_URL is missing.',
+      providerMessageId: null,
+    }
+  }
+  if (!RESEND_API_KEY) {
+    return {
+      emailSent: false,
+      deliveryError: 'Invite email delivery is not configured: RESEND_API_KEY is missing.',
+      providerMessageId: null,
+    }
+  }
+  if (!INVITE_FROM_EMAIL) {
+    return {
+      emailSent: false,
+      deliveryError: 'Invite email delivery is not configured: INVITE_FROM_EMAIL is missing.',
+      providerMessageId: null,
+    }
+  }
+
+  const content = buildInviteEmailContent({
+    appUrl: SITE_URL,
+    orgName: input.orgName,
+    inviterLabel: input.inviterLabel,
+    inviteeEmail: input.inviteeEmail,
+    role: input.role,
+  })
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: INVITE_FROM_EMAIL,
+        to: [input.inviteeEmail],
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+      }),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      const detail = parseResendError(payload) || `Resend request failed (${response.status})`
+      return { emailSent: false, deliveryError: detail, providerMessageId: null }
+    }
+    const providerMessageId = payload && typeof payload === 'object' && typeof (payload as Record<string, unknown>).id === 'string'
+      ? (payload as Record<string, unknown>).id as string
+      : null
+    return {
+      emailSent: true,
+      deliveryError: null,
+      providerMessageId,
+    }
+  } catch (error) {
+    return {
+      emailSent: false,
+      deliveryError: error instanceof Error ? error.message : 'Invite email delivery failed.',
+      providerMessageId: null,
+    }
+  }
+}
+
 function defaultOrgIdForSubject(subject: string) {
   const userId = subject.split('|')[0] || subject
   const normalizedUser = normalizeOrgId(userId).toLowerCase() || 'unknown'
@@ -565,25 +663,15 @@ async function ensureMemberRole(
   ctx: { runMutation: (...args: unknown[]) => Promise<unknown> },
   orgId: string,
   memberId: string,
+  email?: string | null,
 ) {
   const role = await ctx.runMutation(api.sync.ensureOrgMemberRole, {
     orgId,
     memberId,
     now: nowIso(),
+    ...(email ? { email } : {}),
   })
   return isRole(role) ? role : 'owner'
-}
-
-async function getMemberRole(
-  ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
-  orgId: string,
-  memberId: string,
-) {
-  const role = await ctx.runQuery(api.sync.getOrgMemberRole, {
-    orgId,
-    memberId,
-  })
-  return isRole(role) ? role : null
 }
 
 async function appendAdminAudit(
@@ -626,9 +714,7 @@ async function resolveAdminContext(ctx: AdminContextDeps, request: Request) {
       ? await verifyEntitlementCapability(entitlementToken)
       : { ok: false, reason: 'No signed entitlement token available' }
     const superAdmin = allowlisted && capabilityResult.ok
-    const memberRole = superAdmin
-      ? ((await getMemberRole(ctx, orgId, identity.subject)) ?? 'owner')
-      : await ensureMemberRole(ctx, orgId, identity.subject)
+    const memberRole = await ensureMemberRole(ctx, orgId, identity.subject, identity.email)
 
     const orgAdminAllowed = hasRole(memberRole, 'admin')
     const reasons: string[] = []
@@ -738,8 +824,30 @@ http.route({
     if (!identity) {
       return json({ authenticated: false })
     }
+    let claimedInvites: Array<{ orgId: string; role: Role; email: string | null; previousMemberId: string }> = []
+    if (identity.email) {
+      const claimed = await ctx.runMutation(api.sync.claimPendingInvites, {
+        memberId: identity.subject,
+        email: identity.email,
+        now: nowIso(),
+      }) as { claimedInvites?: Array<{ orgId: string; role: Role; email: string | null; previousMemberId: string }> } | null
+      claimedInvites = Array.isArray(claimed?.claimedInvites) ? claimed.claimedInvites : []
+      for (const invite of claimedInvites) {
+        await appendAdminAudit(ctx, {
+          orgId: invite.orgId,
+          actorSubject: identity.subject,
+          action: 'org.member.invite.claim',
+          target: identity.subject,
+          metadata: {
+            email: invite.email ?? identity.email,
+            previousMemberId: invite.previousMemberId,
+            role: invite.role,
+          },
+        })
+      }
+    }
     const orgId = defaultOrgIdForSubject(identity.subject)
-    const role = await ensureMemberRole(ctx, orgId, identity.subject)
+    const role = await ensureMemberRole(ctx, orgId, identity.subject, identity.email)
     const response = {
       authenticated: true,
       subject: identity.subject,
@@ -861,6 +969,12 @@ http.route({
 })
 
 http.route({
+  path: '/api/v2/admin/invites',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
   path: '/api/v2/admin/audit',
   method: 'OPTIONS',
   handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
@@ -943,12 +1057,13 @@ http.route({
     }
 
     const orgId = normalizeOrgId(new URL(request.url).searchParams.get('orgId') || '')
-    if (!orgId || orgId !== resolved.context.identity.orgId) {
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
       return json({ error: 'orgId is required and must match your admin org' }, 400)
     }
 
     const rows = await ctx.runQuery(api.sync.listOrgMembers, { orgId }) as Array<{
       memberId: string
+      email?: string
       role: Role
       addedAt: string
     }>
@@ -957,6 +1072,7 @@ http.route({
       .sort((a, b) => (a.memberId > b.memberId ? 1 : -1))
       .map((row) => ({
         memberId: row.memberId,
+        email: row.email ?? null,
         role: row.role,
         addedAt: row.addedAt,
       }))
@@ -976,11 +1092,12 @@ http.route({
       return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
     }
 
-    const body = await request.json() as { orgId?: unknown; memberId?: unknown; role?: unknown }
+    const body = await request.json() as { orgId?: unknown; memberId?: unknown; email?: unknown; role?: unknown }
     const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
     const memberId = typeof body.memberId === 'string' ? body.memberId.trim() : ''
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : undefined
     const role = body.role
-    if (!orgId || orgId !== resolved.context.identity.orgId) {
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
       return json({ error: 'orgId is required and must match your admin org' }, 400)
     }
     if (!memberId) {
@@ -994,6 +1111,7 @@ http.route({
     const upserted = await ctx.runMutation(api.sync.upsertOrgMember, {
       orgId,
       memberId,
+      ...(email !== undefined ? { email } : {}),
       role,
       now,
       actorSubject: resolved.context.identity.subject,
@@ -1004,15 +1122,92 @@ http.route({
       actorSubject: resolved.context.identity.subject,
       action: 'org.member.upsert',
       target: memberId,
-      metadata: { role },
+      metadata: { role, ...(email !== undefined ? { email: email || null } : {}) },
     })
 
     return json({
       member: {
         memberId,
+        email: email ?? null,
         role,
         addedAt: upserted?.addedAt || now,
       },
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/invites',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
+    const body = await request.json() as { orgId?: unknown; email?: unknown; role?: unknown }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const email = normalizeInviteEmail(typeof body.email === 'string' ? body.email : '')
+    const role = body.role
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
+      return json({ error: 'orgId is required and must match your admin org' }, 400)
+    }
+    if (!email || !isValidInviteEmail(email)) {
+      return json({ error: 'email is invalid' }, 400)
+    }
+    if (!isRole(role)) {
+      return json({ error: 'role is invalid' }, 400)
+    }
+
+    const now = nowIso()
+    const memberId = buildPendingInviteMemberId(email)
+    const upserted = await ctx.runMutation(api.sync.upsertOrgMember, {
+      orgId,
+      memberId,
+      email,
+      role,
+      now,
+      actorSubject: resolved.context.identity.subject,
+    }) as { addedAt?: string } | null
+    const orgLookup = await ctx.runQuery(api.sync.listAdminOrgs, {
+      subject: resolved.context.identity.subject,
+      includeAll: resolved.context.permissions.superAdmin,
+      fallbackOrgId: resolved.context.identity.orgId,
+    }) as { orgs?: Array<{ id?: string; name?: string }> } | null
+    const org = (orgLookup?.orgs || []).find((row) => row.id === orgId)
+    const delivery = await sendInviteEmail({
+      orgName: org?.name || `Organization ${orgId}`,
+      inviteeEmail: email,
+      inviterLabel: resolved.context.identity.name || resolved.context.identity.email || resolved.context.identity.subject,
+      role,
+    })
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: resolved.context.identity.subject,
+      action: 'org.member.invite',
+      target: memberId,
+      metadata: {
+        email,
+        role,
+        emailSent: delivery.emailSent,
+        deliveryError: delivery.deliveryError,
+        providerMessageId: delivery.providerMessageId,
+      },
+    })
+
+    return json({
+      member: {
+        memberId,
+        email,
+        role,
+        addedAt: upserted?.addedAt || now,
+      },
+      emailSent: delivery.emailSent,
+      deliveryError: delivery.deliveryError,
     })
   }),
 })
@@ -1110,8 +1305,8 @@ http.route({
 })
 
 http.route({
-  path: '/api/v2/admin/members',
-  method: 'DELETE',
+  path: '/api/v2/admin/orgs',
+  method: 'PUT',
   handler: httpAction(async (ctx, request) => {
     const resolved = await resolveAdminContext(ctx, request)
     if ('error' in resolved) {
@@ -1121,10 +1316,61 @@ http.route({
       return json({ error: 'superadmin required' }, 403)
     }
 
+    const body = await request.json() as { orgId?: unknown; name?: unknown }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    if (!orgId) {
+      return json({ error: 'orgId is invalid' }, 400)
+    }
+    if (!name) {
+      return json({ error: 'name is required' }, 400)
+    }
+
+    const updated = await ctx.runMutation(api.sync.updateAdminOrg, {
+      orgId,
+      name,
+    }) as { id?: string; name?: string; createdAt?: string; createdBy?: string } | null
+
+    if (!updated) {
+      return json({ error: 'org not found' }, 404)
+    }
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: resolved.context.identity.subject,
+      action: 'org.rename',
+      target: orgId,
+      metadata: { name },
+    })
+
+    return json({
+      org: {
+        id: updated.id || orgId,
+        name: updated.name || name,
+        createdAt: updated.createdAt || nowIso(),
+        createdBy: updated.createdBy ?? null,
+        myRole: null,
+      },
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/admin/members',
+  method: 'DELETE',
+  handler: httpAction(async (ctx, request) => {
+    const resolved = await resolveAdminContext(ctx, request)
+    if ('error' in resolved) {
+      return json({ error: resolved.error }, resolved.status)
+    }
+    if (!resolved.context.permissions.allowed) {
+      return json({ error: resolved.context.permissions.reasons[0] || 'forbidden' }, 403)
+    }
+
     const url = new URL(request.url)
     const orgId = normalizeOrgId(url.searchParams.get('orgId') || '')
     const memberId = (url.searchParams.get('memberId') || '').trim()
-    if (!orgId || orgId !== resolved.context.identity.orgId) {
+    if (!orgId || (!resolved.context.permissions.superAdmin && orgId !== resolved.context.identity.orgId)) {
       return json({ error: 'orgId is required and must match your admin org' }, 400)
     }
     if (!memberId) {

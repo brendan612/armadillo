@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, CircleHelp, Copy, Dices, Eye, EyeOff, RefreshCw, Save, X, Trash2 } from 'lucide-react'
+import { ChevronLeft, CircleHelp, Copy, Dices, Eye, EyeOff, RefreshCw, Save, ShieldAlert, X, Trash2 } from 'lucide-react'
 import { generatePassword, DEFAULT_GENERATOR_CONFIG, type GeneratorConfig } from '../../../shared/utils/passwordGen'
 import { getPasswordExpiryStatus } from '../../../shared/utils/passwordExpiry'
 import { analyzePassword, buildPasswordStrengthContextFromItem } from '../../../shared/utils/passwordStrength'
@@ -87,6 +87,7 @@ export function ItemDetailPane() {
   const genPanelRef = useRef<HTMLDivElement>(null)
   const [genPopoverStyle, setGenPopoverStyle] = useState<CSSProperties | undefined>(undefined)
   const [showEntropyInfo, setShowEntropyInfo] = useState(false)
+  const [showCopilotPanel, setShowCopilotPanel] = useState(false)
   const entropyInfoRef = useRef<HTMLDivElement>(null)
 
   // Password confirm/save-error state keyed by item id to avoid effect-driven state resets.
@@ -159,6 +160,10 @@ export function ItemDetailPane() {
       window.removeEventListener('scroll', positionGeneratorPopover, true)
     }
   }, [showGenerator, showGenEditor, showPresetSave, vaultSettings.generatorPresets.length])
+
+  useEffect(() => {
+    setShowCopilotPanel(false)
+  }, [draft?.id])
 
   function regenerate(config: GeneratorConfig) {
     setGenPreview(generatePassword(config))
@@ -350,6 +355,7 @@ export function ItemDetailPane() {
   }, [draft, items])
   const canManageCloudSyncExclusions = hasCapability('cloud.sync')
     && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
+  const copilotPanelId = draft ? `copilot-panel-${draft.id}` : 'copilot-panel'
   const visibleCopilotSuggestions = useMemo(() => {
     if (!draft) return selectedCopilotSuggestions
     return selectedCopilotSuggestions.filter((suggestion) => {
@@ -983,53 +989,79 @@ export function ItemDetailPane() {
               </div>
             )}
             {vaultSettings.ai?.enabled !== false && (
-              <div className="copilot-panel">
-                <div className="copilot-panel-head">
-                  <div>
-                    <p className="kicker">AI Security Copilot</p>
-                    <h3>Why this is risky</h3>
-                  </div>
-                  <span className="copilot-mode-badge">Local only</span>
-                </div>
-                <ul className="copilot-reason-list">
-                  {copilotNarrative.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-                <p className="copilot-privacy-note">
-                  Copilot only uses title, username, URL hosts, tags, folder, timestamps, and risk metadata. It ignores passwords, notes, security answers, and recovery material by default.
-                </p>
-                <div className="copilot-suggestion-block">
-                  <div className="copilot-suggestion-head">
-                    <h4>Suggested fixes</h4>
-                    <span>{visibleCopilotSuggestions.length}</span>
-                  </div>
-                  {visibleCopilotSuggestions.length === 0 ? (
-                    <p className="muted" style={{ margin: 0 }}>No urgent fixes for this item right now.</p>
-                  ) : (
-                    <div className="copilot-suggestion-list">
-                      {visibleCopilotSuggestions.map((suggestion) => {
-                        const actionLabel = renderCopilotActionLabel(suggestion)
-                        return (
-                          <div key={suggestion.id} className={`copilot-suggestion copilot-suggestion--${suggestion.priority}`}>
-                            <div className="copilot-suggestion-copy">
-                              <strong>{suggestion.title}</strong>
-                              <p>{suggestion.detail}</p>
-                              <span>{suggestion.rationale}</span>
-                            </div>
-                            {actionLabel ? (
-                              <button className="ghost" type="button" onClick={() => applyCopilotSuggestion(suggestion)}>
-                                {actionLabel}
-                              </button>
-                            ) : (
-                              <span className="copilot-suggestion-static">Review in place</span>
-                            )}
-                          </div>
-                        )
-                      })}
+              <div className="copilot-panel-slot">
+                <button
+                  type="button"
+                  className={`copilot-launcher ${showCopilotPanel ? 'is-open' : ''}`}
+                  aria-label={showCopilotPanel ? 'Hide AI Security Copilot' : 'Show AI Security Copilot'}
+                  aria-expanded={showCopilotPanel}
+                  aria-controls={copilotPanelId}
+                  onClick={() => setShowCopilotPanel((current) => !current)}
+                  title={showCopilotPanel ? 'Hide AI Security Copilot' : 'Show AI Security Copilot'}
+                >
+                  <ShieldAlert size={17} strokeWidth={2.2} aria-hidden="true" />
+                  <span className="copilot-launcher-count">{visibleCopilotSuggestions.length}</span>
+                </button>
+                {showCopilotPanel && (
+                  <div id={copilotPanelId} className="copilot-panel">
+                    <div className="copilot-panel-head">
+                      <div>
+                        <p className="kicker">AI Security Copilot</p>
+                        <h3>Why this is risky</h3>
+                      </div>
+                      <div className="copilot-panel-actions">
+                        <span className="copilot-mode-badge">Local only</span>
+                        <button
+                          type="button"
+                          className="icon-btn copilot-panel-collapse"
+                          aria-label="Hide AI Security Copilot"
+                          onClick={() => setShowCopilotPanel(false)}
+                        >
+                          <X size={14} strokeWidth={2.2} aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
-                  )}
-                </div>
+                    <ul className="copilot-reason-list">
+                      {copilotNarrative.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                    <p className="copilot-privacy-note">
+                      Copilot only uses title, username, URL hosts, tags, folder, timestamps, and risk metadata. It ignores passwords, notes, security answers, and recovery material by default.
+                    </p>
+                    <div className="copilot-suggestion-block">
+                      <div className="copilot-suggestion-head">
+                        <h4>Suggested fixes</h4>
+                        <span>{visibleCopilotSuggestions.length}</span>
+                      </div>
+                      {visibleCopilotSuggestions.length === 0 ? (
+                        <p className="muted" style={{ margin: 0 }}>No urgent fixes for this item right now.</p>
+                      ) : (
+                        <div className="copilot-suggestion-list">
+                          {visibleCopilotSuggestions.map((suggestion) => {
+                            const actionLabel = renderCopilotActionLabel(suggestion)
+                            return (
+                              <div key={suggestion.id} className={`copilot-suggestion copilot-suggestion--${suggestion.priority}`}>
+                                <div className="copilot-suggestion-copy">
+                                  <strong>{suggestion.title}</strong>
+                                  <p>{suggestion.detail}</p>
+                                  <span>{suggestion.rationale}</span>
+                                </div>
+                                {actionLabel ? (
+                                  <button className="ghost" type="button" onClick={() => applyCopilotSuggestion(suggestion)}>
+                                    {actionLabel}
+                                  </button>
+                                ) : (
+                                  <span className="copilot-suggestion-static">Review in place</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

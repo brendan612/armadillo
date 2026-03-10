@@ -26,7 +26,7 @@
     "apk:release": "npm run sync:android && cd android && gradlew.bat assembleProductionRelease",
     "apk:fastlane": "npm run sync:android && cd android && gradlew.bat assembleDevFastlane",
     "lint": "eslint .",
-    "test": "node --experimental-transform-types --test --test-concurrency=1 packages/shared-admin-client/src/*.test.ts services/sync-gateway/tests/*.test.mjs apps/web/src/shared/utils/*.test.ts",
+    "test": "node --experimental-transform-types --test --test-concurrency=1 packages/shared-admin-client/src/*.test.ts convex/*.test.ts services/sync-gateway/tests/*.test.mjs apps/web/src/shared/utils/*.test.ts",
     "release:check-signing": "node scripts/release/check-signing-env.mjs",
     "size:desktop:report": "node scripts/check-desktop-size.mjs --report",
     "size:desktop:check": "node scripts/check-desktop-size.mjs --check",

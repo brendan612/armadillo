@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
-  Zap,
 } from 'lucide-react'
 import {
   createAdminClient,
@@ -113,10 +112,10 @@ function defaultCapabilitiesForTier(tier: PlanTier) {
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
-    <label className="grid gap-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">{label}</span>
+    <label className="grid gap-1">
+      <span className="font-mono text-[0.6rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">{label}</span>
       {children}
-      {hint && <span className="text-xs text-[var(--ink-muted)] leading-relaxed">{hint}</span>}
+      {hint && <span className="text-[0.68rem] text-[var(--ink-muted)] leading-snug">{hint}</span>}
     </label>
   )
 }
@@ -126,10 +125,10 @@ function StatusBanner({ tone, message }: { tone: StatusTone; message: string }) 
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm',
-        tone === 'error' && 'border-[color:color-mix(in_srgb,var(--exposed)_30%,transparent)] bg-[var(--exposed-soft)] text-[#ffd7d1]',
+        'flex items-center gap-2.5 rounded-[var(--radius-md)] border px-3 py-2 text-[0.76rem]',
+        tone === 'error' && 'border-[color:color-mix(in_srgb,var(--exposed)_30%,transparent)] bg-[var(--exposed-soft)] text-[var(--exposed)]',
         tone === 'success' && 'border-[color:color-mix(in_srgb,var(--safe)_28%,transparent)] bg-[var(--safe-soft)] text-[var(--ink)]',
-        tone === 'neutral' && 'border-[var(--line-medium)] bg-[var(--surface)] text-[var(--ink-secondary)]',
+        tone === 'neutral' && 'border-[var(--line)] bg-[var(--surface)] text-[var(--ink-secondary)]',
       )}
     >
       <div className={cn(
@@ -138,17 +137,20 @@ function StatusBanner({ tone, message }: { tone: StatusTone; message: string }) 
         tone === 'success' && 'bg-[var(--safe)]',
         tone === 'neutral' && 'bg-[var(--ink-muted)]',
       )} />
-      {message}
+      <span className="min-w-0 truncate">{message}</span>
     </div>
   )
 }
 
-function Panel({ children, className }: { children: React.ReactNode; className?: string }) {
+function Panel({ children, className, delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   return (
-    <div className={cn(
-      'rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--surface)]',
-      className,
-    )}>
+    <div
+      className={cn(
+        'overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--surface)] shadow-[var(--shadow-md)] [backdrop-filter:blur(var(--blur))_saturate(1.15)] [animation:pane-rise_0.4s_cubic-bezier(0.22,1,0.36,1)_both]',
+        className,
+      )}
+      style={delay ? { animationDelay: `${delay}ms` } : undefined}
+    >
       {children}
     </div>
   )
@@ -156,10 +158,10 @@ function Panel({ children, className }: { children: React.ReactNode; className?:
 
 function PanelHeader({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] px-6 py-5">
-      <div className="grid gap-0.5">
-        <h2 className="text-sm font-semibold text-[var(--ink)]">{title}</h2>
-        {description && <p className="text-xs text-[var(--ink-muted)]">{description}</p>}
+    <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] px-4 py-3">
+      <div className="grid gap-px">
+        <h2 className="text-[0.82rem] font-semibold text-[var(--ink)]">{title}</h2>
+        {description && <p className="text-[0.68rem] text-[var(--ink-muted)] leading-snug">{description}</p>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
@@ -169,14 +171,14 @@ function PanelHeader({ title, description, action }: { title: string; descriptio
 function StatCard({ label, value, sub, accent }: { label: string; value: React.ReactNode; sub?: string; accent?: boolean }) {
   return (
     <div className={cn(
-      'rounded-[var(--radius-md)] border p-4',
+      'rounded-[var(--radius-md)] border px-3 py-2.5',
       accent
         ? 'border-[color:color-mix(in_srgb,var(--accent)_20%,transparent)] bg-[var(--accent-soft)]'
-        : 'border-[var(--line)] bg-[var(--bg-3)]',
+        : 'border-[var(--line)] bg-[var(--bg-2)]',
     )}>
-      <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">{label}</div>
-      <div className={cn('mt-2 text-2xl font-semibold tabular-nums', accent ? 'text-[var(--accent)]' : 'text-[var(--ink)]')}>{value}</div>
-      {sub && <div className="mt-1 text-xs text-[var(--ink-muted)]">{sub}</div>}
+      <div className="font-mono text-[0.56rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">{label}</div>
+      <div className={cn('mt-1 text-lg font-semibold tabular-nums', accent ? 'text-[var(--accent)]' : 'text-[var(--ink)]')}>{value}</div>
+      {sub && <div className="mt-0.5 text-[0.68rem] text-[var(--ink-muted)]">{sub}</div>}
     </div>
   )
 }
@@ -192,9 +194,9 @@ function HealthDot({ ok }: { ok: boolean | undefined }) {
 
 function SectionRow({ label, value, mono }: { label: React.ReactNode; value: React.ReactNode; mono?: boolean }) {
   return (
-    <div className="flex items-center justify-between border-b border-[var(--line)] px-6 py-3.5 last:border-0">
-      <span className="text-xs text-[var(--ink-muted)]">{label}</span>
-      <span className={cn('text-sm text-[var(--ink)]', mono && 'font-mono text-xs')}>{value}</span>
+    <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-2.5 last:border-0">
+      <span className="text-[0.76rem] text-[var(--ink-muted)]">{label}</span>
+      <span className={cn('text-[0.82rem] text-[var(--ink)]', mono && 'font-mono text-[0.72rem]')}>{value}</span>
     </div>
   )
 }
@@ -208,8 +210,8 @@ function ControlSelect({ value, onChange, children, className }: {
   return (
     <select
       className={cn(
-        'h-9 rounded-[var(--radius-md)] border border-[var(--line-medium)] bg-[var(--bg-3)] px-3 text-sm text-[var(--ink)] transition-colors',
-        'focus:border-[color:color-mix(in_srgb,var(--accent)_50%,transparent)] focus:outline-none',
+        'h-[34px] rounded-[var(--radius-md)] border border-[var(--line-strong)] bg-[var(--bg-1)] px-2.5 text-[0.82rem] text-[var(--ink)] transition-colors',
+        'focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-soft)]',
         className,
       )}
       value={value}
@@ -264,6 +266,11 @@ export default function App() {
   const [overrideTier, setOverrideTier] = useState<PlanTier>('premium')
   const [overrideCapabilities, setOverrideCapabilities] = useState<string[]>(defaultCapabilitiesForTier('premium'))
   const [overrideNote, setOverrideNote] = useState('')
+  const [newOrgId, setNewOrgId] = useState('')
+  const [newOrgName, setNewOrgName] = useState('')
+  const [orgNameDraft, setOrgNameDraft] = useState('')
+  const [memberInviteEmail, setMemberInviteEmail] = useState('')
+  const [memberInviteRole, setMemberInviteRole] = useState<Role>('viewer')
 
   const activeToken = provider === 'convex' ? (convexAuthToken || '') : selfHostedToken
   const baseUrl = provider === 'convex'
@@ -401,6 +408,10 @@ export default function App() {
   }, [orgs, selectedOrgId, superAdmin])
 
   useEffect(() => {
+    setOrgNameDraft(selectedOrg?.name || '')
+  }, [selectedOrg])
+
+  useEffect(() => {
     if (!superAdmin || !selectedOrgId) return
     void loadSelectedCustomer(selectedOrgId).catch((error) => {
       setFeedback(error instanceof Error ? error.message : 'Failed to load customer context', 'error')
@@ -482,6 +493,105 @@ export default function App() {
       await loadSelectedCustomer(orgId)
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Failed to load customer context', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleCreateOrg() {
+    if (!newOrgName.trim()) return
+    setLoading(true)
+    setFeedback('', 'neutral')
+    try {
+      const response = await client.createOrg({
+        name: newOrgName.trim(),
+        ...(newOrgId.trim() ? { orgId: newOrgId.trim() } : {}),
+      })
+      setNewOrgId('')
+      setNewOrgName('')
+      setSearchResults([])
+      await refreshAll()
+      await handleSelectOrg(response.org.id)
+      setFeedback(response.created ? 'Organization created' : 'Organization already existed; details refreshed', 'success')
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Failed to create organization', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleRenameOrg() {
+    if (!selectedOrgId || !orgNameDraft.trim()) return
+    setLoading(true)
+    setFeedback('', 'neutral')
+    try {
+      const response = await client.updateOrg(selectedOrgId, { name: orgNameDraft.trim() })
+      setSelectedOrg((current) => current ? { ...current, name: response.org.name } : current)
+      setOrgs((current) => current.map((org) => (org.id === selectedOrgId ? { ...org, name: response.org.name } : org)))
+      setSearchResults((current) => current.map((row) => (row.orgId === selectedOrgId ? { ...row, orgName: response.org.name } : row)))
+      setFeedback('Organization name saved', 'success')
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Failed to save organization name', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleInviteMember() {
+    const email = memberInviteEmail.trim().toLowerCase()
+    if (!selectedOrgId || !email) return
+    setLoading(true)
+    setFeedback('', 'neutral')
+    try {
+      let nextMessage = ''
+      let nextTone: StatusTone = 'neutral'
+      if (provider === 'convex') {
+        const response = await client.inviteMember(selectedOrgId, {
+          email,
+          role: memberInviteRole,
+        })
+        if (response.emailSent) {
+          setMemberInviteEmail('')
+          setMemberInviteRole('viewer')
+          nextMessage = 'Invite email sent'
+          nextTone = 'success'
+        } else {
+          nextMessage = response.deliveryError
+            ? `Pending invite saved, but email delivery failed: ${response.deliveryError}`
+            : 'Pending invite saved, but email delivery failed'
+          nextTone = 'error'
+        }
+      } else {
+        await client.upsertMember(selectedOrgId, {
+          memberId: `invite:${email}`,
+          email,
+          role: memberInviteRole,
+        })
+        setMemberInviteEmail('')
+        setMemberInviteRole('viewer')
+        nextMessage = 'Pending invite added without email delivery'
+        nextTone = 'success'
+      }
+      await refreshAll()
+      setFeedback(nextMessage, nextTone)
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Failed to invite member', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleRemoveMember(memberId: string) {
+    if (!selectedOrgId) return
+    if (!window.confirm(`Remove ${memberId} from ${selectedOrgId}?`)) return
+    setLoading(true)
+    setFeedback('', 'neutral')
+    try {
+      await client.removeMember(selectedOrgId, memberId)
+      await refreshAll()
+      setFeedback('Member removed', 'success')
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Failed to remove member', 'error')
     } finally {
       setLoading(false)
     }
@@ -609,24 +719,24 @@ export default function App() {
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--bg-0)] text-[var(--ink)]">
+    <div className="flex h-screen overflow-hidden text-[var(--ink)]">
 
       {/* ── Sidebar ── */}
       <aside
         style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)' }}
-        className="flex flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar-bg)]"
+        className="flex flex-col bg-[var(--sidebar-bg)] [backdrop-filter:blur(24px)_saturate(1.2)]"
       >
         {/* Logo / wordmark */}
-        <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-[var(--line)] px-5">
-          <div className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-[var(--accent)] text-[var(--accent-contrast)]">
-            <Lock size={12} strokeWidth={2.5} />
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--line)] px-3.5">
+          <div className="flex h-5 w-5 items-center justify-center rounded-[5px] bg-[var(--accent)] text-[var(--accent-contrast)]">
+            <Lock size={10} strokeWidth={2.5} />
           </div>
-          <span className="font-display text-[13px] font-semibold tracking-tight text-[var(--ink)]">Armadillo</span>
-          <span className="ml-auto font-mono text-[10px] text-[var(--ink-muted)]">ops</span>
+          <span className="font-display text-[0.78rem] font-semibold tracking-tight text-[var(--ink)]">Armadillo</span>
+          <span className="ml-auto font-mono text-[0.56rem] text-[var(--ink-muted)]">ops</span>
         </div>
 
         {/* Nav items */}
-        <nav className="flex flex-1 flex-col overflow-y-auto px-4 py-3">
+        <nav className="flex flex-1 flex-col gap-[2px] overflow-y-auto p-2">
           {navItems.map((item) => {
             const Icon = item.icon
             const active = section === item.id
@@ -635,48 +745,47 @@ export default function App() {
                 key={item.id}
                 onClick={() => setSection(item.id)}
                 className={cn(
-                  'group flex w-full items-center gap-2.5 border-l-2 px-3 py-[6px] text-left text-[13px] transition-colors',
+                  'flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2.5 py-[6px] text-left text-[0.78rem] border border-transparent transition-all',
                   active
-                    ? 'border-[var(--accent)] text-[var(--ink)]'
-                    : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]',
+                    ? 'bg-[var(--accent-soft)] border-[color:color-mix(in_srgb,var(--accent)_30%,transparent)] text-[var(--accent)] font-medium'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--bg-3)] hover:text-[var(--ink)]',
                 )}
               >
-                <Icon size={14} strokeWidth={1.8} className={active ? 'text-[var(--accent)]' : ''} />
-                <span className={active ? 'font-medium' : ''}>{item.label}</span>
+                <Icon size={14} strokeWidth={1.8} />
+                <span>{item.label}</span>
               </button>
             )
           })}
         </nav>
 
         {/* Identity footer */}
-        <div className="shrink-0 border-t border-[var(--line)] px-5 py-3">
+        <div className="shrink-0 border-t border-[var(--line)] px-3 py-2.5">
           {provider === 'convex' && activeToken ? (
-            <div className="grid gap-2.5">
+            <div className="grid gap-2">
               <div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--ink-muted)]">Signed in as</div>
-                <div className="mt-1 truncate text-[12px] text-[var(--ink)]">{adminMe?.identity?.email || adminMe?.identity?.subject || '…'}</div>
-                <div className="mt-0.5 text-[10px] text-[var(--ink-muted)]">{normalizeRoleSummary(adminMe?.identity?.roles)}</div>
+                <div className="font-mono text-[0.52rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">Signed in</div>
+                <div className="mt-0.5 truncate text-[0.72rem] text-[var(--ink)]">{adminMe?.identity?.email || adminMe?.identity?.subject || '…'}</div>
+                <div className="mt-px text-[0.64rem] text-[var(--ink-muted)]">{normalizeRoleSummary(adminMe?.identity?.roles)}</div>
               </div>
               <button
                 onClick={() => void handleGoogleSignOut()}
-                className="flex items-center gap-1.5 text-[12px] text-[var(--ink-muted)] transition-colors hover:text-[var(--exposed)]"
+                className="flex items-center gap-1.5 text-[0.72rem] text-[var(--ink-muted)] transition-colors hover:text-[var(--exposed)]"
               >
                 <LogOut size={11} />
                 Sign out
               </button>
             </div>
           ) : provider === 'convex' ? (
-            <Button className="w-full" onClick={() => void handleGoogleSignIn()}>
+            <Button className="w-full" size="sm" onClick={() => void handleGoogleSignIn()}>
               Sign in with Google
             </Button>
           ) : (
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <Field label="Bearer token">
                 <Input
                   value={selfHostedTokenInput}
                   onChange={(e) => setSelfHostedTokenInput(e.target.value)}
                   placeholder="Paste token…"
-                  className="text-xs"
                 />
               </Field>
               <Button variant="secondary" size="sm" onClick={() => setSelfHostedToken(selfHostedTokenInput.trim())}>
@@ -691,23 +800,21 @@ export default function App() {
       <div className="flex flex-1 flex-col overflow-hidden">
 
         {/* Top bar */}
-        <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--line)] bg-[var(--bg-1)] px-6">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <HealthDot ok={systemStatus?.health?.ok} />
-              <span className="text-xs text-[var(--ink-muted)]">
-                {systemStatus?.health?.ok ? 'Healthy' : systemStatus ? 'Degraded' : 'Connecting…'}
-              </span>
-            </div>
-            <span className="text-[var(--line-strong)]">·</span>
-            <span className="font-mono text-[10px] text-[var(--ink-muted)]">
+        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--bg-0)] px-4">
+          <div className="flex items-center gap-1.5">
+            <HealthDot ok={systemStatus?.health?.ok} />
+            <span className="text-[0.72rem] text-[var(--ink-muted)]">
+              {systemStatus?.health?.ok ? 'Healthy' : systemStatus ? 'Degraded' : 'Connecting…'}
+            </span>
+            <span className="mx-1 text-[var(--line-strong)]">·</span>
+            <span className="font-mono text-[0.64rem] text-[var(--ink-muted)]">
               {overview?.provider || provider}
             </span>
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2.5">
             {superAdmin && (
-              <div className="flex items-center gap-4 text-xs text-[var(--ink-muted)]">
+              <div className="flex items-center gap-3 text-[0.72rem] text-[var(--ink-muted)]">
                 <span><strong className="font-semibold text-[var(--ink)]">{overview?.totalOrgs ?? '—'}</strong> orgs</span>
                 <span><strong className="font-semibold text-[var(--ink)]">{overview?.totalMembers ?? '—'}</strong> users</span>
                 <span><strong className="font-semibold text-[var(--ink)]">{formatBytes(overview?.totalStorageBytes)}</strong> storage</span>
@@ -715,29 +822,24 @@ export default function App() {
             )}
 
             {superAdmin && (
-              <div className={cn(
-                'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.12em]',
-                'border-[color:color-mix(in_srgb,var(--accent)_30%,transparent)] text-[var(--accent)]',
-              )}>
-                <Zap size={10} />
-                Superadmin
-              </div>
+              <Badge variant="default">superadmin</Badge>
             )}
 
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => void refreshAll()}
               disabled={!canAttemptLoad || loading}
-              className="flex items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--line-medium)] bg-[var(--bg-2)] px-3 py-1.5 text-xs text-[var(--ink-secondary)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)] disabled:opacity-40"
             >
               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
               {loading ? 'Loading…' : 'Refresh'}
-            </button>
+            </Button>
           </div>
         </header>
 
         {/* Content scroll area */}
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[1280px] px-6 py-6 space-y-4">
+          <div className="mx-auto max-w-[1280px] px-4 py-4 space-y-3.5">
 
             {/* Status banner */}
             <StatusBanner tone={statusTone} message={statusMessage} />
@@ -790,31 +892,30 @@ export default function App() {
 
             {/* ── Overview ── */}
             {activeToken && superAdmin && section === 'overview' && (
-              <div className="grid gap-4">
+              <div className="grid gap-3.5">
                 {/* KPI row */}
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
                   <StatCard label="Organizations" value={overview?.totalOrgs ?? '—'} accent />
                   <StatCard label="Total users" value={overview?.totalMembers ?? '—'} />
                   <StatCard label="Total vaults" value={overview?.totalVaults ?? '—'} />
                   <StatCard label="Storage footprint" value={formatBytes(overview?.totalStorageBytes)} />
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {/* Subscriptions breakdown */}
-                  <Panel>
-                    <PanelHeader title="Subscriptions by tier" description="Current distribution across plan tiers" />
-                    <div className="px-6 py-4 grid gap-3">
+                <div className="grid gap-3.5 lg:grid-cols-2">
+                  <Panel delay={70}>
+                    <PanelHeader title="Subscriptions by tier" description="Distribution across plan tiers" />
+                    <div className="px-4 py-3 grid gap-2.5">
                       {(['free', 'premium', 'enterprise'] as const).map((tier) => {
                         const count = overview?.subscriptionsByTier[tier] ?? 0
                         const total = (overview?.totalOrgs || 1)
                         const pct = Math.round((count / total) * 100)
                         return (
-                          <div key={tier} className="grid gap-1.5">
-                            <div className="flex items-center justify-between text-xs">
+                          <div key={tier} className="grid gap-1">
+                            <div className="flex items-center justify-between text-[0.76rem]">
                               <span className="capitalize text-[var(--ink-secondary)]">{tier}</span>
                               <strong className="tabular-nums text-[var(--ink)]">{count}</strong>
                             </div>
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-3)]">
+                            <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg-3)]">
                               <div
                                 className={cn(
                                   'h-full rounded-full transition-all',
@@ -829,9 +930,8 @@ export default function App() {
                     </div>
                   </Panel>
 
-                  {/* Subscriptions by status */}
-                  <Panel>
-                    <PanelHeader title="Subscriptions by status" description="Health of current subscription records" />
+                  <Panel delay={140}>
+                    <PanelHeader title="Subscriptions by status" description="Health of current records" />
                     <div>
                       {[
                         { key: 'active', label: 'Active', color: 'var(--safe)' },
@@ -855,23 +955,22 @@ export default function App() {
                   </Panel>
                 </div>
 
-                {/* Selected org quick view */}
                 {selectedOrg && (
-                  <Panel>
+                  <Panel delay={210}>
                     <PanelHeader
                       title="Active context"
-                      description="Currently selected organization for detail views"
+                      description="Currently selected organization"
                       action={
                         <button
                           onClick={() => setSection('customers')}
-                          className="text-xs text-[var(--accent)] hover:underline"
+                          className="text-[0.76rem] text-[var(--accent)] hover:underline"
                         >
                           Inspect →
                         </button>
                       }
                     />
-                    <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
-                      <StatCard label="Org name" value={<span className="text-base">{selectedOrg.name}</span>} />
+                    <div className="grid grid-cols-2 gap-2.5 p-4 sm:grid-cols-4">
+                      <StatCard label="Org name" value={<span className="text-[0.88rem]">{selectedOrg.name}</span>} />
                       <StatCard label="Members" value={usage?.memberCount ?? members.length} />
                       <StatCard label="Vaults" value={usage?.vaultCount ?? vaults.length} />
                       <StatCard label="Storage" value={formatBytes(usage?.storageBytes)} />
@@ -883,136 +982,250 @@ export default function App() {
 
             {/* ── Customers ── */}
             {activeToken && superAdmin && section === 'customers' && (
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_380px]">
+              <div className="grid gap-3.5 xl:grid-cols-[minmax(0,1fr)_400px]">
                 {/* Search & list */}
-                <Panel>
-                  <PanelHeader
-                    title="Customers"
-                    description="Search by org name, org ID, member ID, or email fragment"
-                    action={
-                      <div className="flex items-center gap-2">
-                        <div className="relative">
-                          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
-                          <Input
-                            className="h-8 pl-8 text-xs"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && void handleSearchCustomers()}
-                            placeholder="Search…"
-                          />
+                <div className="grid gap-3.5 content-start">
+                  <Panel>
+                    <PanelHeader
+                      title="Org Studio"
+                      description="Create a named org and optionally reserve the org ID"
+                    />
+                    <div className="grid gap-3 p-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
+                      <Field label="Org name" hint="Human-readable org label">
+                        <Input
+                          value={newOrgName}
+                          onChange={(e) => setNewOrgName(e.target.value)}
+                          placeholder="Northwind Security"
+                        />
+                      </Field>
+                      <Field label="Org ID" hint="Optional. Leave blank to auto-generate">
+                        <Input
+                          value={newOrgId}
+                          onChange={(e) => setNewOrgId(e.target.value)}
+                          placeholder="org_northwind_security"
+                        />
+                      </Field>
+                      <Button onClick={() => void handleCreateOrg()} disabled={!newOrgName.trim()}>
+                        Create org
+                      </Button>
+                    </div>
+                  </Panel>
+
+                  <Panel delay={70}>
+                    <PanelHeader
+                      title="Customers"
+                      description="Search by org name, org ID, member ID, or email"
+                      action={
+                        <div className="flex items-center gap-1.5">
+                          <div className="relative">
+                            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--ink-muted)]" />
+                            <Input
+                              className="h-[30px] w-44 pl-7 text-[0.76rem]"
+                              value={searchQuery}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && void handleSearchCustomers()}
+                              placeholder="Search…"
+                            />
+                          </div>
+                          <Button variant="secondary" size="sm" onClick={() => void handleSearchCustomers()}>
+                            Search
+                          </Button>
                         </div>
-                        <Button variant="secondary" size="sm" onClick={() => void handleSearchCustomers()}>
-                          Search
-                        </Button>
-                      </div>
-                    }
-                  />
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[640px] text-left">
-                      <thead>
-                        <tr className="border-b border-[var(--line)]">
-                          {['Organization', 'Members', 'Plan', 'Last activity', ''].map((h) => (
-                            <th key={h} className="px-6 pb-3 pt-4 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">{h}</th>
+                      }
+                    />
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[560px] text-left">
+                        <thead>
+                          <tr className="border-b border-[var(--line)]">
+                            {['Organization', 'Members', 'Plan', 'Last activity', ''].map((h) => (
+                              <th key={h} className="px-4 pb-2 pt-2.5 font-mono text-[0.56rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {customerRows.map((row) => (
+                            <tr
+                              key={row.orgId}
+                              onClick={() => void handleSelectOrg(row.orgId)}
+                              className={cn(
+                                'group cursor-pointer border-b border-[var(--line)] transition-colors last:border-0',
+                                row.orgId === selectedOrgId
+                                  ? 'bg-[var(--accent-soft)]'
+                                  : 'hover:bg-[var(--bg-2)]',
+                              )}
+                            >
+                              <td className="px-4 py-2.5">
+                                <div className="text-[0.82rem] font-medium text-[var(--ink)]">{row.orgName}</div>
+                                <div className="mt-px font-mono text-[0.64rem] text-[var(--ink-muted)]">{row.orgId}</div>
+                                {row.matchedMembers.length > 0 && (
+                                  <div className="mt-0.5 text-[0.64rem] text-[var(--info)]">Matched: {row.matchedMembers.join(', ')}</div>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-[0.82rem] tabular-nums text-[var(--ink-secondary)]">{row.memberCount}</td>
+                              <td className="px-4 py-2.5">
+                                {row.subscriptionTier ? (
+                                  <Badge variant={row.subscriptionTier === 'enterprise' ? 'default' : row.subscriptionTier === 'premium' ? 'success' : 'muted'}>
+                                    {row.subscriptionTier}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-[0.72rem] text-[var(--ink-muted)]">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-[0.72rem] text-[var(--ink-muted)]">{formatDate(row.lastActivityAt)}</td>
+                              <td className="px-4 py-2.5 text-right">
+                                <span className="text-[0.72rem] text-[var(--accent)] opacity-0 transition-opacity group-hover:opacity-100">→</span>
+                              </td>
+                            </tr>
                           ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {customerRows.map((row) => (
-                          <tr
-                            key={row.orgId}
-                            className={cn(
-                              'border-b border-[var(--line)] transition-colors last:border-0',
-                              row.orgId === selectedOrgId ? 'bg-[var(--bg-3)]' : 'hover:bg-[var(--bg-2)]',
-                            )}
-                          >
-                            <td className="px-6 py-4">
-                              <div className="text-sm font-medium text-[var(--ink)]">{row.orgName}</div>
-                              <div className="mt-0.5 font-mono text-[10px] text-[var(--ink-muted)]">{row.orgId}</div>
-                              {row.matchedMembers.length > 0 && (
-                                <div className="mt-1 text-[10px] text-[var(--info)]">Matched: {row.matchedMembers.join(', ')}</div>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 text-sm tabular-nums text-[var(--ink-secondary)]">{row.memberCount}</td>
-                            <td className="px-6 py-4">
-                              {row.subscriptionTier ? (
-                                <Badge variant={row.subscriptionTier === 'enterprise' ? 'default' : row.subscriptionTier === 'premium' ? 'success' : 'muted'}>
-                                  {row.subscriptionTier}
-                                </Badge>
-                              ) : (
-                                <span className="text-xs text-[var(--ink-muted)]">—</span>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 text-xs text-[var(--ink-muted)]">{formatDate(row.lastActivityAt)}</td>
-                            <td className="px-6 py-4 text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => void handleSelectOrg(row.orgId)}
-                              >
-                                Inspect
-                              </Button>
-                            </td>
-                          </tr>
-                        ))}
-                        {customerRows.length === 0 && (
-                          <tr>
-                            <td colSpan={5} className="px-6 py-8 text-center text-xs text-[var(--ink-muted)]">
-                              No customers found.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </Panel>
+                          {customerRows.length === 0 && (
+                            <tr>
+                              <td colSpan={5} className="px-4 py-8 text-center text-[0.76rem] text-[var(--ink-muted)]">
+                                No customers found.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Panel>
+                </div>
 
                 {/* Detail pane */}
-                <div className="grid gap-4 self-start">
-                  {/* Usage */}
-                  <Panel>
+                <div className="grid gap-3.5 content-start">
+                  <Panel delay={140}>
                     <PanelHeader
                       title={selectedOrg ? selectedOrg.name : 'Customer detail'}
                       description={selectedOrg?.id || 'Select a customer to inspect'}
                     />
-                    <div className="grid grid-cols-2 gap-2 p-4">
+                    <div className="grid gap-3 p-4">
+                      <Field label="Org name">
+                        <Input
+                          value={orgNameDraft}
+                          onChange={(e) => setOrgNameDraft(e.target.value)}
+                          placeholder="Organization name"
+                          disabled={!selectedOrg}
+                        />
+                      </Field>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <Field label="Org ID">
+                          <Input value={selectedOrg?.id || ''} readOnly disabled className="opacity-60" />
+                        </Field>
+                        <Field label="Created by">
+                          <Input value={selectedOrg?.createdBy || '—'} readOnly disabled className="opacity-60" />
+                        </Field>
+                      </div>
+                      <div className="flex justify-end">
+                        <Button size="sm" onClick={() => void handleRenameOrg()} disabled={!selectedOrg || !orgNameDraft.trim()}>
+                          Save org name
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2.5 border-t border-[var(--line)] p-4">
                       <StatCard label="Members" value={usage?.memberCount ?? members.length} />
                       <StatCard label="Vaults" value={usage?.vaultCount ?? vaults.length} />
                       <StatCard label="Storage" value={formatBytes(usage?.storageBytes)} />
-                      <StatCard label="Last active" value={<span className="text-sm">{formatDate(usage?.lastVaultActivityAt)}</span>} />
+                      <StatCard label="Last active" value={<span className="text-[0.82rem]">{formatDate(usage?.lastVaultActivityAt)}</span>} />
                     </div>
                   </Panel>
 
                   {/* Members */}
-                  <Panel>
-                    <PanelHeader title="Members" />
-                    <div className="px-5 py-4">
+                  <Panel delay={210}>
+                    <PanelHeader title="Members" description="Invite members by email. They get access when they sign in." />
+                    <div className="grid gap-3 p-4">
+                      <div className="flex items-end gap-2.5">
+                        <div className="flex-1">
+                          <Field label="Email">
+                            <Input
+                              type="email"
+                              value={memberInviteEmail}
+                              onChange={(e) => setMemberInviteEmail(e.target.value)}
+                              placeholder="member@company.com"
+                              disabled={!selectedOrg}
+                              onKeyDown={(e) => { if (e.key === 'Enter') void handleInviteMember() }}
+                            />
+                          </Field>
+                        </div>
+                        <div className="w-24">
+                          <Field label="Role">
+                            <ControlSelect value={memberInviteRole} onChange={(value) => setMemberInviteRole(value as Role)}>
+                              <option value="viewer">viewer</option>
+                              <option value="editor">editor</option>
+                              <option value="admin">admin</option>
+                              <option value="owner">owner</option>
+                            </ControlSelect>
+                          </Field>
+                        </div>
+                        <Button size="sm" onClick={() => void handleInviteMember()} disabled={!selectedOrg || !memberInviteEmail.trim()}>
+                          Invite
+                        </Button>
+                      </div>
                       {members.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {members.map((member) => (
-                            <Badge key={member.memberId} variant="muted">
-                              {member.role}
-                            </Badge>
-                          ))}
+                        <div className="overflow-x-auto -mx-4 mt-1">
+                          <table className="w-full text-left">
+                            <thead>
+                              <tr className="border-b border-[var(--line)]">
+                                {['Member', 'Role', ''].map((h) => (
+                                  <th key={h} className="px-4 pb-2 font-mono text-[0.56rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {members.map((member) => (
+                                <tr key={member.memberId} className="border-b border-[var(--line)] transition-colors last:border-0 hover:bg-[var(--bg-2)]">
+                                  <td className="px-4 py-2.5 align-top">
+                                    <div className="flex items-center gap-1.5 text-[0.76rem] font-medium text-[var(--ink)]">
+                                      {member.email || member.memberId.slice(0, 20) + (member.memberId.length > 20 ? '\u2026' : '')}
+                                      {member.memberId.startsWith('invite:') && (
+                                        <span className="rounded-[4px] bg-[var(--weak-soft)] px-1.5 py-px text-[0.5rem] font-semibold uppercase tracking-[0.06em] text-[var(--weak)]">Pending</span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-2.5 align-top">
+                                    <Badge variant="muted">{member.role}</Badge>
+                                  </td>
+                                  <td className="px-4 py-2.5 text-right align-top">
+                                    <button
+                                      onClick={() => void handleRemoveMember(member.memberId)}
+                                      className="text-[0.64rem] text-[var(--ink-muted)] transition-colors hover:text-[var(--exposed)]"
+                                    >
+                                      Remove
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       ) : (
-                        <p className="text-xs text-[var(--ink-muted)]">No members yet.</p>
+                        <p className="text-[0.76rem] text-[var(--ink-muted)]">No members yet.</p>
                       )}
                     </div>
                   </Panel>
 
                   {/* Audit */}
-                  <Panel>
+                  <Panel delay={280}>
                     <PanelHeader title="Recent audit" />
                     <div className="divide-y divide-[var(--line)]">
-                      {auditEvents.slice(0, 6).map((event) => (
-                        <div key={event.id} className="px-5 py-3">
-                          <div className="text-xs font-medium text-[var(--ink)]">{event.action}</div>
-                          <div className="mt-0.5 text-[10px] text-[var(--ink-secondary)]">{event.target}</div>
-                          <div className="mt-1 text-[10px] text-[var(--ink-muted)]">{formatDate(event.createdAt)}</div>
-                        </div>
-                      ))}
+                      {auditEvents.slice(0, 6).map((event) => {
+                        const actionLower = event.action.toLowerCase()
+                        const dotColor = actionLower.includes('delete') || actionLower.includes('remove')
+                          ? 'bg-[var(--exposed)]'
+                          : actionLower.includes('create') || actionLower.includes('add')
+                            ? 'bg-[var(--safe)]'
+                            : 'bg-[var(--info)]'
+                        return (
+                          <div key={event.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                            <span className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', dotColor)} />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[0.76rem] font-medium text-[var(--ink)]">{event.action}</div>
+                              <div className="mt-px truncate text-[0.64rem] text-[var(--ink-secondary)]">{event.target}</div>
+                              <div className="mt-0.5 text-[0.64rem] text-[var(--ink-muted)]">{formatDate(event.createdAt)}</div>
+                            </div>
+                          </div>
+                        )
+                      })}
                       {auditEvents.length === 0 && (
-                        <div className="px-5 py-4 text-xs text-[var(--ink-muted)]">No recent audit events.</div>
+                        <div className="px-4 py-6 text-center text-[0.76rem] text-[var(--ink-muted)]">No recent audit events.</div>
                       )}
                     </div>
                   </Panel>
@@ -1022,11 +1235,11 @@ export default function App() {
 
             {/* ── Subscriptions ── */}
             {activeToken && superAdmin && section === 'subscriptions' && (
-              <div className="grid gap-4 xl:grid-cols-2">
+              <div className="grid gap-3.5 xl:grid-cols-2">
                 {/* Editor */}
                 <Panel>
                   <PanelHeader title="Subscription editor" description="Adjust org- or user-scoped subscriptions" />
-                  <div className="grid gap-4 p-6">
+                  <div className="grid gap-3 p-4">
                     <div className="grid grid-cols-2 gap-3">
                       <Field label="Scope">
                         <ControlSelect value={scopeType} onChange={(v) => setScopeType(v as SubscriptionScopeType)}>
@@ -1105,14 +1318,14 @@ export default function App() {
                 </Panel>
 
                 {/* Overrides */}
-                <div className="grid gap-4 self-start">
-                  <Panel>
+                <div className="grid gap-3.5 content-start">
+                  <Panel delay={70}>
                     <PanelHeader
                       title="Email entitlement overrides"
                       description="Per-email capability grants independent of org subscription"
-                      action={<Mail size={14} className="text-[var(--accent)]" />}
+                      action={<Mail size={13} className="text-[var(--accent)]" />}
                     />
-                    <div className="grid gap-4 p-6">
+                    <div className="grid gap-3 p-4">
                       <Field label="Registered email" hint="Matched against identity email in auth context">
                         <Input type="email" value={overrideEmail} onChange={(e) => setOverrideEmail(e.target.value)} placeholder="customer@company.com" />
                       </Field>
@@ -1228,22 +1441,22 @@ export default function App() {
                     <thead>
                       <tr className="border-b border-[var(--line)]">
                         {['Vault ID', 'Owner', 'Revision', 'Blobs', 'Storage', 'Updated', ''].map((h) => (
-                          <th key={h} className="px-6 pb-3 pt-4 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--ink-muted)]">{h}</th>
+                          <th key={h} className="px-4 pb-2 pt-2.5 font-mono text-[0.56rem] uppercase tracking-[0.08em] text-[var(--ink-muted)]">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {vaults.map((vault) => (
                         <tr key={vault.vaultId} className="border-b border-[var(--line)] last:border-0 hover:bg-[var(--bg-2)]">
-                          <td className="px-6 py-4">
-                            <div className="font-mono text-xs text-[var(--ink)]">{vault.vaultId}</div>
+                          <td className="px-4 py-2.5">
+                            <div className="font-mono text-[0.76rem] text-[var(--ink)]">{vault.vaultId}</div>
                           </td>
-                          <td className="px-6 py-4 text-xs text-[var(--ink-muted)]">{vault.ownerId || <span className="text-[var(--ink-faint)] italic">org-scoped</span>}</td>
-                          <td className="px-6 py-4 text-sm tabular-nums text-[var(--ink-secondary)]">{vault.revision}</td>
-                          <td className="px-6 py-4 text-sm tabular-nums text-[var(--ink-secondary)]">{vault.blobCount}</td>
-                          <td className="px-6 py-4 text-sm text-[var(--ink-secondary)]">{formatBytes(vault.storageBytes)}</td>
-                          <td className="px-6 py-4 text-xs text-[var(--ink-muted)]">{formatDate(vault.updatedAt)}</td>
-                          <td className="px-6 py-4 text-right">
+                          <td className="px-4 py-2.5 text-[0.76rem] text-[var(--ink-muted)]">{vault.ownerId || <span className="text-[var(--ink-faint)] italic">org-scoped</span>}</td>
+                          <td className="px-4 py-2.5 text-[0.82rem] tabular-nums text-[var(--ink-secondary)]">{vault.revision}</td>
+                          <td className="px-4 py-2.5 text-[0.82rem] tabular-nums text-[var(--ink-secondary)]">{vault.blobCount}</td>
+                          <td className="px-4 py-2.5 text-[0.82rem] text-[var(--ink-secondary)]">{formatBytes(vault.storageBytes)}</td>
+                          <td className="px-4 py-2.5 text-[0.76rem] text-[var(--ink-muted)]">{formatDate(vault.updatedAt)}</td>
+                          <td className="px-4 py-2.5 text-right">
                             <button
                               onClick={() => void handleDeleteVault(vault.vaultId)}
                               className="rounded-[var(--radius-sm)] border border-[color:color-mix(in_srgb,var(--exposed)_24%,transparent)] bg-[var(--exposed-soft)] px-2.5 py-1 text-[10px] text-[var(--exposed)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--exposed)_20%,transparent)]"
@@ -1255,7 +1468,7 @@ export default function App() {
                       ))}
                       {vaults.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="px-6 py-10 text-center text-xs text-[var(--ink-muted)]">
+                          <td colSpan={7} className="px-4 py-8 text-center text-[0.76rem] text-[var(--ink-muted)]">
                             No org-scoped vaults for the selected customer.
                           </td>
                         </tr>
@@ -1268,7 +1481,7 @@ export default function App() {
 
             {/* ── System ── */}
             {activeToken && superAdmin && section === 'system' && (
-              <div className="grid gap-4 xl:grid-cols-2">
+              <div className="grid gap-3.5 xl:grid-cols-2">
                 {/* Service status */}
                 <Panel>
                   <PanelHeader
@@ -1305,7 +1518,7 @@ export default function App() {
                       }
                     />
                     {systemStatus?.note && (
-                      <div className="px-6 py-4 text-xs text-[var(--ink-secondary)]">{systemStatus.note}</div>
+                      <div className="px-4 py-3 text-[0.76rem] text-[var(--ink-secondary)]">{systemStatus.note}</div>
                     )}
                   </div>
                 </Panel>
@@ -1324,7 +1537,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="px-6 py-8 text-center text-xs text-[var(--ink-muted)]">
+                    <div className="px-4 py-6 text-center text-[0.76rem] text-[var(--ink-muted)]">
                       Metrics are unavailable on this provider.
                     </div>
                   )}

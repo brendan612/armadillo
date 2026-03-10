@@ -71,6 +71,7 @@ SYNC_DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db> npm run sync:selfhos
 - `GET /v2/admin/me`
 - `GET /v2/admin/orgs`
 - `POST /v2/admin/orgs`
+- `PUT /v2/admin/orgs/:orgId`
 - `GET /v2/admin/orgs/:orgId/members`
 - `POST /v2/admin/orgs/:orgId/members`
 - `DELETE /v2/admin/orgs/:orgId/members/:memberId`

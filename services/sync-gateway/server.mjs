@@ -76,6 +76,10 @@ function normalizeTargetValue(targetType, value) {
   const trimmed = String(value || '').trim()
   return targetType === 'email' ? trimmed.toLowerCase() : trimmed
 }
+function normalizeMemberEmail(value) {
+  const trimmed = String(value || '').trim().toLowerCase()
+  return trimmed || null
+}
 function entitlementOverrideKey(targetType, targetValue) { return `${targetType}:${targetValue}` }
 function subscriptionRecordKey(scopeType, scopeId) { return `${scopeType}:${scopeId}` }
 function normalizeScopeId(scopeType, scopeId) { const trimmed = String(scopeId || '').trim(); return scopeType === 'user' && trimmed.includes('@') ? trimmed.toLowerCase() : trimmed }
@@ -521,6 +525,34 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    const adminOrgUpdateV2 = url.pathname.match(/^\/v2\/admin\/orgs(?:\/([^/]+))?$/)
+    if (adminOrgUpdateV2 && req.method === 'PUT') {
+      const admin = await resolveAdminContext(req, url)
+      if (admin?.error) { metrics.authFailuresTotal += 1; json(req, res, admin.status || 401, { error: admin.error }); return }
+      if (!admin.context.permissions.superAdmin) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'superadmin required' }); return }
+
+      const body = await readJsonBody(req)
+      const orgId = String(adminOrgUpdateV2[1] || body.orgId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
+      const name = typeof body.name === 'string' ? body.name.trim() : ''
+      if (!orgId) { json(req, res, 400, { error: 'orgId is invalid' }); return }
+      if (!name) { json(req, res, 400, { error: 'name is required' }); return }
+      if (!state.orgs[orgId]) { json(req, res, 404, { error: 'org not found' }); return }
+      state.orgs[orgId].name = name
+      appendAudit(makeAudit(orgId, admin.context.subject, 'org.rename', orgId, { name }))
+      writeState(state)
+      json(req, res, 200, {
+        org: {
+          id: state.orgs[orgId].id,
+          name: state.orgs[orgId].name,
+          createdAt: state.orgs[orgId].createdAt,
+          createdBy: state.orgs[orgId].createdBy || null,
+          myRole: state.orgs[orgId].members?.[admin.context.subject]?.role || null,
+          memberCount: Object.keys(state.orgs[orgId].members || {}).length,
+        },
+      })
+      return
+    }
+
     const adminMembersV2 = url.pathname.match(/^\/v2\/admin\/orgs\/([^/]+)\/members$/)
     if (adminMembersV2 && req.method === 'GET') {
       const admin = await resolveAdminContext(req, url)
@@ -529,7 +561,7 @@ const server = createServer(async (req, res) => {
       const orgId = decodeURIComponent(adminMembersV2[1])
       if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const members = Object.entries(state.orgs?.[orgId]?.members || {})
-        .map(([memberId, row]) => ({ memberId, role: normalizeRole(row?.role, 'viewer'), addedAt: row?.addedAt || nowIso() }))
+        .map(([memberId, row]) => ({ memberId, email: normalizeMemberEmail(row?.email), role: normalizeRole(row?.role, 'viewer'), addedAt: row?.addedAt || nowIso() }))
         .sort((a, b) => (a.memberId > b.memberId ? 1 : -1))
       json(req, res, 200, { members })
       return
@@ -543,15 +575,16 @@ const server = createServer(async (req, res) => {
       if (!admin.context.permissions.superAdmin && orgId !== admin.context.orgId) { metrics.authFailuresTotal += 1; json(req, res, 403, { error: 'forbidden' }); return }
       const body = await readJsonBody(req)
       const memberId = typeof body.memberId === 'string' ? body.memberId.trim() : ''
+      const email = body && Object.prototype.hasOwnProperty.call(body, 'email') ? normalizeMemberEmail(body.email) : undefined
       const memberRole = normalizeRole(body.role, 'viewer')
       if (!memberId) { json(req, res, 400, { error: 'memberId is required' }); return }
       state.orgs[orgId] = state.orgs[orgId] || { id: orgId, name: `Organization ${orgId}`, createdAt: nowIso(), members: {} }
       const existing = state.orgs[orgId].members?.[memberId]
       const addedAt = existing?.addedAt || nowIso()
-      state.orgs[orgId].members[memberId] = { role: memberRole, addedAt }
-      appendAudit(makeAudit(orgId, admin.context.subject, 'org.member.upsert', memberId, { role: memberRole }))
+      state.orgs[orgId].members[memberId] = { role: memberRole, addedAt, ...(email !== undefined ? { email } : existing?.email ? { email: existing.email } : {}) }
+      appendAudit(makeAudit(orgId, admin.context.subject, 'org.member.upsert', memberId, { role: memberRole, ...(email !== undefined ? { email } : {}) }))
       writeState(state)
-      json(req, res, 200, { member: { memberId, role: memberRole, addedAt } })
+      json(req, res, 200, { member: { memberId, email: normalizeMemberEmail(state.orgs[orgId].members[memberId]?.email), role: memberRole, addedAt } })
       return
     }
 
@@ -725,13 +758,21 @@ const server = createServer(async (req, res) => {
       const queryText = String(url.searchParams.get('q') || '').trim().toLowerCase()
       if (!queryText) { json(req, res, 200, { results: [] }); return }
       const results = Object.values(state.orgs || {})
-        .filter((org) => org?.id?.toLowerCase?.().includes(queryText) || org?.name?.toLowerCase?.().includes(queryText) || Object.keys(org?.members || {}).some((memberId) => memberId.toLowerCase().includes(queryText)))
+        .filter((org) => org?.id?.toLowerCase?.().includes(queryText)
+          || org?.name?.toLowerCase?.().includes(queryText)
+          || Object.entries(org?.members || {}).some(([memberId, row]) => memberId.toLowerCase().includes(queryText) || normalizeMemberEmail(row?.email)?.includes(queryText)))
         .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')))
         .map((org) => ({
           orgId: org.id,
           orgName: org.name || `Organization ${org.id}`,
           memberCount: Object.keys(org?.members || {}).length,
-          matchedMembers: Object.keys(org?.members || {}).filter((memberId) => memberId.toLowerCase().includes(queryText)),
+          matchedMembers: Object.entries(org?.members || {}).flatMap(([memberId, row]) => {
+            const email = normalizeMemberEmail(row?.email)
+            if (memberId.toLowerCase().includes(queryText) && email) return [`${memberId} · ${email}`]
+            if (memberId.toLowerCase().includes(queryText)) return [memberId]
+            if (email?.includes(queryText)) return [email]
+            return []
+          }),
           subscriptionTier: getSubscriptionRecord('org', org.id)?.tier || null,
           lastActivityAt: Object.values(state.snapshotsByOrg?.[org.id] || {}).sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))[0]?.updatedAt || null,
         }))

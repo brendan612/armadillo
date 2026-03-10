@@ -2,6 +2,10 @@ import { mutation, query } from './_generated/server'
 import type { Id } from './_generated/dataModel'
 import { v } from 'convex/values'
 
+function nowIso(value = Date.now()) {
+  return new Date(value).toISOString()
+}
+
 const DEFAULT_MAX_BLOB_FILE_BYTES = 20 * 1024 * 1024
 const DEFAULT_MAX_BLOB_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 const DEFAULT_STORAGE_LIMIT_PREMIUM_BYTES = 2 * 1024 * 1024 * 1024
@@ -22,6 +26,11 @@ const DEFAULT_FLAGS = {
 function normalizeScopeId(scopeType: 'org' | 'user', scopeId: string) {
   const trimmed = scopeId.trim()
   return scopeType === 'user' && trimmed.includes('@') ? trimmed.toLowerCase() : trimmed
+}
+
+function normalizeMemberEmail(email: string | undefined) {
+  const trimmed = typeof email === 'string' ? email.trim().toLowerCase() : ''
+  return trimmed || undefined
 }
 
 function isSubscriptionEffective(status: 'active' | 'trialing' | 'canceled' | 'past_due' | 'paused') {
@@ -429,6 +438,7 @@ export const ensureOrgMemberRole = mutation({
     orgId: v.string(),
     memberId: v.string(),
     now: v.string(),
+    email: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const existingOrg = await ctx.db
@@ -449,17 +459,102 @@ export const ensureOrgMemberRole = mutation({
       .withIndex('by_org_member', (q) => q.eq('orgId', args.orgId).eq('memberId', args.memberId))
       .unique()
     if (existing?.role) {
+      if (args.email && existing.email !== args.email) {
+        await ctx.db.patch(existing._id, { email: args.email, updatedAt: args.now })
+      }
       return existing.role
     }
+
+    // Check for an existing member with the same email (invite or stale memberId)
+    if (args.email) {
+      const emailLower = args.email.toLowerCase()
+      const orgMembers = await ctx.db
+        .query('orgMembers')
+        .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+        .collect()
+      const byEmail = orgMembers.filter(
+        (m) => m.email?.toLowerCase() === emailLower,
+      )
+      if (byEmail.length > 0) {
+        // Keep the first match, update its memberId to the real subject, delete any dupes
+        const keep = byEmail[0]
+        await ctx.db.patch(keep._id, {
+          memberId: args.memberId,
+          email: args.email,
+          updatedAt: args.now,
+        })
+        for (let i = 1; i < byEmail.length; i++) {
+          await ctx.db.delete(byEmail[i]._id)
+        }
+        return keep.role
+      }
+    }
+
     await ctx.db.insert('orgMembers', {
       orgId: args.orgId,
       memberId: args.memberId,
+      ...(args.email ? { email: args.email } : {}),
       role: 'owner',
       addedAt: args.now,
       updatedAt: args.now,
       addedBy: args.memberId,
     })
     return 'owner' as const
+  },
+})
+
+export const claimPendingInvites = mutation({
+  args: {
+    memberId: v.string(),
+    email: v.string(),
+    now: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const email = args.email.trim().toLowerCase()
+    if (!email) {
+      return {
+        claimed: 0,
+        claimedInvites: [] as Array<{
+          orgId: string
+          role: 'owner' | 'admin' | 'editor' | 'viewer'
+          email: string | null
+          previousMemberId: string
+        }>,
+      }
+    }
+    const allMembers = await ctx.db.query('orgMembers').collect()
+    const pending = allMembers.filter(
+      (m) => m.email?.toLowerCase() === email && m.memberId !== args.memberId,
+    )
+    let claimed = 0
+    const claimedInvites: Array<{
+      orgId: string
+      role: 'owner' | 'admin' | 'editor' | 'viewer'
+      email: string | null
+      previousMemberId: string
+    }> = []
+    for (const invite of pending) {
+      const alreadyExists = await ctx.db
+        .query('orgMembers')
+        .withIndex('by_org_member', (q) => q.eq('orgId', invite.orgId).eq('memberId', args.memberId))
+        .unique()
+      if (alreadyExists) {
+        await ctx.db.delete(invite._id)
+      } else {
+        await ctx.db.patch(invite._id, {
+          memberId: args.memberId,
+          updatedAt: args.now,
+        })
+      }
+      claimed += 1
+      claimedInvites.push({
+        orgId: invite.orgId,
+        role: invite.role,
+        email: invite.email ?? null,
+        previousMemberId: invite.memberId,
+      })
+    }
+    return { claimed, claimedInvites }
   },
 })
 
@@ -596,6 +691,31 @@ export const createAdminOrg = mutation({
   },
 })
 
+export const updateAdminOrg = mutation({
+  args: {
+    orgId: v.string(),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const orgId = args.orgId.trim()
+    const name = args.name.trim()
+    const existingOrg = await ctx.db
+      .query('orgs')
+      .withIndex('by_org_id', (q) => q.eq('orgId', orgId))
+      .unique()
+    if (!existingOrg) {
+      return null
+    }
+    await ctx.db.patch(existingOrg._id, { name })
+    return {
+      id: orgId,
+      name,
+      createdAt: existingOrg.createdAt,
+      createdBy: existingOrg.createdBy,
+    }
+  },
+})
+
 export const listOrgMembers = query({
   args: { orgId: v.string() },
   handler: async (ctx, args) => {
@@ -610,11 +730,13 @@ export const upsertOrgMember = mutation({
   args: {
     orgId: v.string(),
     memberId: v.string(),
+    email: v.optional(v.string()),
     role: roleValidator,
     now: v.string(),
     actorSubject: v.string(),
   },
   handler: async (ctx, args) => {
+    const email = normalizeMemberEmail(args.email)
     const existingOrg = await ctx.db
       .query('orgs')
       .withIndex('by_org_id', (q) => q.eq('orgId', args.orgId))
@@ -634,15 +756,39 @@ export const upsertOrgMember = mutation({
       .unique()
     if (existing) {
       await ctx.db.patch(existing._id, {
+        ...(args.email !== undefined ? { email } : {}),
         role: args.role,
         updatedAt: args.now,
         addedBy: args.actorSubject,
       })
       return { addedAt: existing.addedAt }
     }
+
+    // Prevent duplicate email in the same org
+    if (email) {
+      const orgMembers = await ctx.db
+        .query('orgMembers')
+        .withIndex('by_org', (q) => q.eq('orgId', args.orgId))
+        .collect()
+      const existingByEmail = orgMembers.find(
+        (m) => m.email?.toLowerCase() === email.toLowerCase(),
+      )
+      if (existingByEmail) {
+        await ctx.db.patch(existingByEmail._id, {
+          memberId: args.memberId,
+          email,
+          role: args.role,
+          updatedAt: args.now,
+          addedBy: args.actorSubject,
+        })
+        return { addedAt: existingByEmail.addedAt }
+      }
+    }
+
     await ctx.db.insert('orgMembers', {
       orgId: args.orgId,
       memberId: args.memberId,
+      ...(email ? { email } : {}),
       role: args.role,
       addedAt: args.now,
       updatedAt: args.now,
@@ -990,9 +1136,14 @@ export const searchCustomers = query({
 
     for (const row of members) {
       memberCountByOrg.set(row.orgId, (memberCountByOrg.get(row.orgId) || 0) + 1)
-      if (row.memberId.toLowerCase().includes(needle)) {
+      const matched = row.memberId.toLowerCase().includes(needle)
+        ? row.memberId
+        : row.email?.toLowerCase().includes(needle)
+          ? row.email
+          : null
+      if (matched) {
         const rows = matchingMembersByOrg.get(row.orgId) ?? []
-        rows.push(row.memberId)
+        rows.push(matched)
         matchingMembersByOrg.set(row.orgId, rows)
       }
     }
@@ -1059,4 +1210,3 @@ export const getEffectiveEntitlementSummary = query({
     }
   },
 })
-

@@ -70,8 +70,8 @@ export function AdminCenter() {
   const [usage, setUsage] = useState<OrgUsageSummary | null>(null)
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null)
   const [auditEvents, setAuditEvents] = useState<AdminAuditEvent[]>([])
-  const [newMemberId, setNewMemberId] = useState('')
-  const [newMemberRole, setNewMemberRole] = useState<Role>('viewer')
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<Role>('viewer')
   const [selectedPlan, setSelectedPlan] = useState<PlanTier>('free')
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus>('active')
   const [billingMode, setBillingMode] = useState<BillingMode>('manual')
@@ -161,27 +161,50 @@ export function AdminCenter() {
     })
   }, [adminMe?.permissions.allowed, effectiveOrgId, loadOrgData])
 
-  async function handleSaveMember() {
-    if (!effectiveOrgId || !newMemberId.trim()) return
+  async function handleInviteMember() {
+    const email = inviteEmail.trim().toLowerCase()
+    if (!effectiveOrgId || !email) return
     setLoading(true)
     setStatusMessage('')
     try {
-      await client.upsertMember(effectiveOrgId, {
-        memberId: newMemberId.trim(),
-        role: newMemberRole,
-      })
-      setNewMemberId('')
+      if (provider === 'convex') {
+        const response = await client.inviteMember(effectiveOrgId, {
+          email,
+          role: inviteRole,
+        })
+        if (response.emailSent) {
+          setInviteEmail('')
+          setStatusMessage('Invite email sent')
+        } else {
+          setStatusMessage(response.deliveryError
+            ? `Pending invite saved, but email delivery failed: ${response.deliveryError}`
+            : 'Pending invite saved, but email delivery failed')
+        }
+      } else {
+        await client.upsertMember(effectiveOrgId, {
+          memberId: `invite:${email}`,
+          email,
+          role: inviteRole,
+        })
+        setInviteEmail('')
+        setStatusMessage('Pending invite added without email delivery')
+      }
       await loadOrgData(effectiveOrgId)
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Failed to save member')
+      setStatusMessage(error instanceof Error ? error.message : 'Failed to invite member')
     } finally {
       setLoading(false)
     }
   }
 
-  async function handleRemoveMember(memberId: string) {
+  function memberDisplayName(member: AdminOrgMember) {
+    return member.email || member.memberId.slice(0, 20) + (member.memberId.length > 20 ? '\u2026' : '')
+  }
+
+  async function handleRemoveMember(member: AdminOrgMember) {
     if (!effectiveOrgId) return
-    if (!window.confirm(`Remove member ${memberId}?`)) return
+    if (!window.confirm(`Remove ${memberDisplayName(member)} from the org?`)) return
+    const memberId = member.memberId
     setLoading(true)
     setStatusMessage('')
     try {
@@ -326,15 +349,23 @@ export function AdminCenter() {
 
         {activeToken && !noAccess && tab === 'users' && (
           <section className="admin-center-card">
-            <div className="admin-center-inline-form">
-              <input value={newMemberId} onChange={(event) => setNewMemberId(event.target.value)} placeholder="memberId" />
-              <select value={newMemberRole} onChange={(event) => setNewMemberRole(event.target.value as Role)}>
+            <h3>Invite a member</h3>
+            <p>Add someone to this org by email. They&rsquo;ll get access when they sign in.</p>
+            <div className="admin-center-invite-row">
+              <input
+                type="email"
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                placeholder="email@example.com"
+                onKeyDown={(event) => { if (event.key === 'Enter') void handleInviteMember() }}
+              />
+              <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as Role)}>
                 <option value="viewer">viewer</option>
                 <option value="editor">editor</option>
                 <option value="admin">admin</option>
                 <option value="owner">owner</option>
               </select>
-              <button onClick={() => void handleSaveMember()} disabled={!newMemberId.trim()}>Save Member</button>
+              <button onClick={() => void handleInviteMember()} disabled={!inviteEmail.trim()}>Send Invite</button>
             </div>
             <table className="admin-center-table">
               <thead>
@@ -348,10 +379,15 @@ export function AdminCenter() {
               <tbody>
                 {members.map((member) => (
                   <tr key={member.memberId}>
-                    <td>{member.memberId}</td>
+                    <td>
+                      <span>{memberDisplayName(member)}</span>
+                      {member.memberId.startsWith('invite:') && (
+                        <span className="admin-center-invite-badge">Pending</span>
+                      )}
+                    </td>
                     <td>{member.role}</td>
                     <td>{formatDate(member.addedAt)}</td>
-                    <td><button className="ghost" onClick={() => void handleRemoveMember(member.memberId)}>Remove</button></td>
+                    <td><button className="ghost" onClick={() => void handleRemoveMember(member)}>Remove</button></td>
                   </tr>
                 ))}
               </tbody>

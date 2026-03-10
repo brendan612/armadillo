@@ -33,8 +33,15 @@ export type AdminMeResponse = {
 
 export type AdminOrgMember = {
   memberId: string
+  email?: string | null
   role: Role
   addedAt: string
+}
+
+export type InviteMemberResponse = {
+  member: AdminOrgMember
+  emailSent: boolean
+  deliveryError?: string | null
 }
 
 export type AdminOrg = {
@@ -369,7 +376,15 @@ export class AdminClient {
     })
   }
 
-  async upsertMember(orgId: string, member: { memberId: string; role: Role }) {
+  async updateOrg(orgId: string, input: { name: string }) {
+    return this.request<{ org: AdminOrg }>('Update org', this.provider === 'convex' ? '/orgs' : `/orgs/${encodeURIComponent(orgId)}`, {
+      method: 'PUT',
+      headers: this.buildHeaders(true),
+      body: JSON.stringify(this.provider === 'convex' ? { orgId, ...input } : input),
+    })
+  }
+
+  async upsertMember(orgId: string, member: { memberId: string; role: Role; email?: string | null }) {
     return this.request<{ member: AdminOrgMember }>(
       'Upsert org member',
       this.provider === 'convex' ? '/members' : `/orgs/${encodeURIComponent(orgId)}/members`,
@@ -377,6 +392,21 @@ export class AdminClient {
         method: 'POST',
         headers: this.buildHeaders(true),
         body: JSON.stringify(this.provider === 'convex' ? { orgId, ...member } : member),
+      },
+    )
+  }
+
+  async inviteMember(orgId: string, input: { email: string; role: Role }) {
+    if (this.provider !== 'convex') {
+      throw new Error('Invite email delivery is not supported on the self-hosted provider')
+    }
+    return this.request<InviteMemberResponse>(
+      'Invite org member',
+      '/invites',
+      {
+        method: 'POST',
+        headers: this.buildHeaders(true),
+        body: JSON.stringify({ orgId, ...input }),
       },
     )
   }
