@@ -1,13 +1,20 @@
-import type { ArmadilloVaultFile, SyncIdentitySource } from '../types/vault'
+import type { ArmadilloVaultFile, EncryptedBlob, SyncIdentitySource } from '../types/vault'
 import type { CapabilityKey, PlanTier, RolloutFlagMap } from '../types/entitlements'
 
 export type Role = 'owner' | 'admin' | 'editor' | 'viewer'
 export type OverrideTargetType = 'userId' | 'tokenIdentifier' | 'subject' | 'email'
 
+export type OrgMembership = {
+  orgId: string
+  role: Role
+  orgName: string | null
+}
+
 export type AuthContext = {
   subject: string
   orgId: string
   roles: Role[]
+  memberships?: OrgMembership[]
   sessionId: string
 }
 
@@ -71,6 +78,65 @@ export type CloudAuthStatus = {
   name?: string | null
   tokenIdentifier?: string | null
   authContext?: AuthContext | null
+}
+
+export type SharedOrgVaultSummary = {
+  orgId: string
+  vaultId: string
+  ownerId: string | null
+  revision: number
+  updatedAt: string
+  updatedBy: string | null
+  blobCount: number
+  storageBytes: number
+}
+
+export type SharedVaultPasswordKdf = ArmadilloVaultFile['kdf']
+
+export type RegisteredOrgDevice = {
+  orgId: string
+  memberId: string
+  deviceId: string
+  platform: 'web' | 'desktop' | 'android'
+  publicKeyJwk: JsonWebKey
+  createdAt: string
+  updatedAt: string
+}
+
+export type WrappedVaultKeyGrant = {
+  alg: string
+  ciphertextBase64: string
+}
+
+export type SharedVaultMemberAccess = {
+  configured: boolean
+  memberKdf?: SharedVaultPasswordKdf | null
+  memberWrappedVaultKey?: EncryptedBlob | null
+  memberPasswordSetAt?: string | null
+  bootstrapPassword?: string | null
+  bootstrapKdf?: SharedVaultPasswordKdf | null
+  bootstrapWrappedVaultKey?: EncryptedBlob | null
+  bootstrapIssuedAt?: string | null
+}
+
+export type SharedVaultOpenResponse = {
+  orgId: string
+  vaultId: string
+  ownerId: string
+  role: Role
+  snapshot: ArmadilloVaultFile
+  memberAccess: SharedVaultMemberAccess
+}
+
+export type SharedVaultPullResponse = {
+  role: Role
+  snapshot: ArmadilloVaultFile | null
+}
+
+export type SharedVaultPushResponse = {
+  ok: boolean
+  accepted: boolean
+  role: Role
 }
 
 export type EntitlementFetchResponse = {
@@ -180,6 +246,20 @@ export type SyncProviderClient = {
   getRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobGetResponse | null>
   deleteRemoteBlob?: (vaultId: string, blobId: string) => Promise<BlobDeleteResponse | null>
   getCloudAuthStatus: () => Promise<CloudAuthStatus | null>
+  listOrgMemberships?: () => Promise<OrgMembership[]>
+  listSharedVaultsByOrg?: (orgId: string) => Promise<{ role: Role; vaults: SharedOrgVaultSummary[] } | null>
+  listOrgMemberDevices?: (orgId: string) => Promise<RegisteredOrgDevice[]>
+  registerOrgDeviceKey?: (input: { orgId: string; deviceId: string; platform: 'web' | 'desktop' | 'android'; publicKeyJwk: JsonWebKey }) => Promise<{ ok: boolean } | null>
+  shareVaultWithOrg?: (input: { orgId: string; vaultId: string; memberAccess: Array<{ memberId: string; bootstrapPassword: string; bootstrapKdf: SharedVaultPasswordKdf; bootstrapWrappedVaultKey: EncryptedBlob }> }) => Promise<{ ok: boolean; sharedAt?: string } | null>
+  refreshSharedVaultAccess?: (input: { orgId: string; vaultId: string; memberAccess: Array<{ memberId: string; bootstrapPassword: string; bootstrapKdf: SharedVaultPasswordKdf; bootstrapWrappedVaultKey: EncryptedBlob }> }) => Promise<{ ok: boolean } | null>
+  unshareVaultFromOrg?: (orgId: string, vaultId: string) => Promise<{ ok: boolean; revoked: boolean } | null>
+  openSharedVault?: (input: { orgId: string; vaultId: string }) => Promise<SharedVaultOpenResponse | null>
+  finalizeSharedVaultMemberAccess?: (input: { orgId: string; vaultId: string; memberKdf: SharedVaultPasswordKdf; memberWrappedVaultKey: EncryptedBlob }) => Promise<{ ok: boolean } | null>
+  pullSharedVaultSnapshot?: (input: { orgId: string; vaultId: string }) => Promise<SharedVaultPullResponse | null>
+  pushSharedVaultSnapshot?: (input: { orgId: string; file: ArmadilloVaultFile }) => Promise<SharedVaultPushResponse | null>
+  putSharedBlob?: (input: { orgId: string; vaultId: string; blob: RemoteBlobRecord }) => Promise<BlobPutResponse | null>
+  getSharedBlob?: (input: { orgId: string; vaultId: string; blobId: string }) => Promise<BlobGetResponse | null>
+  deleteSharedBlob?: (input: { orgId: string; vaultId: string; blobId: string }) => Promise<BlobDeleteResponse | null>
   fetchEntitlementToken?: () => Promise<EntitlementFetchResponse | null>
   subscribeToVaultUpdates?: (vaultId: string, options: VaultUpdateSubscriptionOptions) => (() => void)
   listOrgAuditEvents?: (orgId: string) => Promise<AuditEvent[]>

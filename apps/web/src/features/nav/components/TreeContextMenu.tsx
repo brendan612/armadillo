@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { FolderPlus, FilePlus } from 'lucide-react'
-import { useVaultAppActions, useVaultAppState } from '../../../app/contexts/VaultAppContext'
+import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../../app/contexts/VaultAppContext'
 
 export function TreeContextMenu() {
   const { treeContextMenu } = useVaultAppState()
+  const { canEditActiveVault } = useVaultAppDerived()
   const { setTreeContextMenu, createSubfolder, createItem } = useVaultAppActions()
 
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -37,7 +38,7 @@ export function TreeContextMenu() {
     return () => window.cancelAnimationFrame(rafId)
   }, [treeContextMenu])
 
-  if (!treeContextMenu) return null
+  if (!treeContextMenu || !canEditActiveVault) return null
 
   function dismiss() {
     setTreeContextMenu(null)

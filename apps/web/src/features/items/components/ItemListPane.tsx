@@ -179,7 +179,7 @@ const ItemListRow = memo(function ItemListRow({
 
 export function ItemListPane() {
   const { query, selectedId, selectedNode, folderFilterMode, trash, mobileStep, items, syncProvider, vaultSettings } = useVaultAppState()
-  const { filtered, folderPathById, effectivePlatform, hasCapability } = useVaultAppDerived()
+  const { filtered, folderPathById, effectivePlatform, hasCapability, canEditActiveVault } = useVaultAppDerived()
   const [riskFilter, setRiskFilter] = useState<RiskState | 'all'>('all')
   const [reusedPasswordFilter, setReusedPasswordFilter] = useState<string | null>(null)
   const folderLongPressTimerRef = useRef<number | null>(null)
@@ -428,7 +428,7 @@ export function ItemListPane() {
               : (riskFilter === 'all' ? emptyState.message : `No credentials match the ${riskLabelByState[riskFilter]} filter in this view.`)}
           </p>
           {noCredentialsInVault && (
-            <button className="solid" style={{ alignSelf: 'start' }} onClick={() => createItem()}>+ Create First Credential</button>
+            <button className="solid" style={{ alignSelf: 'start' }} onClick={() => createItem()} disabled={!canEditActiveVault}>+ Create First Credential</button>
           )}
         </div>
       ) : (

@@ -17,13 +17,13 @@ const QUICK_ENTRY_TYPES = [
 ] as const
 
 export function Topbar() {
-  const { effectivePlatform } = useVaultAppDerived()
+  const { effectivePlatform, canEditActiveVault } = useVaultAppDerived()
   const { syncState, syncMessage, authMessage, showSettings, workspaceSection, vaultSettings } = useVaultAppState()
   const { createStorageItem, createEntry, lockVault, openSettings, closeSettings, refreshVaultFromCloudNow } = useVaultAppActions()
   const [showEntryTypeMenu, setShowEntryTypeMenu] = useState(false)
   const quickCreateRef = useRef<HTMLDivElement | null>(null)
   const showRefreshButton = effectivePlatform === 'desktop' || effectivePlatform === 'web'
-  const showCreateButton = !showSettings && workspaceSection !== 'admin'
+  const showCreateButton = !showSettings && workspaceSection !== 'admin' && canEditActiveVault
 
   useEffect(() => {
     if (!showEntryTypeMenu) return

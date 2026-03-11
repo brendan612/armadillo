@@ -7,20 +7,33 @@ import { App as CapacitorApp } from '@capacitor/app'
 import { Browser } from '@capacitor/browser'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
+  deleteSharedBlob,
   deleteRemoteVault,
   deleteRemoteBlob,
   fetchEntitlementToken,
   getCloudAuthStatus,
   getRemoteBlob,
+  getSharedBlob,
+  listAdminMembers,
+  listOrgMemberships,
+  listSharedVaultsByOrg,
   listRemoteVaultsByOwner,
+  finalizeSharedVaultMemberAccess,
+  openSharedVault,
   putRemoteBlob,
+  putSharedBlob,
   pullRemoteSnapshot,
+  pullSharedVaultSnapshot,
   pushRemoteSnapshot,
+  pushSharedVaultSnapshot,
+  refreshSharedVaultAccess,
+  shareVaultWithOrg,
   setSyncAuthToken,
   setSyncAuthContext,
   subscribeToVaultUpdates,
   syncConfigured,
   syncProvider,
+  unshareVaultFromOrg,
 } from '../../lib/syncClient'
 import { convexAuthStorageNamespace, convexUrl } from '../../lib/convexClient'
 import { bindPasskeyOwner } from '../../lib/owner'
@@ -43,10 +56,16 @@ import { parseKeePassCsv } from '../../shared/utils/keePassCsv'
 import { parseKeePassXml } from '../../shared/utils/keePassXml'
 import { getPasswordExpiryStatus } from '../../shared/utils/passwordExpiry'
 import {
+  bytesToBase64,
+  createKdfConfig,
+  deriveMasterKeyFromPassword,
   formatRecoveryKeyForDisplay,
   generateRecoveryKey,
   parseRecoveryKeyFromDisplay,
+  unwrapVaultKey,
+  wrapVaultKey,
   wrapVaultKeyWithRecoveryKey,
+  decryptJsonWithKey,
   decryptBytesWithVaultKey,
   encryptBytesWithVaultKey,
   encryptJsonWithKey,
@@ -150,6 +169,7 @@ import type {
 } from '../../types/copilot'
 import type {
   ArmadilloVaultFile,
+  MembershipRole,
   StorageKind,
   SecurityQuestion,
   ThemeEditableTokenKey,
@@ -164,6 +184,7 @@ import type {
   VaultStorageMode,
   VaultThemeSettings,
   VaultTrashEntry,
+  WorkspaceScope,
 } from '../../types/vault'
 import type {
   CapabilityKey,
@@ -172,6 +193,7 @@ import type {
   PlanTier,
   RolloutFlagMap,
 } from '../../types/entitlements'
+import type { OrgMembership, SharedOrgVaultSummary } from '../../lib/syncTypes'
 
 type AppPhase = 'create' | 'unlock' | 'ready'
 type Panel = 'details'
@@ -192,6 +214,12 @@ type FolderInlineEditorState =
 type ApplySessionOptions = {
   resetNavigation?: boolean
 }
+type SharedVaultSource = {
+  scope: WorkspaceScope
+  ownerId: string
+  role: MembershipRole
+}
+type UnlockSourceKind = 'local' | 'personal_cloud' | 'org_shared'
 
 const CLOUD_SYNC_PREF_KEY = 'armadillo.cloud_sync_enabled'
 const CLOUD_LIVE_REFRESH_INTERVAL_MS_MOBILE = 4000
@@ -978,6 +1006,12 @@ export function useVaultApp() {
   const [cloudIdentity, setCloudIdentity] = useState('')
   const [isOrgMember, setIsOrgMember] = useState(false)
   const [orgRoles, setOrgRoles] = useState<Array<'owner' | 'admin' | 'editor' | 'viewer'>>([])
+  const [orgMemberships, setOrgMemberships] = useState<OrgMembership[]>([])
+  const [selectedOrgId, setSelectedOrgId] = useState('')
+  const [orgSharedVaultCandidates, setOrgSharedVaultCandidates] = useState<SharedOrgVaultSummary[]>([])
+  const [selectedOrgSharedVaultId, setSelectedOrgSharedVaultId] = useState('')
+  const [selectedUnlockSourceKind, setSelectedUnlockSourceKind] = useState<UnlockSourceKind | null>(null)
+  const [activeSharedVaultSource, setActiveSharedVaultSource] = useState<SharedVaultSource | null>(null)
   const [localVaultPath, setLocalVaultPath] = useState(() => (initialStorageMode === 'cloud_only' ? '' : getLocalVaultPath()))
   const [recentLocalVaultPaths, setRecentLocalVaultPaths] = useState<RecentLocalVaultEntry[]>(() =>
     initialStorageMode === 'cloud_only' ? [] : listRecentLocalVaultPaths())
@@ -1076,14 +1110,14 @@ export function useVaultApp() {
   }, [])
 
   const persistCloudCacheSnapshot = useCallback((file: ArmadilloVaultFile) => {
-    if (devicePrivacySettings.disableCloudCache) {
+    if (devicePrivacySettings.disableCloudCache || activeSharedVaultSource) {
       clearStoredCachedVaultSnapshot()
       setCloudCacheExpiresAt('')
       return
     }
     saveCachedVaultSnapshot(file, cloudCacheTtlHours)
     setCloudCacheExpiresAt(getCachedVaultExpiresAt())
-  }, [cloudCacheTtlHours, devicePrivacySettings.disableCloudCache])
+  }, [activeSharedVaultSource, cloudCacheTtlHours, devicePrivacySettings.disableCloudCache])
 
   const clearCachedVaultSnapshot = useCallback((message?: string) => {
     clearStoredCachedVaultSnapshot()
@@ -1147,15 +1181,26 @@ export function useVaultApp() {
     const parts = rawPath.split(/[\\/]/).filter(Boolean)
     return parts[parts.length - 1] || 'vault.armadillo'
   }, [localVaultPath, storageMode])
+  const selectedOrgMembership = useMemo(
+    () => orgMemberships.find((membership) => membership.orgId === selectedOrgId) ?? null,
+    [orgMemberships, selectedOrgId],
+  )
+  const selectedOrgRole = selectedOrgMembership?.role ?? null
+  const selectedSharedVaultSummary = useMemo(
+    () => orgSharedVaultCandidates.find((entry) => entry.vaultId === selectedOrgSharedVaultId) ?? orgSharedVaultCandidates[0] ?? null,
+    [orgSharedVaultCandidates, selectedOrgSharedVaultId],
+  )
+  const orgSharedUnlockSelected = selectedUnlockSourceKind === 'org_shared' && Boolean(selectedSharedVaultSummary)
+  const canEditActiveVault = !activeSharedVaultSource || activeSharedVaultSource.role !== 'viewer'
   const unlockSourceAvailable = useMemo(() => {
     if (storageMode === 'cloud_only') {
-      return Boolean(cloudVaultSnapshot || loadCachedVaultSnapshot())
+      return Boolean(selectedSharedVaultSummary || cloudVaultSnapshot || loadCachedVaultSnapshot())
     }
     if (window.armadilloShell?.isElectron) {
-      return Boolean(cloudVaultSnapshot || selectedLocalVaultFile || loadCachedVaultSnapshot())
+      return Boolean(selectedSharedVaultSummary || cloudVaultSnapshot || selectedLocalVaultFile || loadCachedVaultSnapshot())
     }
-    return Boolean(cloudVaultSnapshot || selectedLocalVaultFile || loadLocalVaultFile() || loadCachedVaultSnapshot())
-  }, [cloudVaultSnapshot, selectedLocalVaultFile, storageMode])
+    return Boolean(selectedSharedVaultSummary || cloudVaultSnapshot || selectedLocalVaultFile || loadLocalVaultFile() || loadCachedVaultSnapshot())
+  }, [cloudVaultSnapshot, selectedLocalVaultFile, selectedSharedVaultSummary, storageMode])
   const quickUnlockCapabilities = useMemo(() => getQuickUnlockCapabilities(), [])
   const recoveryConfig = vaultSession?.file.recovery
   const recoveryKitEnabled = Boolean(recoveryConfig)
@@ -1517,6 +1562,10 @@ export function useVaultApp() {
   const persistVaultSnapshot = useCallback((file: ArmadilloVaultFile) => {
     persistCloudCacheSnapshot(file)
 
+    if (activeSharedVaultSource) {
+      return
+    }
+
     if (storageMode === 'cloud_only') {
       clearLocalVaultFile()
       setLocalVaultPath('')
@@ -1526,7 +1575,12 @@ export function useVaultApp() {
     saveLocalVaultFile(file)
     setLocalVaultPath(getLocalVaultPath())
     setRecentLocalVaultPaths(listRecentLocalVaultPaths())
-  }, [persistCloudCacheSnapshot, storageMode])
+  }, [activeSharedVaultSource, persistCloudCacheSnapshot, storageMode])
+
+  const clearLocalBlobCopiesForVault = useCallback(async (vaultId: string) => {
+    const metas = await blobStore.listBlobMetaByVault(vaultId)
+    await Promise.all(metas.map((meta) => blobStore.deleteBlob(vaultId, meta.blobId)))
+  }, [])
 
   const getUnlockSourceFile = useCallback(async () => {
     const cachedSnapshot = devicePrivacySettings.disableCloudCache ? null : loadCachedVaultSnapshot()
@@ -1721,6 +1775,10 @@ export function useVaultApp() {
   }
 
   function updateStorageMode(nextMode: VaultStorageMode) {
+    if (activeSharedVaultSource && nextMode === 'local_file') {
+      setSyncMessage('Organization-shared vaults stay cloud-only and cannot be stored locally on this device.')
+      return
+    }
     if (nextMode === storageMode) return
 
     if (nextMode === 'cloud_only') {
@@ -1882,6 +1940,12 @@ export function useVaultApp() {
     if (storageMode !== 'cloud_only' || hasCapability('cloud.cloud_only')) {
       return
     }
+    if (activeSharedVaultSource) {
+      setStorageMode('cloud_only')
+      setStoredVaultStorageMode('cloud_only')
+      setSyncMessage(capabilityLockReasons['cloud.cloud_only'] ?? 'Organization-shared vaults stay cloud-only')
+      return
+    }
     const activeFile = vaultSession?.file || loadCachedVaultSnapshot(true)
     if (activeFile) {
       saveLocalVaultFile(activeFile)
@@ -1891,7 +1955,7 @@ export function useVaultApp() {
     setStorageMode('local_file')
     setStoredVaultStorageMode('local_file')
     setSyncMessage(capabilityLockReasons['cloud.cloud_only'] ?? 'Requires Premium plan')
-  }, [storageMode, vaultSession, hasCapability, capabilityLockReasons])
+  }, [activeSharedVaultSource, storageMode, vaultSession, hasCapability, capabilityLockReasons])
 
   useEffect(() => {
     if (!cloudSyncEnabled || storageMode === 'cloud_only' || hasCapability('cloud.sync')) {
@@ -1924,6 +1988,8 @@ export function useVaultApp() {
         setCloudAuthState('unknown')
         setCloudIdentity('')
         setOrgRoles([])
+        setOrgMemberships([])
+        setSelectedOrgId('')
         return
       }
 
@@ -1932,12 +1998,15 @@ export function useVaultApp() {
           setCloudAuthState('disconnected')
           setCloudIdentity('')
           setOrgRoles([])
+          setOrgMemberships([])
+          setSelectedOrgId('')
           return
         }
 
         if (!authToken) {
           setCloudAuthState('checking')
           setOrgRoles([])
+          setOrgMemberships([])
           return
         }
       }
@@ -1951,6 +2020,18 @@ export function useVaultApp() {
         setOrgRoles(Array.isArray(status?.authContext?.roles)
           ? status.authContext.roles.filter((role): role is 'owner' | 'admin' | 'editor' | 'viewer' => role === 'owner' || role === 'admin' || role === 'editor' || role === 'viewer')
           : [])
+        const memberships = Array.isArray(status?.authContext?.memberships)
+          ? status.authContext.memberships.filter((membership): membership is OrgMembership =>
+            Boolean(membership?.orgId)
+            && (membership.role === 'owner' || membership.role === 'admin' || membership.role === 'editor' || membership.role === 'viewer'))
+          : await listOrgMemberships()
+        setOrgMemberships(memberships)
+        setSelectedOrgId((current) => {
+          if (current && memberships.some((membership) => membership.orgId === current)) {
+            return current
+          }
+          return memberships[0]?.orgId || status?.authContext?.orgId || ''
+        })
 
         if (status?.authenticated || syncProvider === 'self_hosted') {
           const identityLabel = status?.authenticated
@@ -1962,12 +2043,16 @@ export function useVaultApp() {
           setCloudAuthState('disconnected')
           setCloudIdentity('')
           setOrgRoles([])
+          setOrgMemberships([])
+          setSelectedOrgId('')
         }
       } catch {
         if (cancelled) return
         setCloudAuthState('error')
         setCloudIdentity('')
         setOrgRoles([])
+        setOrgMemberships([])
+        setSelectedOrgId('')
       }
     }
 
@@ -2083,6 +2168,53 @@ export function useVaultApp() {
       }
     }
   }, [completeGoogleSignInFromCallback])
+
+  useEffect(() => {
+    if (phase === 'ready' || cloudAuthState !== 'connected' || !selectedOrgId) {
+      setOrgSharedVaultCandidates([])
+      setSelectedOrgSharedVaultId('')
+      return
+    }
+
+    let cancelled = false
+
+    async function loadSharedVaults() {
+      try {
+        const response = await listSharedVaultsByOrg(selectedOrgId)
+        if (cancelled) return
+        const nextVaults = response?.vaults ?? []
+        setOrgSharedVaultCandidates(nextVaults)
+        setSelectedOrgSharedVaultId((current) => {
+          if (current && nextVaults.some((vault) => vault.vaultId === current)) {
+            return current
+          }
+          return nextVaults[0]?.vaultId ?? ''
+        })
+      } catch (error) {
+        if (cancelled) return
+        console.error('[armadillo] shared vault list failed:', error)
+        setOrgSharedVaultCandidates([])
+        setSelectedOrgSharedVaultId('')
+      }
+    }
+
+    void loadSharedVaults()
+    return () => {
+      cancelled = true
+    }
+  }, [phase, cloudAuthState, selectedOrgId])
+
+  useEffect(() => {
+    setSelectedUnlockSourceKind((current) => {
+      if (current === 'org_shared' && selectedSharedVaultSummary) return current
+      if (current === 'personal_cloud' && cloudVaultSnapshot) return current
+      if (current === 'local' && (selectedLocalVaultFile || localVaultPath.trim())) return current
+      if (cloudVaultSnapshot) return 'personal_cloud'
+      if (selectedSharedVaultSummary) return 'org_shared'
+      if (selectedLocalVaultFile || localVaultPath.trim()) return 'local'
+      return null
+    })
+  }, [cloudVaultSnapshot, localVaultPath, selectedLocalVaultFile, selectedSharedVaultSummary])
 
   useEffect(() => {
     if (!isNativeAndroid()) {
@@ -2351,7 +2483,12 @@ export function useVaultApp() {
     }
 
     try {
-      const remote = await pullRemoteSnapshot(activeSession.file.vaultId)
+      const remote = activeSharedVaultSource
+        ? await pullSharedVaultSnapshot({
+          orgId: activeSharedVaultSource.scope.orgId,
+          vaultId: activeSession.file.vaultId,
+        })
+        : await pullRemoteSnapshot(activeSession.file.vaultId)
       if (!remote) {
         if (!silent) {
           setSyncState('error')
@@ -2380,7 +2517,9 @@ export function useVaultApp() {
           persistVaultSnapshot(nextSession.file)
           applySession(nextSession)
           setSyncState('live')
-          setSyncMessage(`Pulled remote encrypted update (${remote.ownerSource})`)
+          setSyncMessage(activeSharedVaultSource
+            ? `Pulled shared vault update (${activeSharedVaultSource.role})`
+            : `Pulled remote encrypted update (${'ownerSource' in remote ? remote.ownerSource : 'owner'})`)
           return true
         } catch {
           setSyncState('error')
@@ -2391,11 +2530,18 @@ export function useVaultApp() {
 
       if (pushLocalWhenCurrent) {
         const pushFile = await buildCloudPushFile(activeSession)
-        const pushResult = await pushRemoteSnapshot(pushFile)
+        const pushResult = activeSharedVaultSource
+          ? await pushSharedVaultSnapshot({
+            orgId: activeSharedVaultSource.scope.orgId,
+            file: pushFile,
+          })
+          : await pushRemoteSnapshot(pushFile)
         if (pushResult?.ok) {
           setSyncState('live')
           if (!silent) {
-            setSyncMessage(pushResult.accepted ? `Encrypted sync active (${pushResult.ownerSource})` : 'Cloud vault already up to date')
+            setSyncMessage(activeSharedVaultSource
+              ? (pushResult.accepted ? `Shared vault sync active (${activeSharedVaultSource.role})` : 'Shared vault already up to date')
+              : (pushResult.accepted ? `Encrypted sync active (${'ownerSource' in pushResult ? pushResult.ownerSource : 'owner'})` : 'Cloud vault already up to date'))
           }
           return false
         }
@@ -2403,7 +2549,9 @@ export function useVaultApp() {
 
       if (!silent) {
         setSyncState('live')
-        setSyncMessage(remoteSnapshot ? `Cloud vault already up to date (${remote.ownerSource})` : 'Cloud vault is empty for this owner')
+        setSyncMessage(activeSharedVaultSource
+          ? (remoteSnapshot ? 'Shared vault already up to date' : 'Shared vault is unavailable')
+          : (remoteSnapshot ? `Cloud vault already up to date (${'ownerSource' in remote ? remote.ownerSource : 'owner'})` : 'Cloud vault is empty for this owner'))
       }
       return false
     } catch (error) {
@@ -2418,7 +2566,7 @@ export function useVaultApp() {
     } finally {
       cloudRefreshInFlightRef.current = false
     }
-  }, [vaultSession, cloudSyncEnabled, storageMode, applySession, persistVaultSnapshot, hasCapability, capabilityLockReasons])
+  }, [vaultSession, cloudSyncEnabled, storageMode, applySession, persistVaultSnapshot, hasCapability, capabilityLockReasons, activeSharedVaultSource])
 
   async function refreshVaultFromCloudNow() {
     await refreshVaultFromCloud({ silent: false, pushLocalWhenCurrent: false, requireAutoSync: false })
@@ -2809,10 +2957,12 @@ export function useVaultApp() {
   }, [deferredSelectedId, filtered, items, persistPayload, phase, vaultSession])
 
   function setDraftField<K extends keyof VaultItem>(key: K, value: VaultItem[K]) {
+    if (!canEditActiveVault) return
     setDraft((current) => (current ? { ...current, [key]: value } : current))
   }
 
   function setStorageDraftField<K extends keyof VaultStorageItem>(key: K, value: VaultStorageItem[K]) {
+    if (!canEditActiveVault) return
     setStorageDraft((current) => (current ? { ...current, [key]: value } : current))
   }
 
@@ -2859,6 +3009,10 @@ export function useVaultApp() {
   async function enableOrRotateRecoveryKit(mode: 'enable' | 'rotate') {
     if (!vaultSession) {
       setSyncMessage('Unlock vault before configuring recovery')
+      return
+    }
+    if (activeSharedVaultSource) {
+      setSyncMessage('Recovery kit changes are unavailable for organization-shared vaults')
       return
     }
     if (mode === 'enable' && vaultSession.file.recovery) {
@@ -2926,6 +3080,7 @@ export function useVaultApp() {
 
     try {
       const session = await createVaultFile(createPassword)
+      setActiveSharedVaultSource(null)
       persistVaultSnapshot(session.file)
       applySession(session, { resetNavigation: true })
       setSyncState('local')
@@ -2935,6 +3090,101 @@ export function useVaultApp() {
     } catch {
       setVaultError('Failed to create encrypted vault.')
     }
+  }
+
+  function createSharedVaultBootstrapPassword() {
+    const bytes = new Uint8Array(24)
+    crypto.getRandomValues(bytes)
+    return bytesToBase64(bytes)
+  }
+
+  async function unlockSelectedSharedVault() {
+    if (!selectedOrgId || !selectedSharedVaultSummary) {
+      setVaultError('Select a shared org vault to continue.')
+      return
+    }
+
+    const opened = await openSharedVault({
+      orgId: selectedOrgId,
+      vaultId: selectedSharedVaultSummary.vaultId,
+    })
+    if (!opened?.snapshot) {
+      throw new Error('Shared vault is unavailable for this organization member.')
+    }
+
+    const passwordCandidates = buildPasswordCandidates(unlockPassword)
+    if (passwordCandidates.length === 0) {
+      throw new Error(opened.memberAccess.configured
+        ? 'Enter your org vault master password.'
+        : 'Create a master password for this shared vault.')
+    }
+
+    let vaultKey: CryptoKey | null = null
+    let configuredPassword = false
+    if (opened.memberAccess.configured && opened.memberAccess.memberKdf && opened.memberAccess.memberWrappedVaultKey) {
+      for (const passwordCandidate of passwordCandidates) {
+        try {
+          const masterKey = await deriveMasterKeyFromPassword({
+            password: passwordCandidate,
+            ...opened.memberAccess.memberKdf,
+            saltBase64: opened.memberAccess.memberKdf.salt,
+          })
+          vaultKey = await unwrapVaultKey(masterKey, opened.memberAccess.memberWrappedVaultKey)
+          configuredPassword = true
+          break
+        } catch {
+          // Try next password candidate.
+        }
+      }
+      if (!vaultKey) {
+        throw new Error('Shared vault password is incorrect.')
+      }
+    } else {
+      if (!opened.memberAccess.bootstrapPassword || !opened.memberAccess.bootstrapKdf || !opened.memberAccess.bootstrapWrappedVaultKey) {
+        throw new Error('Shared vault access is not configured for this member yet. Ask an org owner to refresh organization sharing.')
+      }
+      const bootstrapMasterKey = await deriveMasterKeyFromPassword({
+        password: opened.memberAccess.bootstrapPassword,
+        ...opened.memberAccess.bootstrapKdf,
+        saltBase64: opened.memberAccess.bootstrapKdf.salt,
+      })
+      vaultKey = await unwrapVaultKey(bootstrapMasterKey, opened.memberAccess.bootstrapWrappedVaultKey)
+      const memberKdf = createKdfConfig()
+      const memberMasterKey = await deriveMasterKeyFromPassword({
+        password: passwordCandidates[0],
+        ...memberKdf,
+        saltBase64: memberKdf.salt,
+      })
+      const memberWrappedVaultKey = await wrapVaultKey(memberMasterKey, vaultKey)
+      await finalizeSharedVaultMemberAccess({
+        orgId: selectedOrgId,
+        vaultId: opened.vaultId,
+        memberKdf,
+        memberWrappedVaultKey,
+      })
+    }
+
+    const payload = await decryptJsonWithKey<VaultPayload>(vaultKey, opened.snapshot.vaultData)
+    const session: VaultSession = {
+      file: opened.snapshot,
+      payload,
+      vaultKey,
+    }
+    setActiveSharedVaultSource({
+      scope: {
+        orgId: selectedOrgId,
+        vaultId: opened.vaultId,
+      },
+      ownerId: opened.ownerId,
+      role: opened.role,
+    })
+    await clearLocalBlobCopiesForVault(opened.snapshot.vaultId)
+    applySession(session, { resetNavigation: true })
+    setUnlockPassword('')
+    setUnlockRecoveryKey('')
+    setSyncMessage(configuredPassword
+      ? `Shared vault unlocked (${opened.role})`
+      : `Shared vault password created and vault unlocked (${opened.role})`)
   }
 
   async function unlockVault() {
@@ -2951,6 +3201,10 @@ export function useVaultApp() {
       window.requestAnimationFrame(() => resolve())
     })
     try {
+      if (orgSharedUnlockSelected) {
+        await unlockSelectedSharedVault()
+        return
+      }
       const file = await getUnlockSourceFile()
       if (!file) {
         const cacheStatus = getCachedVaultStatus()
@@ -2981,11 +3235,17 @@ export function useVaultApp() {
         if (!session) {
           throw new Error('Local unlock failed for all password variants')
         }
+        setActiveSharedVaultSource(null)
         applySession(session, { resetNavigation: true })
         setSyncMessage(storageMode === 'cloud_only' ? 'Vault unlocked from encrypted cloud cache' : 'Vault unlocked locally')
         setUnlockPassword('')
         setUnlockRecoveryKey('')
       } catch (initialError) {
+        if (orgSharedUnlockSelected) {
+          const detail = initialError instanceof Error ? initialError.message : 'Shared vault unlock failed'
+          setVaultError(detail)
+          return
+        }
         const cloudSyncAllowed = hasCapability('cloud.sync') && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
         if (cloudConnected && syncConfigured() && cloudSyncAllowed) {
           try {
@@ -3045,6 +3305,8 @@ export function useVaultApp() {
   function loadVaultFromCloud(snapshot?: ArmadilloVaultFile) {
     const chosen = snapshot || cloudVaultSnapshot
     if (!chosen) return
+    setActiveSharedVaultSource(null)
+    setSelectedUnlockSourceKind('personal_cloud')
     persistVaultSnapshot(chosen)
     setCloudVaultSnapshot(null)
     setCloudVaultCandidates([])
@@ -3054,11 +3316,30 @@ export function useVaultApp() {
 
   function selectCloudVaultSnapshot(snapshot: ArmadilloVaultFile | null) {
     setCloudVaultSnapshot(snapshot)
+    setSelectedUnlockSourceKind(snapshot ? 'personal_cloud' : null)
     setVaultError('')
     setPhase('unlock')
   }
 
+  function selectOrgSharedVaultSummary(vaultId: string) {
+    setSelectedOrgSharedVaultId(vaultId)
+    setSelectedUnlockSourceKind(vaultId ? 'org_shared' : null)
+    setVaultError('')
+    setPhase('unlock')
+  }
+
+  function chooseSelectedOrg(orgId: string) {
+    setSelectedOrgId(orgId)
+    setSelectedOrgSharedVaultId('')
+    setVaultError('')
+    if (selectedUnlockSourceKind === 'org_shared') {
+      setSelectedUnlockSourceKind(null)
+    }
+  }
+
   function useLocalUnlockSource() {
+    setActiveSharedVaultSource(null)
+    setSelectedUnlockSourceKind('local')
     setCloudVaultSnapshot(null)
     setVaultError('')
     setPhase('unlock')
@@ -3200,6 +3481,10 @@ export function useVaultApp() {
   }
 
   async function saveFolderEditor() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!folderEditor) return
     const nextParentId = folderEditor.parentId === folderEditor.id ? null : folderEditor.parentId
     const updated = folders.map((folder) => (folder.id === folderEditor.id
@@ -3216,6 +3501,10 @@ export function useVaultApp() {
   }
 
   async function setFolderCloudSyncExcluded(folderId: string, excluded: boolean) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const canManageCloudSyncExclusions = hasCapability('cloud.sync')
       && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
     if (!canManageCloudSyncExclusions) {
@@ -3242,11 +3531,19 @@ export function useVaultApp() {
   }
 
   function createSubfolder(parentId: string | null) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     setFolderInlineEditor({ mode: 'create', parentId, value: '' })
     setContextMenu(null)
   }
 
   async function commitFolderInlineEditor() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return false
+    }
     if (!folderInlineEditor) return false
     const name = folderInlineEditor.value.trim()
     if (!name) return false
@@ -3280,6 +3577,10 @@ export function useVaultApp() {
   }
 
   async function moveFolder(folderId: string, parentId: string | null, beforeFolderId?: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return false
+    }
     const target = folders.find((folder) => folder.id === folderId)
     if (!target) return false
     if (parentId === folderId) return false
@@ -3323,6 +3624,10 @@ export function useVaultApp() {
   }
 
   async function deleteFolderCascade(folderId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const target = folders.find((folder) => folder.id === folderId)
     if (!target) return
     const descendantIds = new Set(collectDescendantIds(folderId, folders))
@@ -3363,6 +3668,10 @@ export function useVaultApp() {
   }
 
   async function restoreTrashEntry(entryId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const entry = trash.find((row) => row.id === entryId)
     if (!entry) return
 
@@ -3430,10 +3739,18 @@ export function useVaultApp() {
   }
 
   async function deleteTrashEntryPermanently(entryId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     await persistPayload({ trash: trash.filter((row) => row.id !== entryId) })
   }
 
   async function emptyVaultForTesting() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!vaultSession) {
       setSyncMessage('Unlock vault before emptying the vault')
       return
@@ -3476,7 +3793,15 @@ export function useVaultApp() {
       await blobStore.deleteBlob(vaultId, meta.blobId)
       if (canDeleteRemote) {
         try {
-          await deleteRemoteBlob(vaultId, meta.blobId)
+          if (activeSharedVaultSource) {
+            await deleteSharedBlob({
+              orgId: activeSharedVaultSource.scope.orgId,
+              vaultId,
+              blobId: meta.blobId,
+            })
+          } else {
+            await deleteRemoteBlob(vaultId, meta.blobId)
+          }
         } catch {
           // Best effort cleanup only.
         }
@@ -3486,6 +3811,10 @@ export function useVaultApp() {
 
   async function persistPayload(next: Partial<VaultPayload>) {
     if (!vaultSession) {
+      return
+    }
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
       return
     }
     const nextItems = next.items ? applyComputedItemRisks(next.items) : items
@@ -3508,10 +3837,17 @@ export function useVaultApp() {
       try {
         setSyncState('syncing')
         const cloudPushFile = await buildCloudPushFile(nextSession)
-        const result = await pushRemoteSnapshot(cloudPushFile)
+        const result = activeSharedVaultSource
+          ? await pushSharedVaultSnapshot({
+            orgId: activeSharedVaultSource.scope.orgId,
+            file: cloudPushFile,
+          })
+          : await pushRemoteSnapshot(cloudPushFile)
         if (result) {
           setSyncState('live')
-          setSyncMessage(result.accepted ? `Encrypted sync pushed (${result.ownerSource})` : 'Sync ignored older revision')
+          setSyncMessage(activeSharedVaultSource
+            ? (result.accepted ? `Shared vault sync pushed (${activeSharedVaultSource.role})` : 'Shared vault already up to date')
+            : (result.accepted ? `Encrypted sync pushed (${'ownerSource' in result ? result.ownerSource : 'owner'})` : 'Sync ignored older revision'))
         }
       } catch {
         setSyncState('error')
@@ -3532,6 +3868,10 @@ export function useVaultApp() {
   }
 
   async function addGeneratorPreset(preset: VaultSettings['generatorPresets'][number]) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const nextPresets = [...vaultSettings.generatorPresets, preset]
     const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
     setVaultSettings(nextSettings)
@@ -3539,6 +3879,10 @@ export function useVaultApp() {
   }
 
   async function removeGeneratorPreset(presetId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const nextPresets = vaultSettings.generatorPresets.filter((p) => p.id !== presetId)
     const nextSettings = { ...vaultSettings, generatorPresets: nextPresets }
     setVaultSettings(nextSettings)
@@ -3546,6 +3890,10 @@ export function useVaultApp() {
   }
 
   async function setBreachCheckEnabled(enabled: boolean) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (enabled && !hasCapability('security.breach_scan')) {
       setSyncMessage(capabilityLockReasons['security.breach_scan'] ?? 'Requires Premium plan')
       return
@@ -3776,6 +4124,10 @@ export function useVaultApp() {
   }
 
   function createItem(kind: VaultCredentialKind = DEFAULT_CREDENTIAL_KIND) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     setWorkspaceSection('passwords')
     if (selectedNode === 'home') {
       setSelectedNode('all')
@@ -3797,6 +4149,10 @@ export function useVaultApp() {
   }
 
   function createStorageItem() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!hasCapability('vault.storage') || !isFlagEnabled('experiments.storage_tab')) {
       setSyncMessage(capabilityLockReasons['vault.storage'] ?? 'Requires Premium plan')
       return
@@ -3822,6 +4178,10 @@ export function useVaultApp() {
   }
 
   function createStorageItemOfKind(kind: StorageKind, title?: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!hasCapability('vault.storage') || !isFlagEnabled('experiments.storage_tab')) {
       setSyncMessage(capabilityLockReasons['vault.storage'] ?? 'Requires Premium plan')
       return
@@ -3890,15 +4250,29 @@ export function useVaultApp() {
   async function loadStorageBlobRecord(item: VaultStorageItem) {
     if (!vaultSession || !item.blobRef) return null
     const vaultId = vaultSession.file.vaultId
-    const local = await blobStore.getBlob(vaultId, item.blobRef.blobId)
-    if (local) {
-      return local
+    if (!activeSharedVaultSource) {
+      const local = await blobStore.getBlob(vaultId, item.blobRef.blobId)
+      if (local) {
+        return local
+      }
     }
     if (!canSyncStorageBlob(item)) {
       return null
     }
-    const remote = await getRemoteBlob(vaultId, item.blobRef.blobId)
+    const remote = activeSharedVaultSource
+      ? await getSharedBlob({
+        orgId: activeSharedVaultSource.scope.orgId,
+        vaultId,
+        blobId: item.blobRef.blobId,
+      })
+      : await getRemoteBlob(vaultId, item.blobRef.blobId)
     if (!remote?.blob) return null
+    if (activeSharedVaultSource) {
+      return {
+        ...remote.blob,
+        createdAt: remote.blob.updatedAt,
+      }
+    }
     await blobStore.putBlob({
       vaultId,
       blobId: remote.blob.blobId,
@@ -3916,6 +4290,10 @@ export function useVaultApp() {
 
   async function attachFileToStorageDraft(file: File) {
     if (!vaultSession || !storageDraft) return
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (file.size > STORAGE_FILE_LIMIT_BYTES) {
       setSyncMessage(`File exceeds ${Math.round(STORAGE_FILE_LIMIT_BYTES / (1024 * 1024))}MB limit`)
       return
@@ -3951,17 +4329,25 @@ export function useVaultApp() {
       }
 
       if (canSyncStorageBlob(storageDraft)) {
-        const uploaded = await putRemoteBlob(vaultSession.file.vaultId, remoteBlob)
+        const uploaded = activeSharedVaultSource
+          ? await putSharedBlob({
+            orgId: activeSharedVaultSource.scope.orgId,
+            vaultId: vaultSession.file.vaultId,
+            blob: remoteBlob,
+          })
+          : await putRemoteBlob(vaultSession.file.vaultId, remoteBlob)
         if (!uploaded?.ok) {
           setSyncMessage('Encrypted file upload failed')
           return
         }
       }
 
-      await blobStore.putBlob({
-        ...remoteBlob,
-        createdAt: new Date().toISOString(),
-      })
+      if (!activeSharedVaultSource) {
+        await blobStore.putBlob({
+          ...remoteBlob,
+          createdAt: new Date().toISOString(),
+        })
+      }
 
       setStorageDraft((current) => {
         if (!current) return current
@@ -4019,6 +4405,10 @@ export function useVaultApp() {
   }
 
   async function saveCurrentStorageItem() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!storageDraft) return
     setIsSaving(true)
     const folderInput = newStorageFolderValue.trim() || storageDraft.folder || ''
@@ -4041,6 +4431,10 @@ export function useVaultApp() {
   }
 
   async function removeStorageItemById(itemId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const target = storageItems.find((item) => item.id === itemId)
     if (!target) return
     const deletedAt = new Date().toISOString()
@@ -4062,6 +4456,10 @@ export function useVaultApp() {
   }
 
   async function removeCurrentStorageItem() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!storageDraft) return
     await removeStorageItemById(storageDraft.id)
   }
@@ -4204,6 +4602,10 @@ export function useVaultApp() {
   }
 
   async function saveCurrentItem(): Promise<SaveCurrentItemResult> {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return { saved: false }
+    }
     if (!draft) return { saved: false }
     setIsSaving(true)
     let breachStatus: BreachCheckStatus = 'clear'
@@ -4318,6 +4720,10 @@ export function useVaultApp() {
   }
 
   async function removeCurrentItem() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!draft) return
     const deletingId = draft.id
     const target = items.find((item) => item.id === deletingId)
@@ -4347,6 +4753,10 @@ export function useVaultApp() {
   }
 
   async function removeItemById(itemId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const target = items.find((item) => item.id === itemId)
     const previousNode = selectedNode
     const previousFilterMode = folderFilterMode
@@ -4380,6 +4790,10 @@ export function useVaultApp() {
   }
 
   async function setItemCloudSyncExcluded(itemId: string, excluded: boolean) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const canManageCloudSyncExclusions = hasCapability('cloud.sync')
       && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
     if (!canManageCloudSyncExclusions) {
@@ -4406,6 +4820,10 @@ export function useVaultApp() {
   }
 
   async function changeItemCredentialKind(itemId: string, nextKind: VaultCredentialKind) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const target = items.find((item) => item.id === itemId)
     if (!target || target.credentialKind === nextKind) return
     const nextItems = applyComputedItemRisks(items.map((item) => {
@@ -4429,6 +4847,10 @@ export function useVaultApp() {
   }
 
   async function setStorageItemCloudSyncExcluded(itemId: string, excluded: boolean) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const canManageCloudSyncExclusions = hasCapability('cloud.sync')
       && (syncProvider !== 'self_hosted' || hasCapability('enterprise.self_hosted'))
     if (!canManageCloudSyncExclusions) {
@@ -4455,6 +4877,10 @@ export function useVaultApp() {
   }
 
   async function duplicateItem(itemId: string) {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const source = items.find((item) => item.id === itemId)
     if (!source) return
     const duplicated: VaultItem = {
@@ -4500,6 +4926,7 @@ export function useVaultApp() {
   }
 
   function updateSecurityQuestion(index: number, field: keyof SecurityQuestion, value: string) {
+    if (!canEditActiveVault) return
     if (!draft) return
     const next = [...draft.securityQuestions]
     next[index] = { ...next[index], [field]: value }
@@ -4507,6 +4934,14 @@ export function useVaultApp() {
   }
 
   function exportVaultFile() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
+    if (activeSharedVaultSource) {
+      setSyncMessage('Organization-shared vaults stay cloud-only and cannot be exported to this device.')
+      return
+    }
     if (!vaultSession) {
       return
     }
@@ -4527,6 +4962,14 @@ export function useVaultApp() {
   }
 
   async function exportVaultBackupBundle() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
+    if (activeSharedVaultSource) {
+      setSyncMessage('Organization-shared vaults stay cloud-only and cannot be exported to this device.')
+      return
+    }
     if (!vaultSession) {
       setSyncMessage('Unlock vault before exporting backup bundle')
       return
@@ -5006,6 +5449,10 @@ export function useVaultApp() {
   }
 
   async function previewAutoFolderingV2() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!vaultSession) {
       setSyncMessage('Unlock vault before auto-foldering')
       return
@@ -5043,6 +5490,7 @@ export function useVaultApp() {
   }
 
   function updateAutoFolderPreviewAssignment(itemId: string, targetPathRaw: string) {
+    if (!canEditActiveVault) return
     if (!autoFolderPreviewDraft) return
     const { normalized, topLevel, subfolder } = splitPath(targetPathRaw)
     if (!normalized) return
@@ -5068,6 +5516,7 @@ export function useVaultApp() {
   }
 
   function excludeItemFromAutoFoldering(itemId: string, excluded: boolean) {
+    if (!canEditActiveVault) return
     if (!autoFolderPreviewDraft) return
     const nextAssignments = autoFolderPreviewDraft.assignments.map((assignment) =>
       assignment.itemId === itemId ? { ...assignment, excluded } : assignment)
@@ -5078,6 +5527,7 @@ export function useVaultApp() {
   }
 
   function lockAutoFolderPath(pathRaw: string, locked: boolean) {
+    if (!canEditActiveVault) return
     if (!autoFolderPreviewDraft) return
     const normalizedPath = normalizeAutoFolderPath(pathRaw)
     if (!normalizedPath) return
@@ -5099,6 +5549,10 @@ export function useVaultApp() {
   }
 
   async function saveAutoFolderPreferences() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     const draft = autoFolderPreviewDraft ?? autoFolderPreview
     if (!draft) return
 
@@ -5125,6 +5579,10 @@ export function useVaultApp() {
   }
 
   async function applyAutoFolderingV2() {
+    if (!canEditActiveVault) {
+      setSyncMessage('Your org role is viewer. This shared vault is read-only.')
+      return
+    }
     if (!vaultSession) {
       setSyncMessage('Unlock vault before auto-foldering')
       return
@@ -5235,6 +5693,10 @@ export function useVaultApp() {
   }
 
   async function enableQuickUnlock() {
+    if (activeSharedVaultSource) {
+      setSyncMessage('Quick unlock is unavailable for organization-shared vaults because they stay cloud-only.')
+      return
+    }
     if (!quickUnlockCapabilities.supported) {
       setSyncMessage(quickUnlockCapabilities.unavailableReason || 'Quick unlock is not supported on this device')
       return
@@ -5408,6 +5870,10 @@ export function useVaultApp() {
       setSyncMessage('Recovery kit is not enabled')
       return
     }
+    if (activeSharedVaultSource) {
+      setSyncMessage('Recovery kit changes are unavailable for organization-shared vaults')
+      return
+    }
     const reauthed = await reauthenticateWithMasterPassword('disable the recovery kit')
     if (!reauthed) return
     const confirmed = window.confirm('Disable recovery kit? You will only be able to unlock with your master password or enrolled quick unlock methods.')
@@ -5558,6 +6024,11 @@ export function useVaultApp() {
       setSyncAuthContext(null)
       setIsOrgMember(false)
       setOrgRoles([])
+      setOrgMemberships([])
+      setSelectedOrgId('')
+      setOrgSharedVaultCandidates([])
+      setSelectedOrgSharedVaultId('')
+      setActiveSharedVaultSource(null)
       if (storageMode === 'cloud_only') {
         clearCachedVaultSnapshot()
       }
@@ -5578,9 +6049,131 @@ export function useVaultApp() {
       setCloudIdentity('')
       setIsOrgMember(false)
       setOrgRoles([])
+      setOrgMemberships([])
+      setSelectedOrgId('')
+      setOrgSharedVaultCandidates([])
+      setSelectedOrgSharedVaultId('')
+      setActiveSharedVaultSource(null)
       void refreshEntitlements()
     } catch {
       setAuthMessage('Sign out failed')
+    }
+  }
+
+  async function reloadSelectedOrgSharedVaults() {
+    if (!selectedOrgId) return
+    const response = await listSharedVaultsByOrg(selectedOrgId)
+    const nextVaults = response?.vaults ?? []
+    setOrgSharedVaultCandidates(nextVaults)
+    setSelectedOrgSharedVaultId((current) => {
+      if (current && nextVaults.some((vault) => vault.vaultId === current)) {
+        return current
+      }
+      return nextVaults[0]?.vaultId ?? ''
+    })
+  }
+
+  async function buildOrgShareMemberAccessBatch(orgId: string) {
+    if (!vaultSession) {
+      throw new Error('Unlock vault before sharing it with an organization')
+    }
+    const members = await listAdminMembers(orgId)
+    const memberAccess = await Promise.all(members.map(async (member) => {
+      const bootstrapPassword = createSharedVaultBootstrapPassword()
+      const bootstrapKdf = createKdfConfig()
+      const bootstrapMasterKey = await deriveMasterKeyFromPassword({
+        password: bootstrapPassword,
+        ...bootstrapKdf,
+        saltBase64: bootstrapKdf.salt,
+      })
+      const bootstrapWrappedVaultKey = await wrapVaultKey(bootstrapMasterKey, vaultSession.vaultKey)
+      return {
+        memberId: member.memberId,
+        bootstrapPassword,
+        bootstrapKdf,
+        bootstrapWrappedVaultKey,
+      }
+    }))
+    return memberAccess
+  }
+
+  async function shareCurrentVaultWithOrg() {
+    if (!vaultSession || !selectedOrgId) {
+      setSyncMessage('Unlock a vault and select an organization first')
+      return
+    }
+    if (selectedOrgRole !== 'owner') {
+      setSyncMessage('Only org owners can share a vault with the organization')
+      return
+    }
+
+    try {
+      setSyncMessage('Sharing vault with organization...')
+      const memberAccess = await buildOrgShareMemberAccessBatch(selectedOrgId)
+      await shareVaultWithOrg({
+        orgId: selectedOrgId,
+        vaultId: vaultSession.file.vaultId,
+        memberAccess,
+      })
+      await reloadSelectedOrgSharedVaults()
+      setSyncMessage(memberAccess.length > 0
+        ? `Vault shared with ${memberAccess.length} organization member(s)`
+        : 'Vault shared. Add organization members and refresh access to let them open it.')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to share vault with org: ${detail}`)
+    }
+  }
+
+  async function refreshCurrentVaultOrgAccess() {
+    if (!vaultSession || !selectedOrgId) {
+      setSyncMessage('Unlock a vault and select an organization first')
+      return
+    }
+    if (selectedOrgRole !== 'owner') {
+      setSyncMessage('Only org owners can refresh shared vault access')
+      return
+    }
+
+    try {
+      setSyncMessage('Refreshing shared vault access...')
+      const memberAccess = await buildOrgShareMemberAccessBatch(selectedOrgId)
+      await refreshSharedVaultAccess({
+        orgId: selectedOrgId,
+        vaultId: vaultSession.file.vaultId,
+        memberAccess,
+      })
+      await reloadSelectedOrgSharedVaults()
+      setSyncMessage(memberAccess.length > 0
+        ? `Shared vault access refreshed for ${memberAccess.length} member(s)`
+        : 'Shared vault access refreshed. No org members are currently available.')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to refresh shared vault access: ${detail}`)
+    }
+  }
+
+  async function unshareCurrentVaultFromOrg() {
+    if (!vaultSession || !selectedOrgId) {
+      setSyncMessage('Unlock a vault and select an organization first')
+      return
+    }
+    if (selectedOrgRole !== 'owner') {
+      setSyncMessage('Only org owners can unshare a vault')
+      return
+    }
+
+    try {
+      setSyncMessage('Removing shared vault from organization...')
+      await unshareVaultFromOrg(selectedOrgId, vaultSession.file.vaultId)
+      await reloadSelectedOrgSharedVaults()
+      if (activeSharedVaultSource?.scope.orgId === selectedOrgId && activeSharedVaultSource.scope.vaultId === vaultSession.file.vaultId) {
+        setActiveSharedVaultSource(null)
+      }
+      setSyncMessage('Shared vault removed from organization')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      setSyncMessage(`Failed to unshare vault: ${detail}`)
     }
   }
 
@@ -5615,10 +6208,17 @@ export function useVaultApp() {
       setSyncState('syncing')
       setSyncMessage('Pushing vault save to cloud...')
       const cloudPushFile = await buildCloudPushFile(vaultSession)
-      const result = await pushRemoteSnapshot(cloudPushFile)
+      const result = activeSharedVaultSource
+        ? await pushSharedVaultSnapshot({
+          orgId: activeSharedVaultSource.scope.orgId,
+          file: cloudPushFile,
+        })
+        : await pushRemoteSnapshot(cloudPushFile)
       if (result?.ok) {
         setSyncState('live')
-        setSyncMessage(`Manual cloud push complete (${result.ownerSource})`)
+        setSyncMessage(activeSharedVaultSource
+          ? 'Manual shared vault push complete'
+          : `Manual cloud push complete (${'ownerSource' in result ? result.ownerSource : 'owner'})`)
       } else {
         setSyncState('error')
         setSyncMessage('Manual cloud push did not complete')
@@ -5692,6 +6292,8 @@ export function useVaultApp() {
       cloudIdentity,
       isOrgMember,
       orgRoles,
+      orgMemberships,
+      selectedOrgId,
       localVaultPath,
       selectedLocalVaultStatus,
       recentLocalVaultPaths,
@@ -5699,6 +6301,10 @@ export function useVaultApp() {
       localVaultNameById,
       selectedCloudVaultSnapshot: cloudVaultSnapshot,
       cloudVaultCandidates,
+      orgSharedVaultCandidates,
+      selectedOrgSharedVaultId,
+      selectedUnlockSourceKind,
+      activeSharedVaultSource,
       showAllCloudSnapshots,
       windowMaximized,
       contextMenu,
@@ -5751,6 +6357,10 @@ export function useVaultApp() {
       adminCenterEnabled,
       hasCapability,
       isFlagEnabled,
+      selectedOrgMembership,
+      selectedOrgRole,
+      selectedSharedVaultSummary,
+      canEditActiveVault,
     },
     actions: {
       setPhase,
@@ -5799,6 +6409,7 @@ export function useVaultApp() {
       setNewStorageFolderValue,
       setTreeContextMenu,
       setShowAllCloudSnapshots,
+      setSelectedOrgId: chooseSelectedOrg,
       setDraftField,
       setStorageDraftField,
       openHome,
@@ -5822,6 +6433,7 @@ export function useVaultApp() {
       unlockVaultWithRecoveryKey,
       loadVaultFromCloud,
       selectCloudVaultSnapshot,
+      selectOrgSharedVaultSummary,
       useLocalUnlockSource,
       deleteVaultFromCloud,
       browseExistingLocalVault,
@@ -5832,6 +6444,9 @@ export function useVaultApp() {
       clearRecentLocalVaultPaths,
       signInWithGoogle,
       signOutCloud,
+      shareCurrentVaultWithOrg,
+      refreshCurrentVaultOrgAccess,
+      unshareCurrentVaultFromOrg,
       createItem,
       createStorageItem,
       createEntry,

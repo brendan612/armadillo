@@ -61,6 +61,62 @@ export default defineSchema({
   })
     .index('by_org_created', ['orgId', 'createdAt'])
     .index('by_created', ['createdAt']),
+  orgVaultShares: defineTable({
+    orgId: v.string(),
+    vaultId: v.string(),
+    ownerId: v.string(),
+    sharedBy: v.string(),
+    sharedAt: v.string(),
+    updatedAt: v.string(),
+    revokedAt: v.optional(v.string()),
+  })
+    .index('by_org', ['orgId'])
+    .index('by_org_vault', ['orgId', 'vaultId'])
+    .index('by_owner_vault', ['ownerId', 'vaultId']),
+  orgMemberDeviceKeys: defineTable({
+    orgId: v.string(),
+    memberId: v.string(),
+    deviceId: v.string(),
+    platform: v.string(),
+    publicKeyJwk: v.any(),
+    createdAt: v.string(),
+    updatedAt: v.string(),
+    revokedAt: v.optional(v.string()),
+  })
+    .index('by_org', ['orgId'])
+    .index('by_org_member', ['orgId', 'memberId'])
+    .index('by_org_member_device', ['orgId', 'memberId', 'deviceId']),
+  orgVaultDeviceGrants: defineTable({
+    orgId: v.string(),
+    vaultId: v.string(),
+    ownerId: v.string(),
+    memberId: v.string(),
+    deviceId: v.string(),
+    wrappedVaultKey: v.any(),
+    grantedAt: v.string(),
+    revokedAt: v.optional(v.string()),
+  })
+    .index('by_org_vault', ['orgId', 'vaultId'])
+    .index('by_org_vault_member_device', ['orgId', 'vaultId', 'memberId', 'deviceId'])
+    .index('by_owner_vault', ['ownerId', 'vaultId']),
+  orgVaultMemberAccess: defineTable({
+    orgId: v.string(),
+    vaultId: v.string(),
+    ownerId: v.string(),
+    memberId: v.string(),
+    bootstrapPassword: v.optional(v.string()),
+    bootstrapKdf: v.optional(v.any()),
+    bootstrapWrappedVaultKey: v.optional(v.any()),
+    bootstrapIssuedAt: v.optional(v.string()),
+    memberKdf: v.optional(v.any()),
+    memberWrappedVaultKey: v.optional(v.any()),
+    memberPasswordSetAt: v.optional(v.string()),
+    updatedAt: v.string(),
+    revokedAt: v.optional(v.string()),
+  })
+    .index('by_org_vault', ['orgId', 'vaultId'])
+    .index('by_org_vault_member', ['orgId', 'vaultId', 'memberId'])
+    .index('by_owner_vault', ['ownerId', 'vaultId']),
   vaultSnapshots: defineTable({
     ownerId: v.string(),
     orgId: v.optional(v.string()),

@@ -22,7 +22,7 @@ export function StorageDetailPane() {
     syncProvider,
     workspaceSection,
   } = useVaultAppState()
-  const { folderOptions, hasCapability } = useVaultAppDerived()
+  const { folderOptions, hasCapability, canEditActiveVault } = useVaultAppDerived()
   const {
     closeOpenItem,
     setStorageDraftField,
@@ -73,10 +73,10 @@ export function StorageDetailPane() {
         <div className="detail-head-actions">
           {storageDraft && (
             <>
-              <button className="solid detail-save-btn" onClick={() => void saveCurrentStorageItem()} disabled={isSaving}>
+              <button className="solid detail-save-btn" onClick={() => void saveCurrentStorageItem()} disabled={isSaving || !canEditActiveVault}>
                 {isSaving ? 'Saving...' : 'Save'}
               </button>
-              <button className="ghost detail-delete-btn" onClick={() => void removeCurrentStorageItem()} disabled={isSaving} title="Delete item">
+              <button className="ghost detail-delete-btn" onClick={() => void removeCurrentStorageItem()} disabled={isSaving || !canEditActiveVault} title="Delete item">
                 <Trash2 size={14} /> Delete
               </button>
               <button className="ghost detail-close-btn" onClick={closeOpenItem} disabled={isSaving || (hasUnsavedChanges && storageFileBusy)} title="Close item">
@@ -87,135 +87,143 @@ export function StorageDetailPane() {
         </div>
       </div>
 
-      {storageDraft && canManageCloudSyncExclusions && (
-        <div className="detail-head-toggle">
-          <label className="detail-toggle-row">
-            <input
-              type="checkbox"
-              className="detail-toggle-input"
-              checked={Boolean(storageDraft.excludeFromCloudSync)}
-              onChange={(event) => setStorageDraftField('excludeFromCloudSync', event.target.checked)}
-            />
-            <span className="detail-toggle-control" aria-hidden="true">
-              <span className="detail-toggle-thumb" />
-            </span>
-            <span className="detail-toggle-label">Exclude from Cloud Sync</span>
-          </label>
-        </div>
+      {!canEditActiveVault && storageDraft && (
+        <p className="muted" style={{ margin: '0 0 0.9rem' }}>
+          This shared vault is read-only for your org role.
+        </p>
       )}
 
-      {storageDraft && (
-        <div className="detail-grid">
-          <label>
-            Title
-            <input value={storageDraft.title} onChange={(event) => setStorageDraftField('title', event.target.value)} />
-          </label>
-          <label>
-            Kind
-            <select value={storageDraft.kind} onChange={(event) => setStorageDraftField('kind', event.target.value as StorageKind)}>
-              {KIND_OPTIONS.map((row) => (
-                <option key={row.value} value={row.value}>{row.label}</option>
-              ))}
-            </select>
-          </label>
-          <div className="compact-meta-row">
-            <label>
-              Folder
+      <fieldset disabled={!canEditActiveVault} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        {storageDraft && canManageCloudSyncExclusions && (
+          <div className="detail-head-toggle">
+            <label className="detail-toggle-row">
               <input
-                list="storage-folder-options"
-                value={newStorageFolderValue}
-                onChange={(event) => {
-                  setNewStorageFolderValue(event.target.value)
-                  setStorageDraftField('folder', event.target.value)
-                }}
-                placeholder="Select or create folder path"
+                type="checkbox"
+                className="detail-toggle-input"
+                checked={Boolean(storageDraft.excludeFromCloudSync)}
+                onChange={(event) => setStorageDraftField('excludeFromCloudSync', event.target.checked)}
               />
-              <datalist id="storage-folder-options">
-                {folderOptions.map((option) => (
-                  <option key={option.id} value={option.label} />
-                ))}
-              </datalist>
+              <span className="detail-toggle-control" aria-hidden="true">
+                <span className="detail-toggle-thumb" />
+              </span>
+              <span className="detail-toggle-label">Exclude from Cloud Sync</span>
             </label>
           </div>
-          <label>
-            Tags (comma separated)
-            <input
-              value={storageDraft.tags.join(', ')}
-              onChange={(event) =>
-                setStorageDraftField(
-                  'tags',
-                  event.target.value
-                    .split(',')
-                    .map((tag) => tag.trim())
-                    .filter(Boolean),
-                )
-              }
-            />
-          </label>
-          <label>
-            Notes
-            <textarea value={storageDraft.note} onChange={(event) => setStorageDraftField('note', event.target.value)} rows={3} />
-          </label>
-          <label>
-            Secret/Text Value
-            <textarea
-              value={storageDraft.textValue ?? ''}
-              onChange={(event) => setStorageDraftField('textValue', event.target.value)}
-              rows={4}
-              placeholder="Paste private text, key material, or token payload"
-            />
-          </label>
+        )}
 
-          <div className="group-block">
-            <h3>File Attachment</h3>
-            {storageDraft.blobRef ? (
-              <p className="muted" style={{ marginTop: 0 }}>
-                {storageDraft.blobRef.fileName} ({Math.max(1, Math.round(storageDraft.blobRef.sizeBytes / 1024))} KB)
-              </p>
-            ) : (
-              <p className="muted" style={{ marginTop: 0 }}>No file attached.</p>
-            )}
-            <div className="settings-action-list">
-              <button
-                className="ghost"
-                disabled={storageFileBusy}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload size={14} /> {storageFileBusy ? 'Encrypting...' : 'Attach / Replace File'}
-              </button>
-              <button
-                className="ghost"
-                disabled={!storageDraft.blobRef}
-                onClick={() => void downloadStorageFile(storageDraft.id)}
-              >
-                <Download size={14} /> Download File
-              </button>
-              {storageDraft.kind === 'image' && (
-                <button className="ghost" disabled={!storageDraft.blobRef} onClick={() => void refreshPreview()}>
-                  Preview Image
-                </button>
-              )}
+        {storageDraft && (
+          <div className="detail-grid">
+            <label>
+              Title
+              <input value={storageDraft.title} onChange={(event) => setStorageDraftField('title', event.target.value)} />
+            </label>
+            <label>
+              Kind
+              <select value={storageDraft.kind} onChange={(event) => setStorageDraftField('kind', event.target.value as StorageKind)}>
+                {KIND_OPTIONS.map((row) => (
+                  <option key={row.value} value={row.value}>{row.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="compact-meta-row">
+              <label>
+                Folder
+                <input
+                  list="storage-folder-options"
+                  value={newStorageFolderValue}
+                  onChange={(event) => {
+                    setNewStorageFolderValue(event.target.value)
+                    setStorageDraftField('folder', event.target.value)
+                  }}
+                  placeholder="Select or create folder path"
+                />
+                <datalist id="storage-folder-options">
+                  {folderOptions.map((option) => (
+                    <option key={option.id} value={option.label} />
+                  ))}
+                </datalist>
+              </label>
             </div>
-            {previewUrl && (
-              <div className="group-block" style={{ marginTop: '0.65rem' }}>
-                <img src={previewUrl} alt="Storage preview" style={{ maxWidth: '100%', borderRadius: '10px' }} />
-              </div>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              style={{ display: 'none' }}
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) {
-                  void attachFileToStorageDraft(file)
+            <label>
+              Tags (comma separated)
+              <input
+                value={storageDraft.tags.join(', ')}
+                onChange={(event) =>
+                  setStorageDraftField(
+                    'tags',
+                    event.target.value
+                      .split(',')
+                      .map((tag) => tag.trim())
+                      .filter(Boolean),
+                  )
                 }
-                event.currentTarget.value = ''
-              }}
-            />
+              />
+            </label>
+            <label>
+              Notes
+              <textarea value={storageDraft.note} onChange={(event) => setStorageDraftField('note', event.target.value)} rows={3} />
+            </label>
+            <label>
+              Secret/Text Value
+              <textarea
+                value={storageDraft.textValue ?? ''}
+                onChange={(event) => setStorageDraftField('textValue', event.target.value)}
+                rows={4}
+                placeholder="Paste private text, key material, or token payload"
+              />
+            </label>
+
+            <div className="group-block">
+              <h3>File Attachment</h3>
+              {storageDraft.blobRef ? (
+                <p className="muted" style={{ marginTop: 0 }}>
+                  {storageDraft.blobRef.fileName} ({Math.max(1, Math.round(storageDraft.blobRef.sizeBytes / 1024))} KB)
+                </p>
+              ) : (
+                <p className="muted" style={{ marginTop: 0 }}>No file attached.</p>
+              )}
+              <div className="settings-action-list">
+                <button
+                  className="ghost"
+                  disabled={storageFileBusy}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload size={14} /> {storageFileBusy ? 'Encrypting...' : 'Attach / Replace File'}
+                </button>
+                <button
+                  className="ghost"
+                  disabled={!storageDraft.blobRef}
+                  onClick={() => void downloadStorageFile(storageDraft.id)}
+                >
+                  <Download size={14} /> Download File
+                </button>
+                {storageDraft.kind === 'image' && (
+                  <button className="ghost" disabled={!storageDraft.blobRef} onClick={() => void refreshPreview()}>
+                    Preview Image
+                  </button>
+                )}
+              </div>
+              {previewUrl && (
+                <div className="group-block" style={{ marginTop: '0.65rem' }}>
+                  <img src={previewUrl} alt="Storage preview" style={{ maxWidth: '100%', borderRadius: '10px' }} />
+                </div>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                style={{ display: 'none' }}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) {
+                    void attachFileToStorageDraft(file)
+                  }
+                  event.currentTarget.value = ''
+                }}
+              />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </fieldset>
     </section>
   )
 }

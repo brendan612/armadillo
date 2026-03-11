@@ -10,7 +10,7 @@ function getInitials(title: string) {
 
 export function HomePane() {
   const { items, storageItems, mobileStep, homeSearchQuery, vaultSettings } = useVaultAppState()
-  const { homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems, reusedItems, vaultSuggestions } = useVaultAppDerived()
+  const { homeRecentItems, homeSearchResults, expiredItems, expiringSoonItems, reusedItems, vaultSuggestions, canEditActiveVault } = useVaultAppDerived()
   const { updateHomeSearch, submitHomeSearch, openSmartView, openCopilotSuggestion, dismissCopilotSuggestion, setSelectedNode, setMobileStep, setQuery, openItemFromHome, createEntry } = useVaultAppActions()
   const [showEntryTypePicker, setShowEntryTypePicker] = useState(false)
 
@@ -43,10 +43,14 @@ export function HomePane() {
             <button
               className="solid home-welcome-btn"
               onClick={() => setShowEntryTypePicker((current) => !current)}
+              disabled={!canEditActiveVault}
             >
               <Plus size={14} /> New Entry
             </button>
-            {showEntryTypePicker && (
+            {!canEditActiveVault && (
+              <p className="muted" style={{ marginBottom: 0 }}>This shared vault is read-only for your org role.</p>
+            )}
+            {showEntryTypePicker && canEditActiveVault && (
               <div className="home-entry-type-grid">
                 <button className="ghost" onClick={() => createEntry('password')}>Password</button>
                 <button className="ghost" onClick={() => createEntry('pin')}>PIN</button>

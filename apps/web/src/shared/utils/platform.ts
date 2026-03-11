@@ -2,7 +2,7 @@ import { Capacitor } from '@capacitor/core'
 import type { AppPlatform } from '../../app/types/app'
 
 export function isNativeAndroid() {
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+  return Capacitor.getPlatform() === 'android'
 }
 
 export function getAutoPlatform(): AppPlatform {

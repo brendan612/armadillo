@@ -674,6 +674,44 @@ async function ensureMemberRole(
   return isRole(role) ? role : 'owner'
 }
 
+async function listMemberships(
+  ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
+  memberId: string,
+) {
+  const memberships = await ctx.runQuery(api.sync.listUserMemberships, {
+    memberId,
+  }) as Array<{ orgId: string; role: Role; orgName?: string | null }> | null
+  return Array.isArray(memberships) ? memberships : []
+}
+
+async function getMemberRole(
+  ctx: { runQuery: (...args: unknown[]) => Promise<unknown> },
+  orgId: string,
+  memberId: string,
+) {
+  const role = await ctx.runQuery(api.sync.getOrgMemberRole, {
+    orgId,
+    memberId,
+  })
+  return isRole(role) ? role : null
+}
+
+async function requireOrgRole(
+  ctx: IdentityLookupCtx,
+  orgId: string,
+  memberId: string,
+  requiredRole: Role,
+) {
+  const role = await getMemberRole(ctx, orgId, memberId)
+  if (!role) {
+    return { error: 'Organization membership required' as const, status: 403 as const }
+  }
+  if (!hasRole(role, requiredRole)) {
+    return { error: `Requires ${requiredRole} role` as const, status: 403 as const }
+  }
+  return { role, status: 200 as const }
+}
+
 async function appendAdminAudit(
   ctx: { runMutation: (...args: unknown[]) => Promise<unknown> },
   input: {
@@ -848,6 +886,7 @@ http.route({
     }
     const orgId = defaultOrgIdForSubject(identity.subject)
     const role = await ensureMemberRole(ctx, orgId, identity.subject, identity.email)
+    const memberships = await listMemberships(ctx, identity.subject)
     const response = {
       authenticated: true,
       subject: identity.subject,
@@ -858,10 +897,957 @@ http.route({
         subject: identity.subject,
         orgId,
         roles: [role],
+        memberships: memberships.map((membership) => ({
+          orgId: membership.orgId,
+          role: membership.role,
+          orgName: membership.orgName ?? null,
+        })),
         sessionId: identity.tokenIdentifier || identity.subject,
       },
     }
     return json(response)
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/memberships',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/vaults',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/devices',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/device-key',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/share',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/refresh',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/open',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/access',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/pull',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/push',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/put',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/get',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/delete',
+  method: 'OPTIONS',
+  handler: httpAction(async () => new Response(null, { status: 204, headers: corsHeaders })),
+})
+
+http.route({
+  path: '/api/v2/org-shares/memberships',
+  method: 'GET',
+  handler: httpAction(async (ctx) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    await ensureMemberRole(ctx, defaultOrgIdForSubject(identity.subject), identity.subject, identity.email)
+    const memberships = await listMemberships(ctx, identity.subject)
+    return json({
+      memberships: memberships.map((membership) => ({
+        orgId: membership.orgId,
+        role: membership.role,
+        orgName: membership.orgName ?? null,
+      })),
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/vaults',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const orgId = normalizeOrgId(new URL(request.url).searchParams.get('orgId') || '')
+    if (!orgId) {
+      return json({ error: 'orgId is required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const vaults = await ctx.runQuery(api.sync.listVaultSummariesByOrg, { orgId }) as Array<{
+      vaultId: string
+      ownerId?: string | null
+      revision: number
+      updatedAt: string
+      updatedBy?: string | null
+      blobCount?: number
+      storageBytes?: number
+    }>
+    return json({
+      role: membership.role,
+      vaults: vaults.map((vault) => ({
+        orgId,
+        vaultId: vault.vaultId,
+        ownerId: vault.ownerId ?? null,
+        revision: vault.revision,
+        updatedAt: vault.updatedAt,
+        updatedBy: vault.updatedBy ?? null,
+        blobCount: vault.blobCount ?? 0,
+        storageBytes: vault.storageBytes ?? 0,
+      })),
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/devices',
+  method: 'GET',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const orgId = normalizeOrgId(new URL(request.url).searchParams.get('orgId') || '')
+    if (!orgId) {
+      return json({ error: 'orgId is required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'owner')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const devices = await ctx.runQuery(api.sync.listOrgMemberDeviceKeys, { orgId }) as Array<{
+      orgId: string
+      memberId: string
+      deviceId: string
+      platform: string
+      publicKeyJwk: unknown
+      createdAt: string
+      updatedAt: string
+    }>
+
+    return json({ devices })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/device-key',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await request.json() as {
+      orgId?: unknown
+      deviceId?: unknown
+      platform?: unknown
+      publicKeyJwk?: unknown
+    }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const deviceId = typeof body.deviceId === 'string' ? body.deviceId.trim() : ''
+    const platform = body.platform === 'desktop' || body.platform === 'android' ? body.platform : 'web'
+    if (!orgId || !deviceId || !body.publicKeyJwk) {
+      return json({ error: 'orgId, deviceId, and publicKeyJwk are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    await ctx.runMutation(api.sync.upsertOrgMemberDeviceKey, {
+      orgId,
+      memberId: identity.subject,
+      deviceId,
+      platform,
+      publicKeyJwk: body.publicKeyJwk,
+      now: nowIso(),
+    })
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: identity.subject,
+      action: 'org.device.register',
+      target: deviceId,
+      metadata: { platform },
+    })
+
+    return json({ ok: true })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/share',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const owner = await resolveOwner(ctx, request)
+    if (!owner || owner.ownerSource !== 'auth') {
+      return json({ error: 'Authenticated cloud owner required' }, 401)
+    }
+
+    const body = await request.json() as {
+      orgId?: unknown
+      vaultId?: unknown
+      memberAccess?: Array<{
+        memberId?: unknown
+        bootstrapPassword?: unknown
+        bootstrapKdf?: {
+          algorithm?: unknown
+          iterations?: unknown
+          memoryKiB?: unknown
+          parallelism?: unknown
+          salt?: unknown
+        }
+        bootstrapWrappedVaultKey?: {
+          nonce?: unknown
+          ciphertext?: unknown
+        }
+      }>
+    }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    const memberAccess = Array.isArray(body.memberAccess) ? body.memberAccess : []
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'owner')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const normalizedMemberAccess = memberAccess
+      .map((entry) => ({
+        memberId: typeof entry.memberId === 'string' ? entry.memberId.trim() : '',
+        bootstrapPassword: typeof entry.bootstrapPassword === 'string' ? entry.bootstrapPassword : '',
+        bootstrapKdf: {
+          algorithm: entry.bootstrapKdf?.algorithm === 'PBKDF2-SHA256' ? 'PBKDF2-SHA256' : 'ARGON2ID',
+          iterations: typeof entry.bootstrapKdf?.iterations === 'number' ? entry.bootstrapKdf.iterations : 0,
+          memoryKiB: typeof entry.bootstrapKdf?.memoryKiB === 'number' ? entry.bootstrapKdf.memoryKiB : undefined,
+          parallelism: typeof entry.bootstrapKdf?.parallelism === 'number' ? entry.bootstrapKdf.parallelism : undefined,
+          salt: typeof entry.bootstrapKdf?.salt === 'string' ? entry.bootstrapKdf.salt : '',
+        },
+        bootstrapWrappedVaultKey: {
+          nonce: typeof entry.bootstrapWrappedVaultKey?.nonce === 'string' ? entry.bootstrapWrappedVaultKey.nonce : '',
+          ciphertext: typeof entry.bootstrapWrappedVaultKey?.ciphertext === 'string' ? entry.bootstrapWrappedVaultKey.ciphertext : '',
+        },
+      }))
+      .filter((entry) => (
+        entry.memberId
+        && entry.bootstrapPassword
+        && entry.bootstrapKdf.iterations > 0
+        && entry.bootstrapKdf.salt
+        && entry.bootstrapWrappedVaultKey.nonce
+        && entry.bootstrapWrappedVaultKey.ciphertext
+        && (entry.bootstrapKdf.algorithm === 'PBKDF2-SHA256'
+          || (typeof entry.bootstrapKdf.memoryKiB === 'number' && typeof entry.bootstrapKdf.parallelism === 'number'))
+      ))
+      .map((entry) => ({
+        memberId: entry.memberId,
+        bootstrapPassword: entry.bootstrapPassword,
+        bootstrapKdf: entry.bootstrapKdf.algorithm === 'PBKDF2-SHA256'
+          ? {
+            algorithm: 'PBKDF2-SHA256' as const,
+            iterations: entry.bootstrapKdf.iterations,
+            salt: entry.bootstrapKdf.salt,
+          }
+          : {
+            algorithm: 'ARGON2ID' as const,
+            iterations: entry.bootstrapKdf.iterations,
+            memoryKiB: entry.bootstrapKdf.memoryKiB ?? 0,
+            parallelism: entry.bootstrapKdf.parallelism ?? 1,
+            salt: entry.bootstrapKdf.salt,
+          },
+        bootstrapWrappedVaultKey: entry.bootstrapWrappedVaultKey,
+      }))
+
+    const now = nowIso()
+    const shared = await ctx.runMutation(api.sync.upsertOrgVaultShare, {
+      orgId,
+      vaultId,
+      ownerId: owner.ownerId,
+      sharedBy: identity.subject,
+      now,
+    }) as { sharedAt?: string } | null
+    await ctx.runMutation(api.sync.replaceOrgVaultMemberAccess, {
+      orgId,
+      vaultId,
+      ownerId: owner.ownerId,
+      updatedAt: now,
+      memberAccess: normalizedMemberAccess,
+    })
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: identity.subject,
+      action: 'org.vault.share',
+      target: vaultId,
+      metadata: { memberAccessCount: normalizedMemberAccess.length },
+    })
+
+    return json({ ok: true, sharedAt: shared?.sharedAt ?? now })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/refresh',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const owner = await resolveOwner(ctx, request)
+    if (!owner || owner.ownerSource !== 'auth') {
+      return json({ error: 'Authenticated cloud owner required' }, 401)
+    }
+
+    const body = await request.json() as {
+      orgId?: unknown
+      vaultId?: unknown
+      memberAccess?: Array<{
+        memberId?: unknown
+        bootstrapPassword?: unknown
+        bootstrapKdf?: {
+          algorithm?: unknown
+          iterations?: unknown
+          memoryKiB?: unknown
+          parallelism?: unknown
+          salt?: unknown
+        }
+        bootstrapWrappedVaultKey?: {
+          nonce?: unknown
+          ciphertext?: unknown
+        }
+      }>
+    }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    const memberAccess = Array.isArray(body.memberAccess) ? body.memberAccess : []
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'owner')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+    if (share.ownerId !== owner.ownerId) {
+      return json({ error: 'Only the shared vault owner can refresh grants' }, 403)
+    }
+
+    const normalizedMemberAccess = memberAccess
+      .map((entry) => ({
+        memberId: typeof entry.memberId === 'string' ? entry.memberId.trim() : '',
+        bootstrapPassword: typeof entry.bootstrapPassword === 'string' ? entry.bootstrapPassword : '',
+        bootstrapKdf: {
+          algorithm: entry.bootstrapKdf?.algorithm === 'PBKDF2-SHA256' ? 'PBKDF2-SHA256' : 'ARGON2ID',
+          iterations: typeof entry.bootstrapKdf?.iterations === 'number' ? entry.bootstrapKdf.iterations : 0,
+          memoryKiB: typeof entry.bootstrapKdf?.memoryKiB === 'number' ? entry.bootstrapKdf.memoryKiB : undefined,
+          parallelism: typeof entry.bootstrapKdf?.parallelism === 'number' ? entry.bootstrapKdf.parallelism : undefined,
+          salt: typeof entry.bootstrapKdf?.salt === 'string' ? entry.bootstrapKdf.salt : '',
+        },
+        bootstrapWrappedVaultKey: {
+          nonce: typeof entry.bootstrapWrappedVaultKey?.nonce === 'string' ? entry.bootstrapWrappedVaultKey.nonce : '',
+          ciphertext: typeof entry.bootstrapWrappedVaultKey?.ciphertext === 'string' ? entry.bootstrapWrappedVaultKey.ciphertext : '',
+        },
+      }))
+      .filter((entry) => (
+        entry.memberId
+        && entry.bootstrapPassword
+        && entry.bootstrapKdf.iterations > 0
+        && entry.bootstrapKdf.salt
+        && entry.bootstrapWrappedVaultKey.nonce
+        && entry.bootstrapWrappedVaultKey.ciphertext
+        && (entry.bootstrapKdf.algorithm === 'PBKDF2-SHA256'
+          || (typeof entry.bootstrapKdf.memoryKiB === 'number' && typeof entry.bootstrapKdf.parallelism === 'number'))
+      ))
+      .map((entry) => ({
+        memberId: entry.memberId,
+        bootstrapPassword: entry.bootstrapPassword,
+        bootstrapKdf: entry.bootstrapKdf.algorithm === 'PBKDF2-SHA256'
+          ? {
+            algorithm: 'PBKDF2-SHA256' as const,
+            iterations: entry.bootstrapKdf.iterations,
+            salt: entry.bootstrapKdf.salt,
+          }
+          : {
+            algorithm: 'ARGON2ID' as const,
+            iterations: entry.bootstrapKdf.iterations,
+            memoryKiB: entry.bootstrapKdf.memoryKiB ?? 0,
+            parallelism: entry.bootstrapKdf.parallelism ?? 1,
+            salt: entry.bootstrapKdf.salt,
+          },
+        bootstrapWrappedVaultKey: entry.bootstrapWrappedVaultKey,
+      }))
+
+    const now = nowIso()
+    await ctx.runMutation(api.sync.replaceOrgVaultMemberAccess, {
+      orgId,
+      vaultId,
+      ownerId: owner.ownerId,
+      updatedAt: now,
+      memberAccess: normalizedMemberAccess,
+    })
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: identity.subject,
+      action: 'org.vault.share.refresh',
+      target: vaultId,
+      metadata: { memberAccessCount: normalizedMemberAccess.length },
+    })
+
+    return json({ ok: true })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/share',
+  method: 'DELETE',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const owner = await resolveOwner(ctx, request)
+    if (!owner || owner.ownerSource !== 'auth') {
+      return json({ error: 'Authenticated cloud owner required' }, 401)
+    }
+
+    const url = new URL(request.url)
+    const orgId = normalizeOrgId(url.searchParams.get('orgId') || '')
+    const vaultId = (url.searchParams.get('vaultId') || '').trim()
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'owner')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+    if (share.ownerId !== owner.ownerId) {
+      return json({ error: 'Only the shared vault owner can unshare it' }, 403)
+    }
+
+    const result = await ctx.runMutation(api.sync.revokeOrgVaultShare, {
+      orgId,
+      vaultId,
+      revokedAt: nowIso(),
+    }) as { revoked?: boolean } | null
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: identity.subject,
+      action: 'org.vault.unshare',
+      target: vaultId,
+    })
+
+    return json({ ok: true, revoked: Boolean(result?.revoked) })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/open',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await request.json() as { orgId?: unknown; vaultId?: unknown }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      await appendAdminAudit(ctx, {
+        orgId,
+        actorSubject: identity.subject,
+        action: 'org.vault.open.denied',
+        target: vaultId,
+        metadata: { reason: 'share_missing' },
+      })
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const access = await ctx.runQuery(api.sync.getOrgVaultMemberAccess, {
+      orgId,
+      vaultId,
+      memberId: identity.subject,
+    }) as {
+      bootstrapPassword?: string | null
+      bootstrapKdf?: unknown
+      bootstrapWrappedVaultKey?: unknown
+      memberKdf?: unknown
+      memberWrappedVaultKey?: unknown
+      memberPasswordSetAt?: string | null
+      bootstrapIssuedAt?: string | null
+    } | null
+    if (!access || (!access.memberWrappedVaultKey && !access.bootstrapWrappedVaultKey)) {
+      await appendAdminAudit(ctx, {
+        orgId,
+        actorSubject: identity.subject,
+        action: 'org.vault.open.denied',
+        target: vaultId,
+        metadata: { reason: 'member_access_missing' },
+      })
+      return json({ error: 'No shared vault access is available for this member. Ask the org owner to refresh organization sharing.' }, 404)
+    }
+
+    const snapshot = await ctx.runQuery(api.sync.pullByOwnerVault, {
+      ownerId: share.ownerId,
+      vaultId,
+    }) as { encryptedFile?: string | null } | null
+    if (!snapshot?.encryptedFile) {
+      await appendAdminAudit(ctx, {
+        orgId,
+        actorSubject: identity.subject,
+        action: 'org.vault.open.denied',
+        target: vaultId,
+        metadata: { reason: 'snapshot_missing' },
+      })
+      return json({ error: 'Shared vault snapshot not found' }, 404)
+    }
+
+    return json({
+      orgId,
+      vaultId,
+      ownerId: share.ownerId,
+      role: membership.role,
+      snapshot: JSON.parse(snapshot.encryptedFile),
+      memberAccess: access.memberWrappedVaultKey && access.memberKdf
+        ? {
+          configured: true,
+          memberKdf: access.memberKdf,
+          memberWrappedVaultKey: access.memberWrappedVaultKey,
+          memberPasswordSetAt: access.memberPasswordSetAt ?? null,
+        }
+        : {
+          configured: false,
+          bootstrapPassword: access.bootstrapPassword ?? null,
+          bootstrapKdf: access.bootstrapKdf ?? null,
+          bootstrapWrappedVaultKey: access.bootstrapWrappedVaultKey ?? null,
+          bootstrapIssuedAt: access.bootstrapIssuedAt ?? null,
+        },
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/access',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await request.json() as {
+      orgId?: unknown
+      vaultId?: unknown
+      memberKdf?: {
+        algorithm?: unknown
+        iterations?: unknown
+        memoryKiB?: unknown
+        parallelism?: unknown
+        salt?: unknown
+      }
+      memberWrappedVaultKey?: {
+        nonce?: unknown
+        ciphertext?: unknown
+      }
+    }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const algorithm = body.memberKdf?.algorithm === 'PBKDF2-SHA256' ? 'PBKDF2-SHA256' : 'ARGON2ID'
+    const iterations = typeof body.memberKdf?.iterations === 'number' ? body.memberKdf.iterations : 0
+    const salt = typeof body.memberKdf?.salt === 'string' ? body.memberKdf.salt : ''
+    const memberWrappedVaultKey = {
+      nonce: typeof body.memberWrappedVaultKey?.nonce === 'string' ? body.memberWrappedVaultKey.nonce : '',
+      ciphertext: typeof body.memberWrappedVaultKey?.ciphertext === 'string' ? body.memberWrappedVaultKey.ciphertext : '',
+    }
+    if (!iterations || !salt || !memberWrappedVaultKey.nonce || !memberWrappedVaultKey.ciphertext) {
+      return json({ error: 'memberKdf and memberWrappedVaultKey are required' }, 400)
+    }
+
+    const memberKdf = algorithm === 'PBKDF2-SHA256'
+      ? {
+        algorithm: 'PBKDF2-SHA256' as const,
+        iterations,
+        salt,
+      }
+      : {
+        algorithm: 'ARGON2ID' as const,
+        iterations,
+        memoryKiB: typeof body.memberKdf?.memoryKiB === 'number' ? body.memberKdf.memoryKiB : 0,
+        parallelism: typeof body.memberKdf?.parallelism === 'number' ? body.memberKdf.parallelism : 1,
+        salt,
+      }
+    if (memberKdf.algorithm === 'ARGON2ID' && !memberKdf.memoryKiB) {
+      return json({ error: 'ARGON2ID memberKdf requires memoryKiB' }, 400)
+    }
+
+    const access = await ctx.runQuery(api.sync.getOrgVaultMemberAccess, {
+      orgId,
+      vaultId,
+      memberId: identity.subject,
+    }) as {
+      bootstrapWrappedVaultKey?: unknown
+      memberWrappedVaultKey?: unknown
+    } | null
+    if (!access?.bootstrapWrappedVaultKey && !access?.memberWrappedVaultKey) {
+      return json({ error: 'No shared vault access is available for this member.' }, 404)
+    }
+
+    const now = nowIso()
+    const result = await ctx.runMutation(api.sync.finalizeOrgVaultMemberAccess, {
+      orgId,
+      vaultId,
+      memberId: identity.subject,
+      memberKdf,
+      memberWrappedVaultKey,
+      updatedAt: now,
+    }) as { updated?: boolean } | null
+    if (!result?.updated) {
+      return json({ error: 'Shared vault access could not be updated' }, 404)
+    }
+
+    await appendAdminAudit(ctx, {
+      orgId,
+      actorSubject: identity.subject,
+      action: 'org.vault.access.configure',
+      target: vaultId,
+    })
+
+    return json({ ok: true, configuredAt: now })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/pull',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await request.json() as { orgId?: unknown; vaultId?: unknown }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    if (!orgId || !vaultId) {
+      return json({ error: 'orgId and vaultId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const snapshot = await ctx.runQuery(api.sync.pullByOwnerVault, {
+      ownerId: share.ownerId,
+      vaultId,
+    }) as { encryptedFile?: string | null } | null
+
+    return json({
+      role: membership.role,
+      snapshot: snapshot?.encryptedFile ? JSON.parse(snapshot.encryptedFile) : null,
+    })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/push',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const body = await request.json() as {
+      orgId?: unknown
+      vaultId?: unknown
+      revision?: unknown
+      encryptedFile?: unknown
+      updatedAt?: unknown
+    }
+    const orgId = normalizeOrgId(typeof body.orgId === 'string' ? body.orgId : '')
+    const vaultId = typeof body.vaultId === 'string' ? body.vaultId.trim() : ''
+    if (!orgId || !vaultId || typeof body.revision !== 'number' || typeof body.encryptedFile !== 'string' || typeof body.updatedAt !== 'string') {
+      return json({ error: 'orgId, vaultId, revision, encryptedFile, and updatedAt are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'editor')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const result = await ctx.runMutation(api.sync.pushByOwnerVault, {
+      ownerId: share.ownerId,
+      vaultId,
+      revision: body.revision,
+      encryptedFile: body.encryptedFile,
+      updatedAt: body.updatedAt,
+    }) as { accepted: boolean }
+
+    return json({ ok: true, accepted: result.accepted, role: membership.role })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/put',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const payload = await request.json() as {
+      orgId?: unknown
+      vaultId?: unknown
+      blobId?: unknown
+      nonce?: unknown
+      ciphertext?: unknown
+      sizeBytes?: unknown
+      sha256?: unknown
+      mimeType?: unknown
+      fileName?: unknown
+      updatedAt?: unknown
+    }
+    const orgId = normalizeOrgId(typeof payload.orgId === 'string' ? payload.orgId : '')
+    const vaultId = typeof payload.vaultId === 'string' ? payload.vaultId.trim() : ''
+    if (
+      !orgId
+      || !vaultId
+      || typeof payload.blobId !== 'string'
+      || typeof payload.nonce !== 'string'
+      || typeof payload.ciphertext !== 'string'
+      || typeof payload.sizeBytes !== 'number'
+      || typeof payload.sha256 !== 'string'
+      || typeof payload.updatedAt !== 'string'
+    ) {
+      return json({ error: 'orgId, vaultId, blobId, nonce, ciphertext, sizeBytes, sha256, and updatedAt are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'editor')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    try {
+      const result = await ctx.runMutation(api.sync.putBlobByOwnerVault, {
+        ownerId: share.ownerId,
+        vaultId,
+        blobId: payload.blobId,
+        nonce: payload.nonce,
+        ciphertext: payload.ciphertext,
+        sizeBytes: payload.sizeBytes,
+        sha256: payload.sha256,
+        mimeType: typeof payload.mimeType === 'string' ? payload.mimeType : 'application/octet-stream',
+        fileName: typeof payload.fileName === 'string' ? payload.fileName : 'file.bin',
+        updatedAt: payload.updatedAt,
+        maxFileBytes: MAX_BLOB_FILE_BYTES,
+        maxVaultBytes: MAX_BLOB_TOTAL_BYTES,
+      })
+      return json({ ok: true, accepted: result.accepted, usedBytes: result.usedBytes })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'blob upload failed'
+      if (message.includes('quota') || message.includes('limit')) {
+        return json({ error: message }, 413)
+      }
+      return json({ error: message }, 400)
+    }
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/get',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const payload = await request.json() as { orgId?: unknown; vaultId?: unknown; blobId?: unknown }
+    const orgId = normalizeOrgId(typeof payload.orgId === 'string' ? payload.orgId : '')
+    const vaultId = typeof payload.vaultId === 'string' ? payload.vaultId.trim() : ''
+    const blobId = typeof payload.blobId === 'string' ? payload.blobId.trim() : ''
+    if (!orgId || !vaultId || !blobId) {
+      return json({ error: 'orgId, vaultId, and blobId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'viewer')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const blob = await ctx.runQuery(api.sync.getBlobByOwnerVault, {
+      ownerId: share.ownerId,
+      vaultId,
+      blobId,
+    })
+    return json({ blob })
+  }),
+})
+
+http.route({
+  path: '/api/v2/org-shares/blobs/delete',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await resolveIdentityWithProfile(ctx)
+    if (!identity?.subject) {
+      return json({ error: 'Authentication required' }, 401)
+    }
+
+    const payload = await request.json() as { orgId?: unknown; vaultId?: unknown; blobId?: unknown }
+    const orgId = normalizeOrgId(typeof payload.orgId === 'string' ? payload.orgId : '')
+    const vaultId = typeof payload.vaultId === 'string' ? payload.vaultId.trim() : ''
+    const blobId = typeof payload.blobId === 'string' ? payload.blobId.trim() : ''
+    if (!orgId || !vaultId || !blobId) {
+      return json({ error: 'orgId, vaultId, and blobId are required' }, 400)
+    }
+
+    const membership = await requireOrgRole(ctx, orgId, identity.subject, 'editor')
+    if ('error' in membership) {
+      return json({ error: membership.error }, membership.status)
+    }
+
+    const share = await ctx.runQuery(api.sync.getOrgVaultShare, { orgId, vaultId }) as { ownerId?: string | null } | null
+    if (!share?.ownerId) {
+      return json({ error: 'Shared vault not found' }, 404)
+    }
+
+    const result = await ctx.runMutation(api.sync.deleteBlobByOwnerVault, {
+      ownerId: share.ownerId,
+      vaultId,
+      blobId,
+    })
+    return json({
+      ok: true,
+      deleted: result.deleted,
+      usedBytes: result.usedBytes,
+    })
   }),
 })
 
@@ -1515,15 +2501,22 @@ http.route({
     if (!vaultId) {
       return json({ error: 'vaultId is required' }, 400)
     }
+    if (!hasRole(resolved.context.identity.roles[0] || 'viewer', 'owner')) {
+      return json({ error: 'Only org owners can unshare a vault' }, 403)
+    }
 
-    const deletion = await ctx.runMutation(api.sync.deleteVaultsByOrg, { orgId, vaultId }) as { deleted?: boolean } | null
+    const deletion = await ctx.runMutation(api.sync.revokeOrgVaultShare, {
+      orgId,
+      vaultId,
+      revokedAt: nowIso(),
+    }) as { revoked?: boolean } | null
     await appendAdminAudit(ctx, {
       orgId,
       actorSubject: resolved.context.identity.subject,
-      action: 'org.vault.delete',
+      action: 'org.vault.unshare',
       target: vaultId,
     })
-    return json({ ok: true, deleted: Boolean(deletion?.deleted) })
+    return json({ ok: true, deleted: Boolean(deletion?.revoked) })
   }),
 })
 

@@ -20,7 +20,7 @@ function kindIcon(kind: VaultStorageItem['kind']) {
 
 export function StorageListPane() {
   const { query, selectedStorageId, selectedNode, folderFilterMode, trash, mobileStep, storageItems, workspaceSection, syncProvider } = useVaultAppState()
-  const { filteredStorage, folderPathById, effectivePlatform, hasCapability } = useVaultAppDerived()
+  const { filteredStorage, folderPathById, effectivePlatform, hasCapability, canEditActiveVault } = useVaultAppDerived()
   const {
     setQuery,
     setFolderFilterMode,
@@ -82,7 +82,7 @@ export function StorageListPane() {
           <h3>Empty Storage</h3>
           <p className="muted">No storage items match this view yet.</p>
           {noStorageInVault && (
-            <button className="solid" style={{ alignSelf: 'start' }} onClick={createStorageItem}>+ Create First Storage Item</button>
+            <button className="solid" style={{ alignSelf: 'start' }} onClick={createStorageItem} disabled={!canEditActiveVault}>+ Create First Storage Item</button>
           )}
         </div>
       ) : (

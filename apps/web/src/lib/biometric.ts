@@ -89,7 +89,7 @@ function fromBase64(encoded: string) {
 }
 
 function isNativeAndroidRuntime() {
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+  return Capacitor.getPlatform() === 'android'
 }
 
 function isWebAuthnPlatformSupported() {

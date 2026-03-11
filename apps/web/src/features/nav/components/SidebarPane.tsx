@@ -4,7 +4,7 @@ import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../
 
 export function SidebarPane() {
   const { items, storageItems, trash, selectedNode, mobileStep, workspaceSection } = useVaultAppState()
-  const { expiredItems, expiringSoonItems, storageFeatureEnabled, adminCenterEnabled } = useVaultAppDerived()
+  const { expiredItems, expiringSoonItems, storageFeatureEnabled, adminCenterEnabled, canEditActiveVault } = useVaultAppDerived()
   const {
     setSelectedNode,
     setMobileStep,
@@ -118,7 +118,7 @@ export function SidebarPane() {
           </button>
         )}
         {isStorage && (
-          <button className="sidebar-nav-item" onClick={createStorageItem}>
+          <button className="sidebar-nav-item" onClick={createStorageItem} disabled={!canEditActiveVault}>
             <span>+ New Storage Item</span>
           </button>
         )}
@@ -133,6 +133,7 @@ export function SidebarPane() {
                 className="sidebar-section-action"
                 title="New folder"
                 onClick={() => createSubfolder(null)}
+                disabled={!canEditActiveVault}
               >
                 <FolderPlus size={13} strokeWidth={1.8} />
               </button>

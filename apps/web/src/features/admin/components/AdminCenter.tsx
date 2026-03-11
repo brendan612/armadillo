@@ -219,14 +219,14 @@ export function AdminCenter() {
 
   async function handleDeleteVault(vaultId: string) {
     if (!effectiveOrgId) return
-    if (!window.confirm(`Delete remote vault ${vaultId}? This removes the org-scoped cloud copy.`)) return
+    if (!window.confirm(`Unshare vault ${vaultId} from this org? This removes org access without deleting the owner's canonical vault.`)) return
     setLoading(true)
     setStatusMessage('')
     try {
       await client.deleteVault(effectiveOrgId, vaultId)
       await loadOrgData(effectiveOrgId)
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Failed to delete vault')
+      setStatusMessage(error instanceof Error ? error.message : 'Failed to unshare vault')
     } finally {
       setLoading(false)
     }
@@ -416,7 +416,7 @@ export function AdminCenter() {
                     <td>{formatDate(vault.updatedAt)}</td>
                     <td>{vault.blobCount}</td>
                     <td>{formatBytes(vault.storageBytes)}</td>
-                    <td><button className="ghost" onClick={() => void handleDeleteVault(vault.vaultId)}>Delete</button></td>
+                    <td><button className="ghost" onClick={() => void handleDeleteVault(vault.vaultId)}>Unshare</button></td>
                   </tr>
                 ))}
                 {vaults.length === 0 && (

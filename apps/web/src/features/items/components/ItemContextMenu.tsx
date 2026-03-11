@@ -17,7 +17,7 @@ import type { VaultCredentialKind, VaultItem } from '../../../types/vault'
 
 export function ItemContextMenu() {
   const { itemContextMenu, items, syncProvider, vaultSettings } = useVaultAppState()
-  const { hasCapability } = useVaultAppDerived()
+  const { hasCapability, canEditActiveVault } = useVaultAppDerived()
   const {
     setSelectedId,
     setMobileStep,
@@ -146,6 +146,7 @@ export function ItemContextMenu() {
 
       <button
         className="ctx-menu-item"
+        disabled={!canEditActiveVault}
         onClick={() => {
           void duplicateItem(itemId)
           dismiss()
@@ -215,6 +216,7 @@ export function ItemContextMenu() {
             <button
               key={kind}
               className="ctx-menu-item"
+              disabled={!canEditActiveVault}
               onClick={() => {
                 void changeItemCredentialKind(itemId, kind)
                 dismiss()
@@ -230,6 +232,7 @@ export function ItemContextMenu() {
       {canManageCloudSyncExclusions && (
         <button
           className="ctx-menu-item"
+          disabled={!canEditActiveVault}
           onClick={() => {
             void setItemCloudSyncExcluded(itemId, !isLocalOnly)
             dismiss()
@@ -244,6 +247,7 @@ export function ItemContextMenu() {
 
       <button
         className="ctx-menu-item danger"
+        disabled={!canEditActiveVault}
         onClick={() => {
           if (window.confirm(`Move "${item?.title || 'this item'}" to trash?`)) {
             void removeItemById(itemId)

@@ -4,7 +4,7 @@ import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../
 
 export function StorageContextMenu() {
   const { storageContextMenu, storageItems, syncProvider } = useVaultAppState()
-  const { hasCapability } = useVaultAppDerived()
+  const { hasCapability, canEditActiveVault } = useVaultAppDerived()
   const {
     setSelectedStorageId,
     setMobileStep,
@@ -77,6 +77,7 @@ export function StorageContextMenu() {
       {canManageCloudSyncExclusions && (
         <button
           className="ctx-menu-item"
+          disabled={!canEditActiveVault}
           onClick={() => {
             void setStorageItemCloudSyncExcluded(storageContextMenu.itemId, !isLocalOnly)
             setStorageContextMenu(null)
@@ -91,6 +92,7 @@ export function StorageContextMenu() {
 
       <button
         className="ctx-menu-item danger"
+        disabled={!canEditActiveVault}
         onClick={() => {
           void removeStorageItemById(storageContextMenu.itemId)
           setStorageContextMenu(null)

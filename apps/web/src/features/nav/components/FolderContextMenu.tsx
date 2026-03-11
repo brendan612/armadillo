@@ -15,7 +15,7 @@ import { useVaultAppActions, useVaultAppDerived, useVaultAppState } from '../../
 
 export function FolderContextMenu() {
   const { contextMenu, folders, syncProvider } = useVaultAppState()
-  const { hasCapability } = useVaultAppDerived()
+  const { hasCapability, canEditActiveVault } = useVaultAppDerived()
   const {
     setSelectedNode,
     setMobileStep,
@@ -114,6 +114,7 @@ export function FolderContextMenu() {
         {/* Create & Edit */}
         <button
           className="ctx-menu-item"
+          disabled={!canEditActiveVault}
           onClick={() => {
             createSubfolder(contextMenu.folderId)
             dismiss()
@@ -125,6 +126,7 @@ export function FolderContextMenu() {
 
         <button
           className="ctx-menu-item"
+          disabled={!canEditActiveVault}
           onClick={() => {
             startFolderInlineRename(contextMenu.folderId)
           }}
@@ -140,6 +142,7 @@ export function FolderContextMenu() {
         {isNested && (
           <button
             className="ctx-menu-item"
+            disabled={!canEditActiveVault}
             onClick={() => {
               void moveFolder(contextMenu.folderId, null)
               dismiss()
@@ -152,6 +155,7 @@ export function FolderContextMenu() {
 
         <button
           className="ctx-menu-item"
+          disabled={!canEditActiveVault}
           onClick={() => {
             if (folder) {
               openFolderEditor(folder)
@@ -165,6 +169,7 @@ export function FolderContextMenu() {
         {canManageCloudSyncExclusions && (
           <button
             className="ctx-menu-item"
+            disabled={!canEditActiveVault}
             onClick={() => {
               void setFolderCloudSyncExcluded(contextMenu.folderId, !isLocalOnly)
               dismiss()
@@ -193,6 +198,7 @@ export function FolderContextMenu() {
         {/* Danger */}
         <button
           className="ctx-menu-item danger"
+          disabled={!canEditActiveVault}
           onClick={() => {
             void deleteFolderCascade(contextMenu.folderId)
             dismiss()

@@ -58,7 +58,7 @@ export function ItemDetailPane() {
     vaultSettings,
     syncProvider,
   } = useVaultAppState()
-  const { selected, folderOptions, hasCapability, selectedCopilotSuggestions, selectedAiInputSnapshot } = useVaultAppDerived()
+  const { selected, folderOptions, hasCapability, selectedCopilotSuggestions, selectedAiInputSnapshot, canEditActiveVault } = useVaultAppDerived()
   const {
     closeOpenItem,
     setDraftField,
@@ -162,7 +162,8 @@ export function ItemDetailPane() {
   }, [showGenerator, showGenEditor, showPresetSave, vaultSettings.generatorPresets.length])
 
   useEffect(() => {
-    setShowCopilotPanel(false)
+    const timer = window.setTimeout(() => setShowCopilotPanel(false), 0)
+    return () => window.clearTimeout(timer)
   }, [draft?.id])
 
   function regenerate(config: GeneratorConfig) {
@@ -508,12 +509,12 @@ export function ItemDetailPane() {
         <div className="detail-head-actions">
           {selected && (
             <>
-              <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving || passwordConfirmMissing}>
+              <button className="solid detail-save-btn" onClick={() => void handleSave()} disabled={isSaving || passwordConfirmMissing || !canEditActiveVault}>
                 {isSaving ? 'Saving...' : 'Save'}
               </button>
               <button className="ghost detail-delete-btn" onClick={() => {
                 if (window.confirm(`Move "${draft?.title || 'this item'}" to trash?`)) void removeCurrentItem()
-              }} disabled={isSaving} title="Delete item">
+              }} disabled={isSaving || !canEditActiveVault} title="Delete item">
                 <Trash2 size={14} /> Delete
               </button>
               <button className="ghost detail-close-btn" onClick={() => void handleCloseWithUnsavedPrompt()} disabled={isSaving} title="Close item">
@@ -524,25 +525,32 @@ export function ItemDetailPane() {
         </div>
       </div>
 
-      {draft && canManageCloudSyncExclusions && (
-        <div className="detail-head-toggle">
-          <label className="detail-toggle-row">
-            <input
-              type="checkbox"
-              className="detail-toggle-input"
-              checked={Boolean(draft.excludeFromCloudSync)}
-              onChange={(event) => setDraftField('excludeFromCloudSync', event.target.checked)}
-            />
-            <span className="detail-toggle-control" aria-hidden="true">
-              <span className="detail-toggle-thumb" />
-            </span>
-            <span className="detail-toggle-label">Exclude from Cloud Sync</span>
-          </label>
-        </div>
+      {!canEditActiveVault && draft && (
+        <p className="muted" style={{ margin: '0 0 0.9rem' }}>
+          This shared vault is read-only for your org role.
+        </p>
       )}
 
-      {draft && (
-        <div className="detail-grid">
+      <fieldset disabled={!canEditActiveVault} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        {draft && canManageCloudSyncExclusions && (
+          <div className="detail-head-toggle">
+            <label className="detail-toggle-row">
+              <input
+                type="checkbox"
+                className="detail-toggle-input"
+                checked={Boolean(draft.excludeFromCloudSync)}
+                onChange={(event) => setDraftField('excludeFromCloudSync', event.target.checked)}
+              />
+              <span className="detail-toggle-control" aria-hidden="true">
+                <span className="detail-toggle-thumb" />
+              </span>
+              <span className="detail-toggle-label">Exclude from Cloud Sync</span>
+            </label>
+          </div>
+        )}
+
+        {draft && (
+          <div className="detail-grid">
           <label>
             Title
             <input value={draft.title} onChange={(event) => setDraftField('title', event.target.value)} />
@@ -1211,8 +1219,9 @@ export function ItemDetailPane() {
 
           {breachSaveMessage && <p className={breachSaveMuted ? 'muted' : 'password-reuse-warning'}>{breachSaveMessage}</p>}
           {saveError && <p className="password-mismatch-msg">{saveError}</p>}
-        </div>
-      )}
+          </div>
+        )}
+      </fieldset>
     </section>
   )
 }

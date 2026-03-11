@@ -145,6 +145,9 @@ export function SettingsPage() {
     localVaultPath,
     recentLocalVaultPaths,
     recentLocalVaultPathStatuses,
+    orgMemberships,
+    selectedOrgId,
+    activeSharedVaultSource,
     entitlementState,
     effectiveTier,
     entitlementStatusMessage,
@@ -166,7 +169,7 @@ export function SettingsPage() {
     isOrgMember,
     trash,
   } = useVaultAppState()
-  const { cloudConnected, hasCapability } = useVaultAppDerived()
+  const { cloudConnected, hasCapability, selectedOrgRole, canEditActiveVault } = useVaultAppDerived()
   const {
     closeSettings,
     setSettingsCategory,
@@ -224,6 +227,9 @@ export function SettingsPage() {
     clearDismissedCopilotSuggestions,
     clearLocalVaultFile,
     clearCachedVaultSnapshot,
+    shareCurrentVaultWithOrg,
+    refreshCurrentVaultOrgAccess,
+    unshareCurrentVaultFromOrg,
   } = useVaultAppActions()
 
   const [autofillEnabled, setAutofillEnabled] = useState(false)
@@ -433,6 +439,10 @@ export function SettingsPage() {
   const resolvedSwitchVaultPath = switchVaultPath.trim() || localVaultPath || recentLocalVaultPaths[0]?.path || ''
   const isSwitchTargetActive = resolvedSwitchVaultPath.trim() === localVaultPath.trim()
   const switchTargetStatus = recentLocalVaultPathStatuses[resolvedSwitchVaultPath] ?? 'unknown'
+  const selectedOrgMembership = orgMemberships.find((membership) => membership.orgId === selectedOrgId) ?? null
+  const canManageCurrentOrgShare = selectedOrgRole === 'owner'
+  const sharedVaultInSelectedOrg = Boolean(activeSharedVaultSource && selectedOrgId && activeSharedVaultSource.scope.orgId === selectedOrgId)
+  const isOrgSharedVault = Boolean(activeSharedVaultSource)
   const passwordClipboardSeconds = vaultSettings.clipboard?.passwordClearSeconds ?? defaultClipboardSettings().passwordClearSeconds
   const quickUnlockMethodLabel = quickUnlockCapabilities.method === 'android-native' ? 'Biometric' : 'Passkey / Windows Hello'
   const importProviderOptions = [
@@ -905,6 +915,61 @@ export function SettingsPage() {
           </section>
 
           <section className="settings-section" hidden={!isCloud}>
+            {orgMemberships.length > 0 && (
+              <div className="settings-feature-card" style={{ marginBottom: '1rem' }}>
+                <div className="settings-feature-head">
+                  <div className="settings-feature-icon tint-accent">
+                    <Cloud size={18} />
+                  </div>
+                  <div className="settings-feature-title">
+                    <h3>Organization Sharing</h3>
+                    <p className="muted">
+                      {selectedOrgMembership
+                        ? `${selectedOrgMembership.orgName || selectedOrgMembership.orgId} (${selectedOrgMembership.role})`
+                        : 'Select an organization from the lock screen to manage sharing.'}
+                    </p>
+                  </div>
+                </div>
+                <div className="settings-feature-body">
+                  {activeSharedVaultSource && !canEditActiveVault && (
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      This shared vault is read-only for your org role.
+                    </p>
+                  )}
+                  <div className="vault-btn-row">
+                    <button
+                      className="vault-action-btn ghost"
+                      onClick={() => void shareCurrentVaultWithOrg()}
+                      disabled={!selectedOrgId || !canManageCurrentOrgShare}
+                    >
+                      <CloudUpload size={15} />
+                      Share Current Vault
+                    </button>
+                    <button
+                      className="vault-action-btn ghost"
+                      onClick={() => void refreshCurrentVaultOrgAccess()}
+                      disabled={!selectedOrgId || !canManageCurrentOrgShare || !sharedVaultInSelectedOrg}
+                    >
+                      <RefreshCw size={15} />
+                      Refresh Org Access
+                    </button>
+                    <button
+                      className="vault-action-btn ghost trash-empty-btn"
+                      onClick={() => void unshareCurrentVaultFromOrg()}
+                      disabled={!selectedOrgId || !canManageCurrentOrgShare || !sharedVaultInSelectedOrg}
+                    >
+                      <Trash2 size={15} />
+                      Unshare Vault
+                    </button>
+                  </div>
+                  {!canManageCurrentOrgShare && selectedOrgMembership && (
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      Only org owners can share, refresh, or unshare vault access.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="settings-feature-card">
               <div className="settings-feature-head">
                 <div className="settings-feature-icon tint-accent">
@@ -1036,18 +1101,20 @@ export function SettingsPage() {
                 <div className="settings-feature-title">
                   <h3>Quick Unlock</h3>
                   <p className="muted">
-                    {quickUnlockCapabilities.supported
+                    {isOrgSharedVault
+                      ? 'Unavailable for organization-shared vaults'
+                      : quickUnlockCapabilities.supported
                       ? (quickUnlockEnabled
                         ? (quickUnlockCapabilities.method === 'android-native' ? 'Biometric unlock enabled' : 'Passkey unlock enabled')
                         : 'Set up fast unlock for this device')
                       : (quickUnlockCapabilities.unavailableReason || 'Not supported on this device')}
                   </p>
                 </div>
-                {quickUnlockCapabilities.supported && (
+                {quickUnlockCapabilities.supported && !isOrgSharedVault && (
                   <span className={`feature-dot ${quickUnlockEnabled ? 'connected' : 'disconnected'}`} />
                 )}
               </div>
-              {quickUnlockCapabilities.supported && (
+              {quickUnlockCapabilities.supported && !isOrgSharedVault && (
                 <div className="settings-feature-body">
                   <div className="settings-toggle-row">
                     <span>Method</span>
@@ -1074,6 +1141,13 @@ export function SettingsPage() {
                   {(syncMessage.toLowerCase().includes('biometric') || syncMessage.toLowerCase().includes('passkey') || syncMessage.toLowerCase().includes('quick unlock')) && (
                     <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>{syncMessage}</p>
                   )}
+                </div>
+              )}
+              {isOrgSharedVault && (
+                <div className="settings-feature-body">
+                  <p className="muted" style={{ margin: 0, fontSize: '0.72rem' }}>
+                    Organization-shared vaults stay cloud-only, so this device cannot keep a local quick-unlock copy.
+                  </p>
                 </div>
               )}
             </div>
@@ -1467,17 +1541,19 @@ export function SettingsPage() {
               <div className="settings-vault-group">
                 <p className="settings-vault-group-title">Import & Export</p>
                 <div className="vault-btn-row">
-                  <button className="vault-action-btn ghost" onClick={exportVaultFile}>
+                  <button className="vault-action-btn ghost" onClick={exportVaultFile} disabled={isOrgSharedVault}>
                     <Download size={15} />
                     Export Vault File
                   </button>
-                  <button className="vault-action-btn ghost" onClick={() => void exportVaultBackupBundle()}>
+                  <button className="vault-action-btn ghost" onClick={() => void exportVaultBackupBundle()} disabled={isOrgSharedVault}>
                     <ArchiveRestore size={15} />
                     Export Full Backup
                   </button>
                 </div>
                 <p className="muted settings-io-note">
-                  Export requires master-password confirmation each time.
+                  {isOrgSharedVault
+                    ? 'Organization-shared vaults stay cloud-only and cannot be exported to this device.'
+                    : 'Export requires master-password confirmation each time.'}
                 </p>
                 <button
                   className={`vault-action-btn ${showImportWizard ? 'solid' : 'ghost'}`}
